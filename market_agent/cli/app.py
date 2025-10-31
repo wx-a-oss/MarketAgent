@@ -1,12 +1,12 @@
 import json
-    from typing import Optional
-    import typer
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich import box
+from typing import Optional
+import typer
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
 
-    from market_agent import MarketAgent
+from market_agent import MarketAgent
 
     app = typer.Typer(help="MarketAgent CLI — Finnhub-powered stock and company info")
     console = Console()
