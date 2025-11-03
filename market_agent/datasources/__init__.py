@@ -1,5 +1,11 @@
-"""Registered data source clients."""
+"""Registered data source clients and indicator structures."""
 
-from .finnhub.finnhub_client import FinnhubClient
+from .finnhub import FinnhubClient, FinnhubIndicatorFetcher
+from ..datamodel.indicators import StockAnalysisIndicators, StockBaseIndicators
 
-__all__ = ["FinnhubClient"]
+__all__ = [
+    "FinnhubClient",
+    "FinnhubIndicatorFetcher",
+    "StockBaseIndicators",
+    "StockAnalysisIndicators",
+]
