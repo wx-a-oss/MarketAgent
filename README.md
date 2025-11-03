@@ -91,7 +91,7 @@ MarketAgent/
 
 ### Additional frontends
 - CLI demo: `python -m frontend.cli.main stock AAPL`
-- Web demo: `uvicorn frontend.web.server:app --reload`
+- Web demo: `uvicorn frontend.web.server:app --reload` (then open `http://127.0.0.1:8000/` and enter a ticker in the form)
 
 ## Notes
 - This is an initial version with a rich, extendable structure. Add new data sources under `market_agent/datasources/` and new commands in `market_agent/cli/`.
