@@ -65,8 +65,8 @@ def query_stock_indicators(
     client = FinnhubClient(api_key=resolved_key)
     fetcher = FinnhubIndicatorFetcher(client)
 
-    base = fetcher.build_base_indicators(symbol)
-    analysis = fetcher.build_analysis_indicators(symbol) if include_analysis else None
+    base = fetcher.build_base_indicators(symbol, include_analysis=include_analysis)
+    analysis = None
 
     return StockIndicatorSnapshot(symbol=symbol, base=base, analysis=analysis)
 
