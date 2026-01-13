@@ -20,7 +20,7 @@ print(snapshot.data.metrics)
 
 ### FastAPI service (optional)
 ```bash
-uvicorn market_agent.api.http:app --reload
+uvicorn frontend.web.server:app --reload
 # GET http://127.0.0.1:8000/stocks/AAPL
 ```
 
