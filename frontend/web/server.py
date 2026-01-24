@@ -3,10 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 
 from frontend.common import StockFrontendClient
+from frontend.web.company_page import render_company_page
+from frontend.web.person_page import render_person_page
+from frontend.web.shared_page import render_nav
+from market_agent.analysis import analyze_single_stock_sections, get_provider, list_models
 
 app = FastAPI(
     title="MarketAgent Web Frontend",
@@ -14,6 +18,28 @@ app = FastAPI(
 )
 
 client = StockFrontendClient()
+
+
+@app.post("/analysis")
+async def analyze(request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    symbols = payload.get("symbols") or []
+    model = payload.get("model") or "gpt-4o-mini"
+    provider_name = payload.get("provider") or "openai"
+    if not isinstance(symbols, list):
+        return {"error": "symbols must be a list"}
+
+    results: Dict[str, Any] = {}
+    provider = get_provider(provider_name, model=model)
+    for symbol in symbols:
+        if not isinstance(symbol, str):
+            continue
+        snapshot = client.query(symbol)
+        results[symbol] = analyze_single_stock_sections(
+            snapshot,
+            provider=provider,
+        )
+    return {"provider": provider_name, "model": model, "results": results}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -25,7 +51,7 @@ async def index(
     symbol_value = (symbol or "").strip().upper()
     symbols = [item.strip().upper() for item in symbol_value.split(",") if item.strip()]
     error_message = None
-    stocks: List[Tuple[str, Optional[Dict[str, object]]]] = []
+    stocks: List[Tuple[str, Optional[Dict[str, object]], Optional[Any]]] = []
     missing_symbols: List[str] = []
     if symbols:
         for item in symbols:
@@ -34,17 +60,21 @@ async def index(
                 data = snapshot.base.as_dict()
                 if len(data) <= 1:
                     missing_symbols.append(item)
-                stocks.append((item, data))
+                stocks.append((item, data, snapshot))
             except Exception as exc:
                 error_message = str(exc)
-                stocks.append((item, None))
+                stocks.append((item, None, None))
 
     valid_stocks = [
-        (symbol, data)
-        for symbol, data in stocks
-        if data is not None and len(data) > 1
+        (symbol, data, snapshot)
+        for symbol, data, snapshot in stocks
+        if data is not None and len(data) > 1 and snapshot is not None
     ]
-    sections_html = _render_comparison_sections(valid_stocks) if valid_stocks else ""
+    sections_html = (
+        _render_comparison_sections(valid_stocks)
+        if valid_stocks
+        else ""
+    )
 
     base_section = (
         f"""
@@ -65,11 +95,35 @@ async def index(
                 <title>MarketAgent – Stock Indicators</title>
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 2rem; background: #f5f5f5; }}
-                    .container {{ max-width: 960px; margin: auto; display: grid; gap: 1.5rem; }}
+                    nav {{ background: white; border-radius: 0.75rem; padding: 0.75rem 1.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 960px; margin: 0 auto 1.5rem; }}
+                    nav a {{ margin-right: 1rem; text-decoration: none; color: #1f2937; font-weight: 600; }}
+                    nav a.active {{ color: #2563eb; }}
+                    .container {{ max-width: 960px; margin: 0 auto; padding: 0 1rem; display: grid; gap: 1.5rem; }}
                     .card {{ background: white; border-radius: 0.75rem; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
                     h1, h2 {{ margin-top: 0; }}
-                    table {{ width: 100%; border-collapse: collapse; }}
-                    th, td {{ padding: 0.35rem 0.5rem; text-align: left; border-bottom: 1px solid #eee; }}
+                    .comparison-wrap {{ overflow-x: auto; }}
+                    .comparison-wrap::-webkit-scrollbar {{ height: 8px; }}
+                    .comparison-wrap::-webkit-scrollbar-thumb {{ background: #e2e8f0; border-radius: 999px; }}
+                    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+                    .comparison-table {{ width: max-content; min-width: 100%; }}
+                    .comparison-table th:first-child,
+                    .comparison-table td:first-child {{
+                        border-right: 2px solid #e5e7eb;
+                        padding-right: 0;
+                        background: #f8fafc;
+                        white-space: nowrap;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                    }}
+                    .comparison-table th, .comparison-table td {{
+                        overflow-wrap: anywhere;
+                        word-break: break-word;
+                        white-space: normal;
+                        vertical-align: top;
+                    }}
+                    .comparison-table td {{ padding-left: 0.5rem; }}
+                    .comparison-wrap .comparison-table {{ margin: 0 auto; }}
+                    th, td {{ padding: 0.25rem 0.35rem; text-align: left; border-bottom: 1px solid #eee; }}
                     th {{ width: 40%; color: #555; }}
                     .muted {{ color: #888; }}
                     form {{ display: flex; gap: 0.5rem; }}
@@ -82,9 +136,19 @@ async def index(
                     .chip .remove {{ background: transparent; color: #1e3a8a; border: none; cursor: pointer; font-size: 1rem; padding: 0; line-height: 1; }}
                     .chip .remove:hover {{ color: #1d4ed8; }}
                     #add-symbol {{ width: 3rem; padding: 0.65rem 0; font-weight: bold; }}
+                    .analysis-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 1rem; }}
+                    .analysis-card {{ border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 0.75rem; background: #f9fafb; }}
+                    .analysis-card h3 {{ margin: 0 0 0.5rem; font-size: 1rem; }}
+                    .analysis-card ul {{ padding-left: 1.1rem; margin: 0.35rem 0; }}
+                    .analysis-controls {{ display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }}
+                    select {{ padding: 0.5rem 0.65rem; border: 1px solid #ccc; border-radius: 0.5rem; }}
+                    #analyze-button {{ background: #16a34a; }}
+                    #analyze-button:hover {{ background: #15803d; }}
+                    #analysis-status {{ color: #666; font-size: 0.9rem; }}
                 </style>
             </head>
             <body>
+                {render_nav("stock")}
                 <div class="container">
                     <section class="card">
                         <h1>Stock Ticker</h1>
@@ -93,6 +157,14 @@ async def index(
                             <button type="button" id="add-symbol">+</button>
                         </form>
                         <div id="symbol-list" data-symbols="{symbol_value}"></div>
+                        <div class="analysis-controls">
+                            <label for="model-select">Model</label>
+                            <select id="model-select">
+                                {''.join(f'<option value="{model}">{model}</option>' for model in list_models().get("openai", []))}
+                            </select>
+                            <button type="button" id="analyze-button">Generate Analysis</button>
+                            <span id="analysis-status"></span>
+                        </div>
                     </section>
                     {f'<section class="card"><p class="muted">Note: {error_message}</p></section>' if error_message else ''}
                     {f'<section class="card"><p class="muted">Ticker not found: {", ".join(missing_symbols)}</p></section>' if missing_symbols else ''}
@@ -102,6 +174,9 @@ async def index(
                     const listContainer = document.getElementById("symbol-list");
                     const input = document.getElementById("symbol-input");
                     const addButton = document.getElementById("add-symbol");
+                    const analyzeButton = document.getElementById("analyze-button");
+                    const modelSelect = document.getElementById("model-select");
+                    const analysisStatus = document.getElementById("analysis-status");
                     const symbols = (listContainer.dataset.symbols || "")
                         .split(",")
                         .map((item) => item.trim().toUpperCase())
@@ -156,12 +231,127 @@ async def index(
                         updateQuery();
                     }});
 
+                    input.addEventListener("keydown", (event) => {{
+                        if (event.key === "Enter") {{
+                            event.preventDefault();
+                            addButton.click();
+                        }}
+                    }});
+
+                    if (analyzeButton) {{
+                        analyzeButton.addEventListener("click", async () => {{
+                            if (!symbols.length) {{
+                                return;
+                            }}
+                            analysisStatus.textContent = "Running analysis...";
+                            try {{
+                                const response = await fetch("/analysis", {{
+                                    method: "POST",
+                                    headers: {{
+                                        "Content-Type": "application/json",
+                                    }},
+                                    body: JSON.stringify({{
+                                        symbols: symbols,
+                                        model: modelSelect ? modelSelect.value : "gpt-4o-mini",
+                                    }}),
+                                }});
+                                if (!response.ok) {{
+                                    throw new Error(`Analysis failed: ${{response.status}}`);
+                                }}
+                                const payload = await response.json();
+                                renderAnalysis(payload);
+                                analysisStatus.textContent = "Analysis complete.";
+                            }} catch (error) {{
+                                analysisStatus.textContent = "Analysis failed.";
+                                console.error(error);
+                            }}
+                        }});
+                    }}
+
                     renderList();
+                
+                    function renderAnalysis(payload) {{
+                        const results = payload.results || {{}};
+                        document.querySelectorAll("[data-analysis-section]").forEach((node) => {{
+                            const section = node.dataset.analysisSection;
+                            const cards = [];
+                            Object.entries(results).forEach(([symbol, analysis]) => {{
+                                const sectionResult = analysis.sections?.[section];
+                                if (!sectionResult) {{
+                                    return;
+                                }}
+                                cards.push(`
+                                    <div class="analysis-card">
+                                        <h3>${{symbol}}</h3>
+                                        <div><strong>Summary:</strong> ${{sectionResult.summary || "No summary provided."}}</div>
+                                        ${{renderList("Highlights", sectionResult.highlights)}}
+                                        ${{renderList("Risks", sectionResult.risks)}}
+                                        ${{renderList("Questions", sectionResult.questions)}}
+                                    </div>
+                                `);
+                            }});
+                            node.innerHTML = cards.join("");
+                        }});
+                    }}
+
+                    function renderList(title, items) {{
+                        if (!items || !items.length) {{
+                            return "";
+                        }}
+                        const rows = items.map((item) => `<li>${{item}}</li>`).join("");
+                        return `<div><strong>${{title}}:</strong><ul>${{rows}}</ul></div>`;
+                    }}
+
+                    function resizeComparisonTables() {{
+                        document.querySelectorAll(".comparison-table").forEach((table) => {{
+                            const labelCells = table.querySelectorAll("tr > th:first-child");
+                            let maxWidth = 0;
+                            const labelCol = table.querySelector("col.label-col");
+                            const valueCols = table.querySelectorAll("col.value-col");
+                            if (!labelCol || !valueCols.length) {{
+                                return;
+                            }}
+                            labelCol.style.width = "auto";
+                            valueCols.forEach((col) => {{
+                                col.style.width = "auto";
+                            }});
+                            table.style.width = "max-content";
+                            labelCells.forEach((cell) => {{
+                                maxWidth = Math.max(maxWidth, cell.scrollWidth);
+                            }});
+                            const container = table.parentElement;
+                            const containerWidth = container ? container.clientWidth : table.clientWidth;
+                            const maxLabelWidth = 260;
+                            const labelWidth = Math.min(maxWidth, maxLabelWidth);
+                            const minValueWidth = 120;
+                            const requiredWidth = labelWidth + minValueWidth * valueCols.length;
+                            const tableWidth = Math.max(containerWidth, requiredWidth);
+                            table.style.width = `${{tableWidth}}px`;
+                            labelCol.style.width = `${{labelWidth}}px`;
+                            const valueWidth = Math.max((tableWidth - labelWidth) / valueCols.length, minValueWidth);
+                            valueCols.forEach((col) => {{
+                                col.style.width = `${{valueWidth}}px`;
+                            }});
+                        }});
+                    }}
+
+                    window.addEventListener("load", resizeComparisonTables);
+                    window.addEventListener("resize", resizeComparisonTables);
                 </script>
                 {f'<script>window.addEventListener("load", () => {{ alert("Ticker not found: {", ".join(missing_symbols)}"); }});</script>' if missing_symbols else ''}
             </body>
         </html>
     """
+
+
+@app.get("/company", response_class=HTMLResponse)
+async def company() -> str:
+    return render_company_page()
+
+
+@app.get("/person", response_class=HTMLResponse)
+async def person() -> str:
+    return render_person_page()
 
 
 def _format_value(value: object) -> str:
@@ -186,20 +376,27 @@ def _render_sections(data: Dict[str, object]) -> str:
 
 
 def _render_comparison_sections(
-    stocks: List[Tuple[str, Dict[str, object]]]
+    stocks: List[Tuple[str, Dict[str, object], Any]],
 ) -> str:
     grouped = _group_indicator_keys(stocks)
     return "".join(
         f"""
             <section class="card">
                 <h2>{section}</h2>
-                <table>
-                    <tr>
-                        <th>Stock</th>
-                        {''.join(f'<th>{symbol}</th>' for symbol, _ in stocks)}
-                    </tr>
-                    {''.join(_render_comparison_row(label, key, stocks) for label, key in rows)}
-                </table>
+                <div class="comparison-wrap">
+                    <table class="comparison-table">
+                        <colgroup>
+                            <col class="label-col" />
+                            {''.join('<col class="value-col" />' for _ in stocks)}
+                        </colgroup>
+                        <tr>
+                            <th>Stock</th>
+                            {''.join(f'<th>{symbol}</th>' for symbol, _, _ in stocks)}
+                        </tr>
+                        {''.join(_render_comparison_row(label, key, stocks) for label, key in rows)}
+                    </table>
+                </div>
+                <div class="analysis-grid" data-analysis-section="{section}"></div>
             </section>
         """
         for section, rows in grouped
@@ -209,12 +406,14 @@ def _render_comparison_sections(
 def _render_comparison_row(
     label: str,
     key: str,
-    stocks: List[Tuple[str, Dict[str, object]]],
+    stocks: List[Tuple[str, Dict[str, object], Any]],
 ) -> str:
     cells = "".join(
-        f"<td>{_format_value_cell(data.get(key))}</td>" for _, data in stocks
+        f"<td>{_format_value_cell(data.get(key))}</td>" for _, data, _ in stocks
     )
-    return f"<tr><th>{label}</th>{cells}</tr>"
+    return f"<tr><th title=\"{label}\">{label}</th>{cells}</tr>"
+
+
 
 
 def _format_value_cell(value: object) -> str:
@@ -246,7 +445,6 @@ def _group_indicators(data: Dict[str, object]) -> List[Tuple[str, List[Tuple[str
         "Balance Sheet",
         "Per-Share",
         "Leverage & Coverage",
-        "3rd Party Recommendation",
     ]
 
     grouped: List[Tuple[str, List[Tuple[str, object]]]] = []
@@ -260,10 +458,10 @@ def _group_indicators(data: Dict[str, object]) -> List[Tuple[str, List[Tuple[str
 
 
 def _group_indicator_keys(
-    stocks: List[Tuple[str, Dict[str, object]]]
+    stocks: List[Tuple[str, Dict[str, object], Any]]
 ) -> List[Tuple[str, List[Tuple[str, str]]]]:
     sections: Dict[str, List[str]] = {}
-    for _, data in stocks:
+    for _, data, _ in stocks:
         for key in data.keys():
             if key == "symbol":
                 continue
@@ -341,20 +539,24 @@ def _classify_indicator(key: str) -> str:
         return "Leverage & Coverage"
 
     if any(token in lower_key for token in ("recommendation",)):
-        return "3rd Party Recommendation"
+        return "Price & Returns"
 
     return "Price & Returns"
 
 
 def _label_for_key(key: str) -> str:
     overrides = {
-        "3MonthAvgDailyReturnStdDev": "3MonthAvgDailyReturnVolatilityStdDev",
+        "3MonthAvgDailyReturnStdDev": "3MoAvgDailyReturnVolStdDev",
         "recommendation": "FinnhubRecommendation",
         "recommendation_counts": "FinnhubRecommendationCounts",
         "focfCagr5Y": "FreeOperatingCashFlowCagr5Y",
         "tbvCagr5Y": "TangibleBookValueCagr5Y",
     }
-    return overrides.get(key, _to_title_camel(key))
+    label = overrides.get(key, _to_title_camel(key))
+    max_len = len(overrides["3MonthAvgDailyReturnStdDev"])
+    if len(label) > max_len:
+        label = _shorten_label(label, max_len)
+    return label
 
 
 def _to_title_camel(value: str) -> str:
@@ -362,6 +564,41 @@ def _to_title_camel(value: str) -> str:
     spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", cleaned)
     parts = [part for part in spaced.split() if part]
     return "".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def _shorten_label(label: str, max_len: int) -> str:
+    replacements = [
+        ("Average", "Avg"),
+        ("Quarterly", "Qtr"),
+        ("Annual", "Ann"),
+        ("Revenue", "Rev"),
+        ("Profit", "Prof"),
+        ("Operating", "Op"),
+        ("Interest", "Int"),
+        ("Coverage", "Cov"),
+        ("Current", "Curr"),
+        ("Relative", "Rel"),
+        ("Volatility", "Vol"),
+        ("Return", "Ret"),
+        ("CashFlow", "CF"),
+        ("PerShare", "PerShr"),
+        ("Employee", "Emp"),
+        ("Share", "Shr"),
+        ("LongTerm", "LT"),
+        ("Total", "Tot"),
+        ("Equity", "Eq"),
+        ("Debt", "Debt"),
+        ("Tangible", "Tang"),
+        ("BookValue", "BV"),
+    ]
+    shortened = label
+    for old, new in replacements:
+        if len(shortened) <= max_len:
+            break
+        shortened = shortened.replace(old, new)
+    if len(shortened) > max_len:
+        shortened = shortened[: max_len - 1] + "…"
+    return shortened
 
 
 def _sort_key(key: str) -> Tuple[str, int, str]:
@@ -372,8 +609,10 @@ def _sort_key(key: str) -> Tuple[str, int, str]:
         "low_price": -88,
         "close_price": -87,
         "previous_close": -86,
-        "market_cap": -85,
+        "price_change_pct": -85,
         "volume": -84,
+        "turnover_rate": -83,
+        "market_cap": -82,
     }
     if key in priority:
         return ("", priority[key], key.lower())
