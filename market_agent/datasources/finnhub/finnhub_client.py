@@ -27,11 +27,6 @@ class FinnhubClient:
             default={},
         )
 
-    def recommendation_trends(self, symbol: str) -> List[Dict[str, Any]]:
-        return self._safe_call(
-            lambda: self._client.recommendation_trends(symbol), default=[]
-        )
-
     def earnings(self, symbol: str) -> Dict[str, Any]:
         data = self._safe_call(lambda: self._client.earnings(symbol), default=[])
         return {"data": data}

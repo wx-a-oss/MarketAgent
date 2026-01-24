@@ -31,9 +31,6 @@ class FinnhubIndicatorFetcher:
         profile = self._client.company_profile(symbol)
         financials = self._client.basic_financials(symbol)
         metrics: Dict[str, Any] = financials.get("metric") or {}
-        recommendations = (
-            self._client.recommendation_trends(symbol) if include_analysis else []
-        )
 
         extra: Dict[str, Any] = {}
         prev_close = self._to_optional_float(quote.get("pc"))
@@ -44,6 +41,7 @@ class FinnhubIndicatorFetcher:
             extra["quote_timestamp"] = timestamp
 
         market_cap = self._to_optional_float(profile.get("marketCapitalization"))
+        shares_outstanding = self._to_optional_float(profile.get("shareOutstanding"))
         beta = self._metric_float(metrics, "beta")
         short_interest_pct_float = self._metric_float(
             metrics,
@@ -105,22 +103,6 @@ class FinnhubIndicatorFetcher:
             if macd is not None:
                 extra["macd"] = macd
 
-            recommendation_summary = self._summarise_recommendation(recommendations)
-            if recommendation_summary:
-                extra["recommendation"] = recommendation_summary
-                latest_row = self._latest_row(recommendations)
-                if latest_row:
-                    extra["recommendation_counts"] = {
-                        key: latest_row.get(key)
-                        for key in (
-                            "strongBuy",
-                            "buy",
-                            "hold",
-                            "sell",
-                            "strongSell",
-                        )
-                        if latest_row.get(key) is not None
-                    }
 
         enterprise_value = None
         if market_cap is not None and total_debt is not None and cash_and_equivalents is not None:
@@ -138,13 +120,29 @@ class FinnhubIndicatorFetcher:
         if free_cash_flow is not None and net_income:
             cash_conversion = free_cash_flow / net_income
 
+        close_price = self._to_optional_float(quote.get("c"))
+        open_price = self._to_optional_float(quote.get("o"))
+        price_change_pct = None
+        if close_price is not None and prev_close:
+            price_change_pct = ((close_price - prev_close) / prev_close) * 100
+
+        turnover_rate = None
+        volume = self._to_optional_float(quote.get("v"))
+        if volume is not None and shares_outstanding is not None:
+            if shares_outstanding == 0:
+                turnover_rate = 0.0
+            else:
+                turnover_rate = volume / (shares_outstanding * 1_000_000)
+
         return StockBaseIndicators(
             symbol=symbol,
-            open_price=self._to_optional_float(quote.get("o")),
+            open_price=open_price,
             high_price=self._to_optional_float(quote.get("h")),
             low_price=self._to_optional_float(quote.get("l")),
-            close_price=self._to_optional_float(quote.get("c")),
+            close_price=close_price,
+            price_change_pct=price_change_pct,
             volume=self._to_optional_int(quote.get("v")),
+            turnover_rate=turnover_rate,
             market_cap=market_cap,
             enterprise_value=enterprise_value,
             beta=beta,
