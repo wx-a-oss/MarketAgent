@@ -81,7 +81,6 @@ def _group_indicators(data: Dict[str, object]) -> List[Tuple[str, List[Tuple[str
         "Balance Sheet",
         "Per-Share",
         "Leverage & Coverage",
-        "3rd Party Recommendation",
     ]
 
     grouped: List[Tuple[str, List[Tuple[str, object]]]] = []
@@ -137,20 +136,24 @@ def _classify_indicator(key: str) -> str:
         return "Leverage & Coverage"
 
     if any(token in lower_key for token in ("recommendation",)):
-        return "3rd Party Recommendation"
+        return "Price & Returns"
 
     return "Price & Returns"
 
 
 def _label_for_key(key: str) -> str:
     overrides = {
-        "3MonthAvgDailyReturnStdDev": "3MonthAvgDailyReturnVolatilityStdDev",
+        "3MonthAvgDailyReturnStdDev": "3MoAvgDailyReturnVolStdDev",
         "recommendation": "FinnhubRecommendation",
         "recommendation_counts": "FinnhubRecommendationCounts",
         "focfCagr5Y": "FreeOperatingCashFlowCagr5Y",
         "tbvCagr5Y": "TangibleBookValueCagr5Y",
     }
-    return overrides.get(key, _to_title_camel(key))
+    label = overrides.get(key, _to_title_camel(key))
+    max_len = len(overrides["3MonthAvgDailyReturnStdDev"])
+    if len(label) > max_len:
+        label = _shorten_label(label, max_len)
+    return label
 
 
 def _to_title_camel(value: str) -> str:
@@ -158,6 +161,41 @@ def _to_title_camel(value: str) -> str:
     spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", cleaned)
     parts = [part for part in spaced.split() if part]
     return "".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def _shorten_label(label: str, max_len: int) -> str:
+    replacements = [
+        ("Average", "Avg"),
+        ("Quarterly", "Qtr"),
+        ("Annual", "Ann"),
+        ("Revenue", "Rev"),
+        ("Profit", "Prof"),
+        ("Operating", "Op"),
+        ("Interest", "Int"),
+        ("Coverage", "Cov"),
+        ("Current", "Curr"),
+        ("Relative", "Rel"),
+        ("Volatility", "Vol"),
+        ("Return", "Ret"),
+        ("CashFlow", "CF"),
+        ("PerShare", "PerShr"),
+        ("Employee", "Emp"),
+        ("Share", "Shr"),
+        ("LongTerm", "LT"),
+        ("Total", "Tot"),
+        ("Equity", "Eq"),
+        ("Debt", "Debt"),
+        ("Tangible", "Tang"),
+        ("BookValue", "BV"),
+    ]
+    shortened = label
+    for old, new in replacements:
+        if len(shortened) <= max_len:
+            break
+        shortened = shortened.replace(old, new)
+    if len(shortened) > max_len:
+        shortened = shortened[: max_len - 1] + "…"
+    return shortened
 
 
 def _sort_key(key: str) -> Tuple[str, int, str]:
@@ -168,8 +206,10 @@ def _sort_key(key: str) -> Tuple[str, int, str]:
         "low_price": -88,
         "close_price": -87,
         "previous_close": -86,
-        "market_cap": -85,
+        "price_change_pct": -85,
         "volume": -84,
+        "turnover_rate": -83,
+        "market_cap": -82,
     }
     if key in priority:
         return ("", priority[key], key.lower())
