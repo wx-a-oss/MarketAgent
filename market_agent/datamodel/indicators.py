@@ -29,7 +29,13 @@ def _format_base_value(key: str, value: Any) -> Any:
         "previous_close",
     }
     volume_keys = {"volume"}
-    percent_keys = {"short_interest_pct_float", "fcf_margin", "cash_conversion"}
+    percent_keys = {
+        "short_interest_pct_float",
+        "fcf_margin",
+        "cash_conversion",
+        "price_change_pct",
+        "turnover_rate",
+    }
     ratio_keys = {"beta"}
     compact_currency_keys = {
         "market_cap",
@@ -222,7 +228,9 @@ class StockBaseIndicators:
     high_price: Optional[float] = None
     low_price: Optional[float] = None
     close_price: Optional[float] = None
+    price_change_pct: Optional[float] = None
     volume: Optional[int] = None
+    turnover_rate: Optional[float] = None
     market_cap: Optional[float] = None
     enterprise_value: Optional[float] = None
     beta: Optional[float] = None
@@ -246,7 +254,9 @@ class StockBaseIndicators:
             "low_price",
             "close_price",
             "previous_close",
+            "price_change_pct",
             "volume",
+            "turnover_rate",
             "market_cap",
             "enterprise_value",
             "beta",
@@ -265,7 +275,9 @@ class StockBaseIndicators:
             "high_price": self.high_price,
             "low_price": self.low_price,
             "close_price": self.close_price,
+            "price_change_pct": self.price_change_pct,
             "volume": self.volume,
+            "turnover_rate": self.turnover_rate,
             "market_cap": self.market_cap,
             "enterprise_value": self.enterprise_value,
             "beta": self.beta,
