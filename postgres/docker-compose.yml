@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  db:
+    build:
+      context: .
+    container_name: marketagent-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: market_agent
+      POSTGRES_USER: market_agent
+      POSTGRES_PASSWORD: market_agent_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -24,6 +24,18 @@ uvicorn frontend.web.server:app --reload
 # GET http://127.0.0.1:8000/stocks/AAPL
 ```
 
+### Postgres (company news)
+1) Start a local Postgres instance with Docker:
+   ```bash
+   cd postgres
+   docker compose up -d
+   ```
+2) (Optional) Initialize schema against any Postgres instance:
+   ```bash
+   export PGHOST=localhost PGPORT=5432 PGUSER=market_agent PGDATABASE=market_agent PGPASSWORD=market_agent_password
+   bash postgres/init_db.sh
+   ```
+
 ## Install
 
 1) Make sure you have Python 3.9+
