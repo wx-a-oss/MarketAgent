@@ -15,6 +15,33 @@ BASE_PAGE_STYLES = """
     input[type="text"] { flex: 1; padding: 0.65rem; border: 1px solid #ccc; border-radius: 0.5rem; }
     button { padding: 0.65rem 1.2rem; border: none; border-radius: 0.5rem; background: #2563eb; color: white; cursor: pointer; }
     button:hover { background: #1d4ed8; }
+    .report {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                     "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.65;
+        color: #111;
+    }
+    .report h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 8px;
+    }
+    .report h2 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 12px 0 6px;
+    }
+    .report ul {
+        padding-left: 16px;
+        margin: 0;
+    }
+    .report li {
+        margin-bottom: 6px;
+    }
+    .report strong {
+        font-weight: 600;
+    }
 """
 
 
@@ -40,7 +67,7 @@ def render_simple_query_page(title: str, placeholder: str, active: str) -> str:
                     {BASE_PAGE_STYLES}
                 </style>
             </head>
-            <body>
+            <body class="report">
                 {render_nav(active)}
                 <div class="container">
                     <section class="card">
