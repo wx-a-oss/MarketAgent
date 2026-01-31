@@ -9,17 +9,13 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Union
 
-from market_agent.analysis.stock.interfaces import AnalysisProvider
-from market_agent.analysis.stock.prompt import SYSTEM_PROMPT, build_user_prompt
-from market_agent.analysis.stock.schema import normalize_section_result
-
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_TIMEOUT_SEC = 30
 
 
 @dataclass(slots=True)
-class OpenAIProvider(AnalysisProvider):
+class OpenAIProvider:
     api_key: str
     model: str = DEFAULT_MODEL
     temperature: float = 0.2
@@ -27,6 +23,9 @@ class OpenAIProvider(AnalysisProvider):
     name: str = "openai"
 
     def analyze_section(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        from market_agent.analysis.stock.prompt import SYSTEM_PROMPT, build_user_prompt
+        from market_agent.analysis.stock.schema import normalize_section_result
+
         response_text = _openai_chat(
             api_key=self.api_key,
             model=self.model,
@@ -108,9 +107,27 @@ def _openai_chat(
     return content
 
 
+def chat_completion(
+    *,
+    api_key: str,
+    model: str,
+    temperature: float = 0.2,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    messages: Iterable[Dict[str, str]],
+) -> str:
+    return _openai_chat(
+        api_key=api_key,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+        messages=messages,
+    )
+
+
 __all__ = [
     "OpenAIProvider",
     "resolve_openai_provider",
+    "chat_completion",
     "DEFAULT_MODEL",
     "DEFAULT_TIMEOUT_SEC",
 ]

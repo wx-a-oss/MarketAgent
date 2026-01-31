@@ -1,5 +1,3 @@
 """LLM provider registry and shared interfaces."""
 
-from .registry import get_provider, list_models, list_providers
-
-__all__ = ["get_provider", "list_models", "list_providers"]
+# NOTE: keep this module import-light to avoid circular imports.

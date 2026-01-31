@@ -1,6 +1,6 @@
-"""Company analysis modules."""
+"""News data access and fetching utilities."""
 
-from .news import (
+from .service import (
     add_company_to_watchlist,
     delete_company_news,
     get_company_news,
