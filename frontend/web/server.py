@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 import re
+import json
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 
 from frontend.common import StockFrontendClient
+from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
-from market_agent.analysis import analyze_single_stock_sections, get_provider, list_models
+from market_agent.analysis.company.news import (
+    add_company_to_watchlist,
+    delete_company_news,
+    get_company_news,
+    get_news_report,
+    list_watchlist_companies,
+    refresh_company_news_for_range,
+    refresh_company_news_if_needed,
+    remove_company_from_watchlist,
+)
+from market_agent.analysis import analyze_single_stock_sections
+from market_agent.llms.registry import get_provider, list_models
 
 app = FastAPI(
     title="MarketAgent Web Frontend",
@@ -94,7 +108,9 @@ async def index(
             <head>
                 <title>MarketAgent – Stock Indicators</title>
                 <style>
-                    body {{ font-family: Arial, sans-serif; margin: 2rem; background: #f5f5f5; }}
+                    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                                "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+                           margin: 2rem; background: #f5f5f5; line-height: 1.65; color: #111; }}
                     nav {{ background: white; border-radius: 0.75rem; padding: 0.75rem 1.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 960px; margin: 0 auto 1.5rem; }}
                     nav a {{ margin-right: 1rem; text-decoration: none; color: #1f2937; font-weight: 600; }}
                     nav a.active {{ color: #2563eb; }}
@@ -123,7 +139,7 @@ async def index(
                     }}
                     .comparison-table td {{ padding-left: 0.5rem; }}
                     .comparison-wrap .comparison-table {{ margin: 0 auto; }}
-                    th, td {{ padding: 0.25rem 0.35rem; text-align: left; border-bottom: 1px solid #eee; }}
+                    th, td {{ padding: 0.4rem 0.35rem; text-align: left; border-bottom: 1px solid #eee; line-height: 1.65; }}
                     th {{ width: 40%; color: #555; }}
                     .muted {{ color: #888; }}
                     form {{ display: flex; gap: 0.5rem; }}
@@ -147,7 +163,7 @@ async def index(
                     #analysis-status {{ color: #666; font-size: 0.9rem; }}
                 </style>
             </head>
-            <body>
+            <body class="report">
                 {render_nav("stock")}
                 <div class="container">
                     <section class="card">
@@ -354,6 +370,85 @@ async def person() -> str:
     return render_person_page()
 
 
+@app.get("/company/{company_name}", response_class=HTMLResponse)
+async def company_detail(company_name: str) -> str:
+    return render_company_detail_page(company_name)
+
+
+@app.get("/api/companies")
+async def list_companies() -> Dict[str, Any]:
+    return {"companies": list_watchlist_companies()}
+
+
+@app.post("/api/companies")
+async def add_company(request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    company_name = str(payload.get("company_name", "")).strip()
+    if not company_name:
+        return {"error": "company_name is required"}
+    add_company_to_watchlist(company_name)
+    return {"ok": True}
+
+
+@app.delete("/api/companies/{company_name}")
+async def remove_company(company_name: str) -> Dict[str, Any]:
+    remove_company_from_watchlist(company_name)
+    return {"ok": True}
+
+
+@app.get("/api/company/{company_name}/news")
+async def company_news(company_name: str) -> Dict[str, Any]:
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups}
+
+
+@app.post("/api/company/{company_name}/refresh")
+async def refresh_company_news(
+    company_name: str,
+    week_date: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    today = datetime.now().date()
+    if week_date:
+        try:
+            selected = datetime.fromisoformat(week_date).date()
+        except ValueError:
+            return {"error": "week_date must be YYYY-MM-DD"}
+        week_start = selected - timedelta(days=selected.weekday())
+        week_end = week_start + timedelta(days=6)
+        if week_end > today:
+            week_end = today
+        refresh_company_news_for_range(
+            company_name,
+            start_date=week_start,
+            end_date=week_end,
+            provider_name=provider or "openai",
+            model=model or "gpt-5.2",
+        )
+    else:
+        week_start = today - timedelta(days=today.weekday())
+        refresh_company_news_for_range(
+            company_name,
+            start_date=week_start,
+            end_date=today,
+            provider_name=provider or "openai",
+            model=model or "gpt-5.2",
+        )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups}
+
+
+@app.delete("/api/company/{company_name}/news/{news_id}")
+async def delete_company_news_item(company_name: str, news_id: int) -> Dict[str, Any]:
+    delete_company_news(company_name, news_id=news_id)
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups}
+
+
 def _format_value(value: object) -> str:
     if value is None:
         return "-"
@@ -424,6 +519,84 @@ def _format_value_cell(value: object) -> str:
         )
         return lines or "-"
     return _format_value(value)
+
+
+def _group_news_items(
+    company_name: str,
+    articles: List[Any],
+) -> List[Dict[str, Any]]:
+    daily: Dict[date, List[Dict[str, Any]]] = {}
+    weekly: Dict[date, List[Dict[str, Any]]] = {}
+    today = datetime.now().date()
+
+    for article in articles:
+        news_date = article.news_date_time.date()
+        week_start = news_date - timedelta(days=news_date.weekday())
+        item = {
+            "id": article.id,
+            "news_title": article.news_title,
+            "news_date_time": article.news_date_time.isoformat(),
+            "news_source": article.news_source,
+            "news_source_link": article.news_source_link,
+            "content": _decode_news_content(
+                article.llm_analyzed_content,
+                article.original_content,
+            ),
+            "original_content": article.original_content,
+        }
+        daily.setdefault(news_date, []).append(item)
+        weekly.setdefault(week_start, []).append(item)
+
+    groups: List[Dict[str, Any]] = []
+    added_weeks: set[date] = set()
+    for day in sorted(daily.keys(), reverse=True):
+        week_start = day - timedelta(days=day.weekday())
+        week_end = week_start + timedelta(days=6)
+        if week_end < today and week_start not in added_weeks:
+            week_items = weekly.get(week_start, [])
+            report = get_news_report(
+                company_name,
+                beginning_date=week_start,
+                end_date=week_end,
+            )
+            week_label = f"Week of {week_start.isoformat()}"
+            groups.append(
+                {
+                    "type": "weekly",
+                    "key": f"week-{week_start.isoformat()}",
+                    "label": week_label,
+                    "items": week_items,
+                    "report": report,
+                    "report_start": week_start.isoformat(),
+                    "report_end": week_end.isoformat(),
+                }
+            )
+            added_weeks.add(week_start)
+
+        day_label = day.isoformat()
+        groups.append(
+            {
+                "type": "daily",
+                "key": f"day-{day.isoformat()}",
+                "label": day_label,
+                "items": daily[day],
+            }
+        )
+    return groups
+
+
+def _decode_news_content(
+    llm_content: Optional[str],
+    original_content: Optional[str],
+) -> Dict[str, Any]:
+    if llm_content:
+        try:
+            payload = json.loads(llm_content)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+    return {"summary": original_content or ""}
 
 
 def _group_indicators(data: Dict[str, object]) -> List[Tuple[str, List[Tuple[str, object]]]]:
@@ -627,7 +800,20 @@ def _strip_time_tokens(key: str) -> str:
         if key.startswith(prefix):
             key = key[len(prefix):]
             break
-    suffixes = ("TTM", "Annual", "Quarterly", "5Y", "3Y", "Yoy", "YTD", "Ytd")
+    suffixes = (
+        "TTM",
+        "Annual",
+        "Quarterly",
+        "5Y",
+        "3Y",
+        "Yoy",
+        "YTD",
+        "Ytd",
+        "4Week",
+        "13Week",
+        "26Week",
+        "52Week",
+    )
     for suffix in suffixes:
         if key.endswith(suffix):
             key = key[: -len(suffix)]
@@ -649,6 +835,10 @@ def _time_rank(key: str) -> int:
         if key.startswith(prefix):
             return rank
     suffix_ranks = {
+        "4Week": 28,
+        "13Week": 91,
+        "26Week": 182,
+        "52Week": 364,
         "Quarterly": 800,
         "Yoy": 820,
         "TTM": 900,
