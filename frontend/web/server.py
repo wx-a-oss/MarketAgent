@@ -11,14 +11,18 @@ from fastapi.responses import HTMLResponse
 from frontend.common import StockFrontendClient
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
+from frontend.web.crypto_page import render_crypto_page
+from frontend.web.global_page import render_global_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
 from market_agent.analysis.company.news import (
     add_company_to_watchlist,
     delete_company_news,
+    generate_weekly_report,
     get_company_news,
     get_news_report,
     list_watchlist_companies,
+    ensure_company_profile,
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
@@ -370,6 +374,16 @@ async def person() -> str:
     return render_person_page()
 
 
+@app.get("/global", response_class=HTMLResponse)
+async def global_page() -> str:
+    return render_global_page()
+
+
+@app.get("/crypto", response_class=HTMLResponse)
+async def crypto_page() -> str:
+    return render_crypto_page()
+
+
 @app.get("/company/{company_name}", response_class=HTMLResponse)
 async def company_detail(company_name: str) -> str:
     return render_company_detail_page(company_name)
@@ -398,6 +412,7 @@ async def remove_company(company_name: str) -> Dict[str, Any]:
 
 @app.get("/api/company/{company_name}/news")
 async def company_news(company_name: str) -> Dict[str, Any]:
+    ensure_company_profile(company_name)
     articles = get_company_news(company_name)
     groups = _group_news_items(company_name, articles)
     return {"company": company_name, "groups": groups}
@@ -407,35 +422,82 @@ async def company_news(company_name: str) -> Dict[str, Any]:
 async def refresh_company_news(
     company_name: str,
     week_date: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    today = datetime.now().date()
+    selected_source = source or "openai"
+    if selected_source == "finnhub" and (start_date or end_date):
+        if not start_date or not end_date:
+            return {"error": "start_date and end_date are required for finnhub"}
+        try:
+            start = datetime.fromisoformat(start_date).date()
+            end = datetime.fromisoformat(end_date).date()
+        except ValueError:
+            return {"error": "start_date and end_date must be YYYY-MM-DD"}
+        refresh_company_news_for_range(
+            company_name,
+            start_date=start,
+            end_date=end,
+            source_name=selected_source,
+            provider_name=provider or "openai",
+            model=model or "gpt-5.2",
+        )
+        articles = get_company_news(company_name)
+        groups = _group_news_items(company_name, articles)
+        return {"company": company_name, "groups": groups}
+    if selected_source == "finnhub":
+        return {"error": "start_date and end_date are required for finnhub"}
+
+    selected = None
     if week_date:
         try:
             selected = datetime.fromisoformat(week_date).date()
         except ValueError:
             return {"error": "week_date must be YYYY-MM-DD"}
-        week_start = selected - timedelta(days=selected.weekday())
-        week_end = week_start + timedelta(days=6)
+    if selected is None:
+        selected = datetime.now().date()
+    week_start = selected - timedelta(days=selected.weekday())
+    week_end = week_start + timedelta(days=6)
+    if selected_source == "openai":
+        today = datetime.now().date()
         if week_end > today:
             week_end = today
-        refresh_company_news_for_range(
-            company_name,
-            start_date=week_start,
-            end_date=week_end,
-            provider_name=provider or "openai",
-            model=model or "gpt-5.2",
-        )
-    else:
-        week_start = today - timedelta(days=today.weekday())
-        refresh_company_news_for_range(
-            company_name,
-            start_date=week_start,
-            end_date=today,
-            provider_name=provider or "openai",
-            model=model or "gpt-5.2",
-        )
+    refresh_company_news_for_range(
+        company_name,
+        start_date=week_start,
+        end_date=week_end,
+        source_name=selected_source,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups}
+
+
+@app.post("/api/company/{company_name}/report")
+async def generate_company_report(
+    company_name: str,
+    week_date: str = Query(...),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        selected = datetime.fromisoformat(week_date).date()
+    except ValueError:
+        return {"error": "week_date must be YYYY-MM-DD"}
+    week_start = selected - timedelta(days=selected.weekday())
+    week_end = week_start + timedelta(days=6)
+    generate_weekly_report(
+        company_name,
+        start_date=week_start,
+        end_date=week_end,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
     articles = get_company_news(company_name)
     groups = _group_news_items(company_name, articles)
     return {"company": company_name, "groups": groups}
@@ -544,6 +606,7 @@ def _group_news_items(
             ),
             "original_content": article.original_content,
         }
+        item["publisher"] = item["content"].get("publisher")
         daily.setdefault(news_date, []).append(item)
         weekly.setdefault(week_start, []).append(item)
 
@@ -552,7 +615,7 @@ def _group_news_items(
     for day in sorted(daily.keys(), reverse=True):
         week_start = day - timedelta(days=day.weekday())
         week_end = week_start + timedelta(days=6)
-        if week_end < today and week_start not in added_weeks:
+        if week_start not in added_weeks:
             week_items = weekly.get(week_start, [])
             report = get_news_report(
                 company_name,

@@ -50,6 +50,8 @@ def render_nav(active: str) -> str:
         ("stock", "/", "Stock"),
         ("company", "/company", "Company"),
         ("person", "/person", "Person"),
+        ("global", "/global", "Global"),
+        ("crypto", "/crypto", "Crypto"),
     ]
     links = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
