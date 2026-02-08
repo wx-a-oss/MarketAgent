@@ -219,6 +219,11 @@ def render_company_detail_page(company_name: str) -> str:
                         border-color: #fecaca;
                         background: #fef2f2;
                     }}
+                    .news-action-btn.summarize {{
+                        color: #0f766e;
+                        border-color: #99f6e4;
+                        background: #f0fdfa;
+                    }}
                     .news-source-tag {{
                         position: absolute;
                         top: -0.45rem;
@@ -327,6 +332,7 @@ def render_company_detail_page(company_name: str) -> str:
                                         ${{contentLines.join("")}}
                                         <div class="news-actions">
                                             <button class="news-action-btn original" type="button">Original</button>
+                                            ${{!item.is_analyzed ? '<button class="news-action-btn summarize" type="button">Summarize</button>' : ''}}
                                             <button class="news-action-btn delete" type="button">Remove</button>
                                         </div>
                                     </div>
@@ -375,6 +381,28 @@ def render_company_detail_page(company_name: str) -> str:
                                     method: "DELETE",
                                 }});
                                 loadNews();
+                            }});
+                        }});
+                        contentEl.querySelectorAll(".news-action-btn.summarize").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const actionButton = event.target;
+                                const card = actionButton.closest(".news-card");
+                                const newsId = card ? card.dataset.newsId : null;
+                                if (!newsId) {{
+                                    return;
+                                }}
+                                actionButton.disabled = true;
+                                actionButton.textContent = "Summarizing...";
+                                try {{
+                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}/summarize`, {{
+                                        method: "POST",
+                                    }});
+                                    loadNews();
+                                }} finally {{
+                                    actionButton.disabled = false;
+                                    actionButton.textContent = "Summarize";
+                                }}
                             }});
                         }});
                     }}

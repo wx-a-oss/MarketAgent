@@ -12,6 +12,7 @@ from .news import (
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
+    summarize_company_news_item,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "ensure_company_profile",
     "refresh_company_news_for_range",
     "refresh_company_news_if_needed",
+    "summarize_company_news_item",
 ]

@@ -36,6 +36,41 @@ def render_company_page() -> str:
                         border: 1px solid #c7d2fe;
                     }}
                     .company-button:hover {{ background: #e0e7ff; }}
+                    .company-meta {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        min-width: 0;
+                    }}
+                    .ticker-edit-btn {{
+                        border: 1px solid #f59e0b;
+                        background: #fff7ed;
+                        color: #b45309;
+                        border-radius: 0.5rem;
+                        padding: 0.3rem 0.6rem;
+                        font-size: 0.8rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .ticker-edit-btn.filled {{
+                        border-color: #ea580c;
+                        background: #ffedd5;
+                        color: #9a3412;
+                    }}
+                    .ticker-edit-btn:hover {{
+                        border-color: #c2410c;
+                        background: #fed7aa;
+                    }}
+                    .ticker-input {{
+                        width: 110px;
+                        border: 1px solid #f59e0b;
+                        border-radius: 0.5rem;
+                        padding: 0.3rem 0.55rem;
+                        font-size: 0.8rem;
+                        outline: none;
+                        text-transform: uppercase;
+                        background: #fff7ed;
+                    }}
                     .remove-btn {{ background: transparent; color: #ef4444; border: none; cursor: pointer; }}
                     .remove-btn:hover {{ color: #b91c1c; }}
                     #company-list {{ margin-top: 1rem; }}
@@ -61,21 +96,42 @@ def render_company_page() -> str:
                     async function loadCompanies() {{
                         const response = await fetch("/api/companies");
                         const payload = await response.json();
-                        const companies = payload.companies || [];
+                        const companies = (payload.companies || []).map((item) =>
+                            typeof item === "string"
+                                ? {{ company_name: item, ticker: "" }}
+                                : item
+                        );
                         if (!companies.length) {{
                             listEl.innerHTML = '<p class="muted">No companies added yet.</p>';
                             return;
                         }}
                         listEl.innerHTML = companies
                             .map(
-                                (name) => `
+                                (item) => {{
+                                    const name = item.company_name || "";
+                                    const ticker = normalizeTicker(item.ticker || "");
+                                    return `
                                     <div class="list-item">
-                                        <a class="company-button" href="/company/${{encodeURIComponent(name)}}">${{capitalizeName(name)}}</a>
-                                        <button class="remove-btn" data-name="${{name}}">Remove</button>
+                                        <div class="company-meta">
+                                            <a class="company-button" href="/company/${{encodeURIComponent(name)}}">${{escapeHtml(capitalizeName(name))}}</a>
+                                            <button
+                                                class="ticker-edit-btn ${{ticker ? "filled" : ""}}"
+                                                data-company="${{escapeHtml(name)}}"
+                                                data-ticker="${{escapeHtml(ticker)}}"
+                                                title="Click to edit ticker"
+                                            >${{formatTicker(ticker)}}</button>
+                                        </div>
+                                        <button class="remove-btn" data-name="${{escapeHtml(name)}}">Remove</button>
                                     </div>
                                 `
+                                }}
                             )
                             .join("");
+
+                        listEl.querySelectorAll(".ticker-edit-btn").forEach((button) => {{
+                            button.addEventListener("click", () => startTickerEdit(button));
+                        }});
+
                         listEl.querySelectorAll(".remove-btn").forEach((button) => {{
                             button.addEventListener("click", async () => {{
                                 const company = button.dataset.name;
@@ -95,7 +151,9 @@ def render_company_page() -> str:
                         }}
                         const response = await fetch("/api/companies");
                         const payload = await response.json();
-                        const companies = payload.companies || [];
+                        const companies = (payload.companies || []).map((item) =>
+                            typeof item === "string" ? item : item.company_name
+                        );
                         if (!companies.includes(name)) {{
                             await fetch("/api/companies", {{
                                 method: "POST",
@@ -110,11 +168,68 @@ def render_company_page() -> str:
 
                     loadCompanies();
 
+                    function startTickerEdit(button) {{
+                        const companyName = button.dataset.company || "";
+                        const currentTicker = normalizeTicker(button.dataset.ticker || "");
+                        const input = document.createElement("input");
+                        input.type = "text";
+                        input.className = "ticker-input";
+                        input.value = currentTicker;
+                        input.placeholder = "Ticker";
+                        input.maxLength = 16;
+                        button.replaceWith(input);
+                        input.focus();
+                        input.select();
+
+                        const save = async () => {{
+                            const nextTicker = normalizeTicker(input.value);
+                            await fetch(`/api/company/${{encodeURIComponent(companyName)}}/ticker`, {{
+                                method: "PUT",
+                                headers: {{
+                                    "Content-Type": "application/json",
+                                }},
+                                body: JSON.stringify({{ ticker: nextTicker || null }}),
+                            }});
+                            loadCompanies();
+                        }};
+
+                        input.addEventListener("keydown", async (event) => {{
+                            if (event.key === "Enter") {{
+                                event.preventDefault();
+                                await save();
+                            }}
+                            if (event.key === "Escape") {{
+                                event.preventDefault();
+                                loadCompanies();
+                            }}
+                        }});
+
+                        input.addEventListener("blur", () => {{
+                            loadCompanies();
+                        }});
+                    }}
+
                     function capitalizeName(name) {{
                         if (!name) {{
                             return "";
                         }}
                         return name.charAt(0).toUpperCase() + name.slice(1);
+                    }}
+
+                    function normalizeTicker(ticker) {{
+                        return (ticker || "").trim().toUpperCase();
+                    }}
+
+                    function formatTicker(ticker) {{
+                        return ticker ? `${{ticker}}` : "Set ticker";
+                    }}
+
+                    function escapeHtml(value) {{
+                        return String(value)
+                            .replaceAll("&", "&amp;")
+                            .replaceAll("<", "&lt;")
+                            .replaceAll(">", "&gt;")
+                            .replaceAll('"', "&quot;");
                     }}
                 </script>
             </body>

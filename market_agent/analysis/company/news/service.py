@@ -18,8 +18,10 @@ from market_agent.news_sources import get_news_source
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_PROVIDER = "openai"
 DEFAULT_SOURCE = "openai"
+FINNHUB_AUTO_ANALYZE_LIMIT = 10
 
 logger = logging.getLogger("uvicorn.error")
+_SCHEMA_READY = False
 
 
 def list_watchlist_companies() -> List[str]:
@@ -29,6 +31,44 @@ def list_watchlist_companies() -> List[str]:
                 "SELECT company_name FROM company_watchlist ORDER BY added_at DESC"
             )
             return [row["company_name"] for row in cur.fetchall()]
+
+
+def list_watchlist_company_rows() -> List[Dict[str, Optional[str]]]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    w.company_name,
+                    p.ticker
+                FROM company_watchlist AS w
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(
+                            cp.ticker,
+                            cp.properties_extension->>'symbol',
+                            cp.properties_extension->>'ticker'
+                        ) AS ticker
+                    FROM company_profile AS cp
+                    WHERE cp.company_name = w.company_name
+                       OR LOWER(cp.company_name) = LOWER(w.company_name)
+                    ORDER BY
+                        CASE WHEN cp.company_name = w.company_name THEN 0 ELSE 1 END,
+                        cp.fetched_at DESC
+                    LIMIT 1
+                ) AS p ON TRUE
+                ORDER BY w.added_at DESC
+                """
+            )
+            rows = []
+            for row in cur.fetchall():
+                rows.append(
+                    {
+                        "company_name": row["company_name"],
+                        "ticker": _normalize_ticker(row.get("ticker")),
+                    }
+                )
+            return rows
 
 
 def add_company_to_watchlist(company_name: str) -> None:
@@ -67,33 +107,45 @@ def get_company_news(
     *,
     llm_model: str = DEFAULT_MODEL,
 ) -> List[NewsArticle]:
+    _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT a.id,
-                       a.company_name,
-                       a.news_date_time,
-                       a.news_title,
-                       r.content AS original_content,
-                       a.content AS llm_analyzed_content,
-                       COALESCE(a.source_link, r.source_link) AS news_source_link,
-                       COALESCE(a.source, r.source) AS news_source
-                FROM company_news_analyzed AS a
-                LEFT JOIN company_news_raw AS r
-                  ON r.company_name = a.company_name
-                 AND r.news_title = a.news_title
-                 AND r.news_date_time = a.news_date_time
-                WHERE a.company_name = %s
-                  AND a.llm_model = %s
-                ORDER BY a.news_date_time DESC, a.id DESC
+                SELECT
+                    r.id AS raw_id,
+                    r.company_name,
+                    r.news_date_time,
+                    r.news_title,
+                    r.content AS original_content,
+                    a.content AS llm_analyzed_content,
+                    COALESCE(a.source_link, r.source_link) AS news_source_link,
+                    COALESCE(a.source, r.source) AS news_source,
+                    COALESCE(r.is_analyzed, FALSE) AS is_analyzed
+                FROM company_news_raw AS r
+                LEFT JOIN LATERAL (
+                    SELECT
+                        aa.content,
+                        aa.source_link,
+                        aa.source
+                    FROM company_news_analyzed AS aa
+                    WHERE aa.company_name = r.company_name
+                      AND aa.news_title = r.news_title
+                      AND aa.news_date_time = r.news_date_time
+                    ORDER BY
+                        CASE WHEN aa.llm_model = %s THEN 0 ELSE 1 END,
+                        aa.id DESC
+                    LIMIT 1
+                ) AS a ON TRUE
+                WHERE r.company_name = %s
+                ORDER BY r.news_date_time DESC, r.id DESC
                 """,
-                (company_name, llm_model),
+                (llm_model, company_name),
             )
             return [
                 NewsArticle(
-                    id=row["id"],
+                    id=row["raw_id"],
                     company_name=row["company_name"],
                     news_date_time=row["news_date_time"],
                     news_title=row["news_title"],
@@ -101,6 +153,7 @@ def get_company_news(
                     llm_analyzed_content=row["llm_analyzed_content"],
                     news_source_link=row["news_source_link"],
                     news_source=row["news_source"],
+                    is_analyzed=bool(row["is_analyzed"]),
                 )
                 for row in cur.fetchall()
             ]
@@ -139,6 +192,7 @@ def get_company_news_for_range(
     end_date: date,
     llm_model: str = DEFAULT_MODEL,
 ) -> List[NewsArticle]:
+    _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
     start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
@@ -146,30 +200,41 @@ def get_company_news_for_range(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT a.id,
-                       a.company_name,
-                       a.news_date_time,
-                       a.news_title,
-                       r.content AS original_content,
-                       a.content AS llm_analyzed_content,
-                       COALESCE(a.source_link, r.source_link) AS news_source_link,
-                       COALESCE(a.source, r.source) AS news_source
-                FROM company_news_analyzed AS a
-                LEFT JOIN company_news_raw AS r
-                  ON r.company_name = a.company_name
-                 AND r.news_title = a.news_title
-                 AND r.news_date_time = a.news_date_time
-                WHERE a.company_name = %s
-                  AND a.llm_model = %s
-                  AND a.news_date_time >= %s
-                  AND a.news_date_time < %s
-                ORDER BY a.news_date_time DESC, a.id DESC
+                SELECT
+                    r.id AS raw_id,
+                    r.company_name,
+                    r.news_date_time,
+                    r.news_title,
+                    r.content AS original_content,
+                    a.content AS llm_analyzed_content,
+                    COALESCE(a.source_link, r.source_link) AS news_source_link,
+                    COALESCE(a.source, r.source) AS news_source,
+                    COALESCE(r.is_analyzed, FALSE) AS is_analyzed
+                FROM company_news_raw AS r
+                LEFT JOIN LATERAL (
+                    SELECT
+                        aa.content,
+                        aa.source_link,
+                        aa.source
+                    FROM company_news_analyzed AS aa
+                    WHERE aa.company_name = r.company_name
+                      AND aa.news_title = r.news_title
+                      AND aa.news_date_time = r.news_date_time
+                    ORDER BY
+                        CASE WHEN aa.llm_model = %s THEN 0 ELSE 1 END,
+                        aa.id DESC
+                    LIMIT 1
+                ) AS a ON TRUE
+                WHERE r.company_name = %s
+                  AND r.news_date_time >= %s
+                  AND r.news_date_time < %s
+                ORDER BY r.news_date_time DESC, r.id DESC
                 """,
-                (company_name, llm_model, start_dt, end_dt),
+                (llm_model, company_name, start_dt, end_dt),
             )
             return [
                 NewsArticle(
-                    id=row["id"],
+                    id=row["raw_id"],
                     company_name=row["company_name"],
                     news_date_time=row["news_date_time"],
                     news_title=row["news_title"],
@@ -177,6 +242,7 @@ def get_company_news_for_range(
                     llm_analyzed_content=row["llm_analyzed_content"],
                     news_source_link=row["news_source_link"],
                     news_source=row["news_source"],
+                    is_analyzed=bool(row["is_analyzed"]),
                 )
                 for row in cur.fetchall()
             ]
@@ -210,7 +276,12 @@ def generate_weekly_report(
     if not articles:
         return None
     items = []
+    seen_keys: set[tuple[str, datetime]] = set()
     for article in articles:
+        article_key = (article.news_title, article.news_date_time)
+        if article_key in seen_keys:
+            continue
+        seen_keys.add(article_key)
         content = _decode_llm_content(
             article.llm_analyzed_content,
             article.original_content,
@@ -232,6 +303,77 @@ def generate_weekly_report(
         report_payload=report,
     )
     return report
+
+
+def summarize_company_news_item(
+    company_name: str,
+    *,
+    news_id: int,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.2,
+    timeout_sec: int = 60,
+) -> bool:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return False
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    company_name,
+                    news_date_time,
+                    news_title,
+                    content,
+                    source,
+                    source_link
+                FROM company_news_raw
+                WHERE company_name = %s
+                  AND id = %s
+                """,
+                (company_name, news_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        return False
+
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    start_date = row["news_date_time"].date().isoformat()
+    end_date = start_date
+    analyzed = provider.analyze_news_items(
+        company_name=company_name,
+        start_date=start_date,
+        end_date=end_date,
+        items=[
+            {
+                "news_date_time": row["news_date_time"].isoformat(),
+                "news_title": row["news_title"],
+                "original_content": row["content"],
+                "news_source_link": row["source_link"],
+                "news_source": row["source"],
+            }
+        ],
+    )
+    if not analyzed:
+        return False
+
+    article = _news_item_from_payload(
+        company_name,
+        analyzed[0],
+        end_date=row["news_date_time"].date(),
+        analyzed=True,
+    )
+    _store_articles([article], llm_model=model)
+    return True
 
 
 def get_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
@@ -271,6 +413,32 @@ def get_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
             if isinstance(extra, dict):
                 profile.update(extra)
             return profile
+
+
+def set_company_ticker(company_name: str, ticker: Optional[str]) -> Optional[Dict[str, Any]]:
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return None
+    normalized_ticker = _normalize_ticker(ticker)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO company_profile (
+                    company_name,
+                    ticker,
+                    fetched_at
+                )
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (company_name)
+                DO UPDATE SET
+                    ticker = EXCLUDED.ticker,
+                    fetched_at = NOW()
+                """,
+                (company_name, normalized_ticker),
+            )
+        conn.commit()
+    return get_company_profile(company_name)
 
 
 def ensure_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
@@ -366,45 +534,70 @@ def ensure_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
 
 
 def delete_company_news(company_name: str, *, news_id: int) -> None:
+    _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT news_title, news_date_time
-                FROM company_news_analyzed
+                FROM company_news_raw
                 WHERE company_name = %s AND id = %s
                 """,
                 (company_name, news_id),
             )
             row = cur.fetchone()
-            if not row:
-                return
-            cur.execute(
-                "DELETE FROM company_news_analyzed WHERE company_name = %s AND id = %s",
-                (company_name, news_id),
-            )
-            cur.execute(
-                """
-                SELECT 1
-                FROM company_news_analyzed
-                WHERE company_name = %s
-                  AND news_title = %s
-                  AND news_date_time = %s
-                LIMIT 1
-                """,
-                (company_name, row["news_title"], row["news_date_time"]),
-            )
-            if cur.fetchone() is None:
+            if row:
                 cur.execute(
                     """
-                    DELETE FROM company_news_raw
+                    DELETE FROM company_news_analyzed
                     WHERE company_name = %s
                       AND news_title = %s
                       AND news_date_time = %s
                     """,
                     (company_name, row["news_title"], row["news_date_time"]),
                 )
+                cur.execute(
+                    "DELETE FROM company_news_raw WHERE company_name = %s AND id = %s",
+                    (company_name, news_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT news_title, news_date_time
+                    FROM company_news_analyzed
+                    WHERE company_name = %s AND id = %s
+                    """,
+                    (company_name, news_id),
+                )
+                old_row = cur.fetchone()
+                if not old_row:
+                    return
+                cur.execute(
+                    "DELETE FROM company_news_analyzed WHERE company_name = %s AND id = %s",
+                    (company_name, news_id),
+                )
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM company_news_analyzed
+                    WHERE company_name = %s
+                      AND news_title = %s
+                      AND news_date_time = %s
+                    LIMIT 1
+                    """,
+                    (company_name, old_row["news_title"], old_row["news_date_time"]),
+                )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        """
+                        DELETE FROM company_news_raw
+                        WHERE company_name = %s
+                          AND news_title = %s
+                          AND news_date_time = %s
+                        """,
+                        (company_name, old_row["news_title"], old_row["news_date_time"]),
+                    )
         conn.commit()
 
 
@@ -438,16 +631,21 @@ def refresh_company_news_if_needed(
         temperature=temperature,
         timeout_sec=timeout_sec,
     )
-    articles = _fetch_news_with_source(
+    items, analyzed = _fetch_news_with_source(
         source_name,
         provider,
         company_name=company_name,
         start_date=start_date,
         end_date=end_date,
     )
-    if articles:
+    if items:
         _store_articles(
-            _news_items_from_provider(company_name, articles, end_date=end_date),
+            _news_items_from_provider(
+                company_name,
+                items,
+                end_date=end_date,
+                analyzed=analyzed,
+            ),
             llm_model=model,
         )
 
@@ -475,16 +673,21 @@ def refresh_company_news_for_range(
         temperature=temperature,
         timeout_sec=timeout_sec,
     )
-    articles = _fetch_news_with_source(
+    items, analyzed = _fetch_news_with_source(
         source_name,
         provider,
         company_name=company_name,
         start_date=start_date,
         end_date=end_date,
     )
-    if articles:
+    if items:
         _store_articles(
-            _news_items_from_provider(company_name, articles, end_date=end_date),
+            _news_items_from_provider(
+                company_name,
+                items,
+                end_date=end_date,
+                analyzed=analyzed,
+            ),
             llm_model=model,
         )
 
@@ -496,6 +699,7 @@ def _news_item_from_payload(
     item: Dict[str, Any],
     *,
     end_date: date,
+    analyzed: bool,
 ) -> NewsArticle:
     news_date_time = _parse_date_time(item.get("news_date_time"), end_date=end_date)
     original_content = _as_text(item.get("original_content"))
@@ -518,9 +722,10 @@ def _news_item_from_payload(
         news_date_time=news_date_time,
         news_title=str(item.get("news_title") or "Untitled"),
         original_content=original_content or _as_text(item.get("summary")),
-        llm_analyzed_content=json.dumps(content),
+        llm_analyzed_content=json.dumps(content) if analyzed else None,
         news_source_link=_as_text(item.get("news_source_link")),
         news_source=_as_text(item.get("news_source")),
+        is_analyzed=analyzed,
     )
 
 
@@ -529,9 +734,15 @@ def _news_items_from_provider(
     items: List[Dict[str, Any]],
     *,
     end_date: date,
+    analyzed: bool,
 ) -> List[NewsArticle]:
     return [
-        _news_item_from_payload(company_name, item, end_date=end_date)
+        _news_item_from_payload(
+            company_name,
+            item,
+            end_date=end_date,
+            analyzed=analyzed,
+        )
         for item in items
     ]
 
@@ -543,14 +754,14 @@ def _fetch_news_with_source(
     company_name: str,
     start_date: date,
     end_date: date,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], bool]:
     if source_name == "openai":
         items = provider.fetch_news(
             company_name=company_name,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
         )
-        return _tag_source(items, "openai")
+        return _tag_source(items, "openai"), True
     if source_name == "finnhub":
         ticker = _resolve_company_ticker(company_name) or company_name
         source = get_news_source("finnhub")
@@ -561,7 +772,15 @@ def _fetch_news_with_source(
             end_date=end_date.isoformat(),
         )
         logger.info("Finnhub raw items: %d for %s", len(raw_items), company_name)
-        batch_size = 10
+        if len(raw_items) > FINNHUB_AUTO_ANALYZE_LIMIT:
+            logger.info(
+                "Skipping auto-analysis for %s: %d raw items > limit %d",
+                company_name,
+                len(raw_items),
+                FINNHUB_AUTO_ANALYZE_LIMIT,
+            )
+            return _tag_source(raw_items, "finnhub"), False
+        batch_size = 5
         max_parallel_batches = 2
         analyzed_items: List[Dict[str, Any]] = []
         batches: List[List[Dict[str, Any]]] = [
@@ -600,7 +819,7 @@ def _fetch_news_with_source(
                 )
                 analyzed_items.extend(batch_result)
         logger.info("Finnhub analyzed items: %d for %s", len(analyzed_items), company_name)
-        return _tag_source(analyzed_items, "finnhub")
+        return _tag_source(analyzed_items, "finnhub"), True
     raise ValueError(f"Unknown news source: {source_name}")
 
 
@@ -670,31 +889,41 @@ def _get_latest_news_date(company_name: str) -> Optional[datetime]:
 
 
 def _store_articles(articles: Iterable[NewsArticle], *, llm_model: str) -> None:
+    _ensure_news_schema()
     with get_connection() as conn:
         with conn.cursor() as cur:
             for article in articles:
-                if not _exists_raw_article(cur, article):
-                    cur.execute(
-                        """
-                        INSERT INTO company_news_raw (
-                            company_name,
-                            news_date_time,
-                            news_title,
-                            content,
-                            source,
-                            source_link
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            article.company_name,
-                            article.news_date_time,
-                            article.news_title,
-                            article.original_content,
-                            article.news_source,
-                            article.news_source_link,
-                        ),
+                cur.execute(
+                    """
+                    INSERT INTO company_news_raw (
+                        company_name,
+                        news_date_time,
+                        news_title,
+                        content,
+                        source,
+                        source_link,
+                        is_analyzed
                     )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (company_name, news_title, news_date_time)
+                    DO UPDATE SET
+                        content = COALESCE(EXCLUDED.content, company_news_raw.content),
+                        source = COALESCE(EXCLUDED.source, company_news_raw.source),
+                        source_link = COALESCE(EXCLUDED.source_link, company_news_raw.source_link),
+                        is_analyzed = company_news_raw.is_analyzed OR EXCLUDED.is_analyzed
+                    """,
+                    (
+                        article.company_name,
+                        article.news_date_time,
+                        article.news_title,
+                        article.original_content,
+                        article.news_source,
+                        article.news_source_link,
+                        bool(article.is_analyzed),
+                    ),
+                )
+                if not article.llm_analyzed_content:
+                    continue
                 if _exists_analyzed_article(cur, article, llm_model=llm_model):
                     continue
                 cur.execute(
@@ -719,6 +948,16 @@ def _store_articles(articles: Iterable[NewsArticle], *, llm_model: str) -> None:
                         article.news_source_link,
                         llm_model,
                     ),
+                )
+                cur.execute(
+                    """
+                    UPDATE company_news_raw
+                    SET is_analyzed = TRUE
+                    WHERE company_name = %s
+                      AND news_title = %s
+                      AND news_date_time = %s
+                    """,
+                    (article.company_name, article.news_title, article.news_date_time),
                 )
         conn.commit()
 
@@ -787,6 +1026,13 @@ def _normalize_company_name(name: str) -> str:
     return normalized[:1].upper() + normalized[1:]
 
 
+def _normalize_ticker(ticker: Optional[str]) -> Optional[str]:
+    if ticker is None:
+        return None
+    normalized = str(ticker).strip().upper()
+    return normalized or None
+
+
 def _resolve_company_ticker(company_name: str) -> Optional[str]:
     profile = get_company_profile(company_name)
     if not profile:
@@ -820,6 +1066,35 @@ def _extract_profile_extension(profile: Dict[str, Any]) -> Dict[str, Any]:
         "lei",
     }
     return {key: value for key, value in profile.items() if key not in known}
+
+
+def _ensure_news_schema() -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE company_news_raw
+                ADD COLUMN IF NOT EXISTS is_analyzed BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+            cur.execute(
+                """
+                UPDATE company_news_raw AS r
+                SET is_analyzed = TRUE
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM company_news_analyzed AS a
+                    WHERE a.company_name = r.company_name
+                      AND a.news_title = r.news_title
+                      AND a.news_date_time = r.news_date_time
+                )
+                """
+            )
+        conn.commit()
+    _SCHEMA_READY = True
 
 
 def _resolve_symbol_from_lookup(

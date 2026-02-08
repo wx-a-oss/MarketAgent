@@ -13,7 +13,8 @@ class NewsArticle:
     news_date_time: datetime
     news_title: str
     original_content: Optional[str]
-    llm_analyzed_content: str
+    llm_analyzed_content: Optional[str] = None
     news_source_link: Optional[str] = None
     news_source: Optional[str] = None
     id: Optional[int] = None
+    is_analyzed: bool = False

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS company_news_raw (
     content TEXT,
     source TEXT,
     source_link TEXT,
+    is_analyzed BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (company_name, id)
 );
 

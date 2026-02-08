@@ -1,114 +1,71 @@
-# MarketAgent
+# MarketAgent (Development)
 
-A small but extensible Python project/CLI that fetches **stock** and **company** information using the **Finnhub** API.
+## 0) Clone
 
-## Features (v0.2.0)
-- Unified `query_stock` API returning a structured `QueryStockOutput` payload that both CLI and web front-ends can consume.
-- FastAPI service surface at `market_agent.api.http:app` with `/stocks/{symbol}` and `/healthz` routes.
-- Extensible fetcher architecture (starting with Finnhub) to integrate alternative data providers without changing consumers.
-- Dedicated frontend demos (CLI + HTML web) under `frontend/` reusing a shared client for consistent business logic.
-
-### Python usage
-```python
-from market_agent import query_stock
-
-snapshot = query_stock("AAPL")
-print(snapshot.type)         # "stock.query"
-print(snapshot.metadata)
-print(snapshot.data.metrics)
-```
-
-### FastAPI service (optional)
 ```bash
-uvicorn frontend.web.server:app --reload
-# GET http://127.0.0.1:8000/stocks/AAPL
+git clone https://github.com/wx-a-oss/MarketAgent.git
+cd MarketAgent
 ```
 
-### Postgres (company news)
-1) Start a local Postgres instance with Docker:
-   ```bash
-   cd postgres
-   docker compose up -d
-   ```
-2) (Optional) Initialize schema against any Postgres instance:
-   ```bash
-   export PGHOST=localhost PGPORT=5432 PGUSER=market_agent PGDATABASE=market_agent PGPASSWORD=market_agent_password
-   bash postgres/init_db.sh
-   ```
+## 1) Environment Setup
 
-## Install
-
-1) Make sure you have Python 3.9+
-2) Get a **Finnhub API key** (free tier available) and set it:
-   ```bash
-   export FINNHUB_API_KEY="YOUR_KEY"
-   # or create a .env file in the project root with:
-   # FINNHUB_API_KEY=YOUR_KEY
-   ```
-3) Install in editable mode:
-   ```bash
-   pip install -e .
-   ```
-
-## CLI Usage
 ```bash
-marketagent check AAPL
-marketagent check MSFT --format json
-marketagent check TSLA --raw   # print raw JSON blobs (debug)
+# create once (if needed)
+conda create -n market_agent_env python=3.13 -y
+conda activate market_agent_env
+pip install -e .
 ```
 
-## Project Layout
-```
-MarketAgent/
-├── market_agent/
-│   ├── __init__.py
-│   ├── agent.py
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── http.py
-│   │   └── stocks.py
-│   ├── cli/
-│   │   └── app.py
-│   ├── config.py
-│   ├── datasources/
-│   │   ├── __init__.py
-│   │   └── finnhub/
-│   │       ├── __init__.py
-│   │       └── finnhub_client.py
-│   ├── fetchers/
-│   │   ├── __init__.py
-│   │   ├── base.py
-│   │   └── finnhub.py
-│   └── models/
-│       ├── __init__.py
-│       ├── base.py
-│       └── stock.py
-├── frontend/
-│   ├── common/
-│   │   ├── __init__.py
-│   │   └── client.py
-│   ├── cli/
-│   │   ├── __init__.py
-│   │   └── main.py
-│   └── web/
-│       ├── __init__.py
-│       └── server.py
-├── tests/
-│   └── test_smoke.py
-├── .env.example
-├── pyproject.toml
-├── README.md
-└── LICENSE
+Required env vars:
+
+```bash
+export FINNHUB_API_KEY="YOUR_FINNHUB_KEY"
+export OPENAI_API_KEY="YOUR_OPENAI_KEY"
 ```
 
-### Additional frontends
-- CLI demo: `python -m frontend.cli.main stock AAPL`
-- Web demo: `uvicorn frontend.web.server:app --reload` (then open `http://127.0.0.1:8000/` and enter a ticker in the form)
+Optional DB env vars (defaults are used if omitted):
 
-## Notes
-- This is an initial version with a rich, extendable structure. Add new data sources under `market_agent/datasources/` and new commands in `market_agent/cli/`.
-- Respect the Finnhub rate limits.
-- For development, run tests with `pytest` (optional).
+```bash
+export PGHOST=localhost
+export PGPORT=5432
+export PGUSER=market_agent
+export PGPASSWORD=market_agent_password
+export PGDATABASE=market_agent
+```
 
-## License
-MIT
+Notes:
+- These DB defaults are hardcoded in `market_agent/analysis/company/news/db.py` (`_build_dsn()`).
+- Exported env vars (or `DATABASE_URL`) override the hardcoded defaults.
+
+## 2) Database Setup (Postgres)
+
+```bash
+cd postgres
+docker compose up -d
+cd ..
+bash postgres/init_db.sh
+```
+
+## 3) Run Web App (Dev)
+
+From project root:
+
+```bash
+uvicorn frontend.web.server:app --reload --log-level info
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
+
+## 4) Development Commands
+
+```bash
+# quick syntax check for key modules
+python3 -m py_compile frontend/web/server.py market_agent/analysis/company/news/service.py
+
+# run tests (if pytest installed)
+pytest -q
+```

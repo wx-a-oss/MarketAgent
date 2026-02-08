@@ -21,11 +21,13 @@ from market_agent.analysis.company.news import (
     generate_weekly_report,
     get_company_news,
     get_news_report,
-    list_watchlist_companies,
+    list_watchlist_company_rows,
     ensure_company_profile,
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
+    set_company_ticker,
+    summarize_company_news_item,
 )
 from market_agent.analysis import analyze_single_stock_sections
 from market_agent.llms.registry import get_provider, list_models
@@ -391,7 +393,11 @@ async def company_detail(company_name: str) -> str:
 
 @app.get("/api/companies")
 async def list_companies() -> Dict[str, Any]:
-    return {"companies": list_watchlist_companies()}
+    companies = list_watchlist_company_rows()
+    return {
+        "companies": companies,
+        "company_names": [item["company_name"] for item in companies],
+    }
 
 
 @app.post("/api/companies")
@@ -408,6 +414,20 @@ async def add_company(request: Request) -> Dict[str, Any]:
 async def remove_company(company_name: str) -> Dict[str, Any]:
     remove_company_from_watchlist(company_name)
     return {"ok": True}
+
+
+@app.put("/api/company/{company_name}/ticker")
+async def update_company_ticker(company_name: str, request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    ticker = payload.get("ticker")
+    if ticker is not None and not isinstance(ticker, str):
+        return {"error": "ticker must be a string or null"}
+    profile = set_company_ticker(company_name, ticker)
+    return {
+        "ok": True,
+        "company_name": company_name,
+        "ticker": profile.get("ticker") if profile else None,
+    }
 
 
 @app.get("/api/company/{company_name}/news")
@@ -511,6 +531,24 @@ async def delete_company_news_item(company_name: str, news_id: int) -> Dict[str,
     return {"company": company_name, "groups": groups}
 
 
+@app.post("/api/company/{company_name}/news/{news_id}/summarize")
+async def summarize_company_news(
+    company_name: str,
+    news_id: int,
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    summarize_company_news_item(
+        company_name,
+        news_id=news_id,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups}
+
+
 def _format_value(value: object) -> str:
     if value is None:
         return "-"
@@ -600,6 +638,7 @@ def _group_news_items(
             "news_date_time": article.news_date_time.isoformat(),
             "news_source": article.news_source,
             "news_source_link": article.news_source_link,
+            "is_analyzed": bool(article.is_analyzed),
             "content": _decode_news_content(
                 article.llm_analyzed_content,
                 article.original_content,
