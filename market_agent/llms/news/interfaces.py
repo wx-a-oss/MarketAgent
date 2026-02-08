@@ -26,3 +26,13 @@ class NewsProvider(Protocol):
         articles: Iterable[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Return a weekly report object with required sections."""
+
+    def analyze_news_items(
+        self,
+        *,
+        company_name: str,
+        start_date: str,
+        end_date: str,
+        items: Iterable[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Analyze raw news items and return enriched items."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, List, TypeVar
 
 import finnhub  # pip install finnhub-python
@@ -31,6 +32,15 @@ class FinnhubClient:
         data = self._safe_call(lambda: self._client.earnings(symbol), default=[])
         return {"data": data}
 
+    def company_news(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        return self._safe_call(
+            lambda: self._client.company_news(symbol, _from=start_date, to=end_date),
+            default=[],
+        )
+
+    def symbol_lookup(self, query: str) -> Dict[str, Any]:
+        return self._safe_call(lambda: self._client.symbol_lookup(query), default={})
+
     def peers(self, symbol: str) -> List[str]:
         return self._safe_call(lambda: self._client.company_peers(symbol), default=[])
 
@@ -38,5 +48,7 @@ class FinnhubClient:
     def _safe_call(func: Callable[[], T], default: T) -> T:
         try:
             return func()
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as exc:
+            logger = logging.getLogger("uvicorn.error")
+            logger.warning("Finnhub request failed: %s", exc)
             return default

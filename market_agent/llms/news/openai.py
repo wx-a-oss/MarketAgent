@@ -80,6 +80,29 @@ class OpenAINewsProvider(NewsProvider):
         payload = _safe_json(response)
         return payload if isinstance(payload, dict) else {}
 
+    def analyze_news_items(
+        self,
+        *,
+        company_name: str,
+        start_date: str,
+        end_date: str,
+        items: Iterable[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        serialized = list(items)
+        prompt = _build_analysis_prompt(company_name, start_date, end_date, serialized)
+        response = chat_completion(
+            api_key=self.api_key,
+            model=self.model,
+            temperature=self.temperature,
+            timeout_sec=self.timeout_sec,
+            messages=[
+                {"role": "system", "content": _system_prompt()},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        payload = _safe_json(response)
+        return _merge_analysis_items(serialized, _normalize_news_items(payload))
+
 
 def resolve_openai_news_provider(
     *,
@@ -167,6 +190,27 @@ def _build_weekly_report_prompt(
     )
 
 
+def _build_analysis_prompt(
+    company_name: str,
+    start_date: str,
+    end_date: str,
+    items: List[Dict[str, Any]],
+) -> str:
+    return (
+        "Analyze the news items for {company} from {begin} to {end}.\n"
+        "Return ONLY a JSON array with the same length and order as the input.\n"
+        "Each object must include: summary, facts, viewpoint, bias, reasoning, "
+        "short_term_impact, long_term_impact, uncertainties, priced_in, "
+        "insider_signals, trends, sentiment.\n"
+        "Input items JSON:\n{items}\n"
+    ).format(
+        company=company_name,
+        begin=start_date,
+        end=end_date,
+        items=json.dumps(items),
+    )
+
+
 def _safe_json(text: str) -> Any:
     try:
         return json.loads(text)
@@ -188,6 +232,20 @@ def _normalize_news_items(payload: Any) -> List[Dict[str, Any]]:
         if isinstance(payload.get("articles"), list):
             return [item for item in payload["articles"] if isinstance(item, dict)]
     return []
+
+
+def _merge_analysis_items(
+    originals: List[Dict[str, Any]],
+    analyses: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if len(analyses) != len(originals):
+        return originals
+    merged: List[Dict[str, Any]] = []
+    for original, analysis in zip(originals, analyses):
+        combined = dict(original)
+        combined.update(analysis)
+        merged.append(combined)
+    return merged
 
 
 def _build_web_search_prompt(
