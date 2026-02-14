@@ -36,3 +36,11 @@ class NewsProvider(Protocol):
         items: Iterable[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Analyze raw news items and return enriched items."""
+
+    def filter_news_items(
+        self,
+        *,
+        company_name: str,
+        items: Iterable[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return relevance decisions for items (keep/drop + reason)."""

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
 from market_agent.llms.news.interfaces import NewsProvider
+from market_agent.llms.news.prompts import (
+    build_fetch_news_analysis_prompt,
+    build_news_filter_prompt,
+    build_input_news_analysis_prompt,
+    build_weekly_report_prompt,
+)
 from market_agent.llms.openai import chat_completion
 
 try:
@@ -17,6 +24,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 DEFAULT_NEWS_MODEL = "gpt-5.2"
 WEB_SEARCH_ENV_FLAG = "OPENAI_USE_WEB_SEARCH"
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(slots=True)
@@ -35,26 +43,22 @@ class OpenAINewsProvider(NewsProvider):
         start_date: str,
         end_date: str,
     ) -> List[Dict[str, Any]]:
-        if self.use_web_search:
-            return _fetch_news_with_web_search(
-                api_key=self.api_key,
-                model=self.model,
-                company_name=company_name,
-                start_date=start_date,
-                end_date=end_date,
+        # OpenAI requires explicit web_search tool usage for online retrieval.
+        # We always use web_search here regardless of `use_web_search` flag.
+        if not self.use_web_search:
+            logger.info(
+                "OpenAI fetch_news forcing web_search: company=%s range=%s..%s",
+                company_name,
+                start_date,
+                end_date,
             )
-        prompt = _build_news_prompt(company_name, start_date, end_date)
-        response = chat_completion(
+        return _fetch_news_with_web_search(
             api_key=self.api_key,
             model=self.model,
-            temperature=self.temperature,
-            timeout_sec=self.timeout_sec,
-            messages=[
-                {"role": "system", "content": _system_prompt()},
-                {"role": "user", "content": prompt},
-            ],
+            company_name=company_name,
+            start_date=start_date,
+            end_date=end_date,
         )
-        return _normalize_news_items(_safe_json(response))
 
     def fetch_weekly_report(
         self,
@@ -73,7 +77,6 @@ class OpenAINewsProvider(NewsProvider):
             temperature=self.temperature,
             timeout_sec=self.timeout_sec,
             messages=[
-                {"role": "system", "content": "Return ONLY valid JSON."},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -96,12 +99,35 @@ class OpenAINewsProvider(NewsProvider):
             temperature=self.temperature,
             timeout_sec=self.timeout_sec,
             messages=[
-                {"role": "system", "content": _system_prompt()},
                 {"role": "user", "content": prompt},
             ],
         )
         payload = _safe_json(response)
         return _merge_analysis_items(serialized, _normalize_news_items(payload))
+
+    def filter_news_items(
+        self,
+        *,
+        company_name: str,
+        items: Iterable[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        serialized = list(items)
+        titles = [str(item.get("news_title") or "").strip() for item in serialized]
+        prompt = _build_filter_prompt(company_name, titles)
+        response = chat_completion(
+            api_key=self.api_key,
+            model=self.model,
+            temperature=self.temperature,
+            timeout_sec=self.timeout_sec,
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
+        )
+        payload = _safe_json(response)
+        return _merge_filter_items(
+            [{"news_title": title} for title in titles],
+            payload,
+        )
 
 
 def resolve_openai_news_provider(
@@ -131,39 +157,11 @@ def _use_web_search() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _system_prompt() -> str:
-    return (
-        "You are a financial news analyst. Return ONLY valid JSON. "
-        "The response must be a JSON array of objects with keys: "
-        "news_date_time, news_title, original_content, summary, facts, "
-        "viewpoint, bias, reasoning, short_term_impact, long_term_impact, "
-        "uncertainties, priced_in, insider_signals, trends, sentiment, "
-        "news_source, news_source_link."
-    )
-
-
 def _build_news_prompt(company_name: str, start_date: str, end_date: str) -> str:
-    return (
-        "Please retrieve all news related to {company} from {begin} to {end}. "
-        "For each article, provide:\n"
-        "The news title\n"
-        "The original content (concise factual excerpt)\n"
-        "A concise summary of the content\n"
-        "Key objective facts\n"
-        "The author's subjective viewpoint (if any)\n"
-        "The author's subjective bias (if any)\n"
-        "Logical analysis and whether the reasoning is sound\n"
-        "Short-term impact\n"
-        "Long-term impact\n"
-        "Major uncertainties involved\n"
-        "An assessment of how much of this information is likely already priced into the stock\n"
-        "Any potential insider signals or implications inferred from the news\n"
-        "Possible future trends for the stock\n"
-        "Whether the news is bullish or bearish for the stock\n"
-    ).format(
-        company=company_name,
-        begin=start_date,
-        end=end_date,
+    return build_fetch_news_analysis_prompt(
+        company_name,
+        start_date,
+        end_date,
     )
 
 
@@ -173,20 +171,11 @@ def _build_weekly_report_prompt(
     end_date: str,
     articles: Iterable[Dict[str, Any]],
 ) -> str:
-    serialized = list(articles)
-    return (
-        "You are compiling a weekly news report for {company} covering {begin} to {end}.\n"
-        "Use the news items below as the ONLY source of truth.\n"
-        "Return a JSON object with these keys, each value must be an array of bullet points:\n"
-        "summary, facts, viewpoint, bias, reasoning, short_term_impact, long_term_impact, "
-        "uncertainties, priced_in, insider_signals, trends, sentiment.\n"
-        "Do not omit any section. Use concise bullet points.\n"
-        "News items JSON:\n{items}\n"
-    ).format(
-        company=company_name,
-        begin=start_date,
-        end=end_date,
-        items=json.dumps(serialized),
+    return build_weekly_report_prompt(
+        company_name,
+        start_date,
+        end_date,
+        articles,
     )
 
 
@@ -196,19 +185,19 @@ def _build_analysis_prompt(
     end_date: str,
     items: List[Dict[str, Any]],
 ) -> str:
-    return (
-        "Analyze the news items for {company} from {begin} to {end}.\n"
-        "Return ONLY a JSON array with the same length and order as the input.\n"
-        "Each object must include: summary, facts, viewpoint, bias, reasoning, "
-        "short_term_impact, long_term_impact, uncertainties, priced_in, "
-        "insider_signals, trends, sentiment.\n"
-        "Input items JSON:\n{items}\n"
-    ).format(
-        company=company_name,
-        begin=start_date,
-        end=end_date,
-        items=json.dumps(items),
+    return build_input_news_analysis_prompt(
+        company_name,
+        start_date,
+        end_date,
+        items,
     )
+
+
+def _build_filter_prompt(
+    company_name: str,
+    items: List[Any],
+) -> str:
+    return build_news_filter_prompt(company_name, items)
 
 
 def _safe_json(text: str) -> Any:
@@ -238,49 +227,136 @@ def _merge_analysis_items(
     originals: List[Dict[str, Any]],
     analyses: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    if len(analyses) != len(originals):
+    if not analyses:
         return originals
-    merged: List[Dict[str, Any]] = []
-    for original, analysis in zip(originals, analyses):
-        combined = dict(original)
-        combined.update(analysis)
-        merged.append(combined)
+
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    merged: List[Dict[str, Any]] = [dict(item) for item in originals]
+    by_title_date: Dict[tuple[str, str], int] = {}
+    by_title: Dict[str, int] = {}
+
+    for idx, item in enumerate(originals):
+        title = _norm(item.get("news_title"))
+        dt = _norm(item.get("news_date_time"))
+        if title:
+            by_title[title] = idx
+            by_title_date[(title, dt)] = idx
+
+    immutable_fields = {
+        "news_date_time",
+        "news_title",
+        "original_content",
+        "news_source",
+        "news_source_link",
+    }
+    for analysis in analyses:
+        title = _norm(analysis.get("news_title"))
+        dt = _norm(analysis.get("news_date_time"))
+        idx = by_title_date.get((title, dt))
+        if idx is None:
+            idx = by_title.get(title)
+        if idx is not None:
+            for key, value in analysis.items():
+                if key in immutable_fields:
+                    continue
+                merged[idx][key] = value
+        else:
+            merged.append(dict(analysis))
+
+    return merged
+
+
+def _merge_filter_items(
+    originals: List[Dict[str, Any]],
+    filtered: Any,
+) -> List[Dict[str, Any]]:
+    if not filtered:
+        return originals
+
+    merged: List[Dict[str, Any]] = [dict(item) for item in originals]
+    if isinstance(filtered, list) and filtered and all(
+        isinstance(entry, bool) for entry in filtered
+    ):
+        for idx, keep_value in enumerate(filtered):
+            if idx >= len(merged):
+                break
+            merged[idx]["keep_for_company"] = bool(keep_value)
+        return merged
+
+    if not isinstance(filtered, list):
+        return merged
+
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    by_title: Dict[str, int] = {}
+    for idx, item in enumerate(originals):
+        title = _norm(item.get("news_title"))
+        if title:
+            by_title[title] = idx
+
+    for decision in filtered:
+        if not isinstance(decision, dict):
+            continue
+        title = _norm(decision.get("news_title"))
+        idx = by_title.get(title)
+        if idx is None:
+            continue
+        merged[idx]["keep_for_company"] = decision.get("keep_for_company")
     return merged
 
 
 def _build_web_search_prompt(
     company_name: str, start_date: str, end_date: str
 ) -> str:
-    return (
-        "Find the most important news from {begin} to {end} about {company}.\n"
-        "Return ONLY a JSON array of objects. Each object must include:\n"
-        "news_date_time (ISO 8601 date or datetime)\n"
-        "news_title\n"
-        "original_content (concise factual excerpt)\n"
-        "summary\n"
-        "facts\n"
-        "viewpoint\n"
-        "bias\n"
-        "reasoning\n"
-        "short_term_impact\n"
-        "long_term_impact\n"
-        "uncertainties\n"
-        "priced_in\n"
-        "insider_signals\n"
-        "trends\n"
-        "sentiment\n"
-        "news_source\n"
-        "news_source_link\n"
-        "Requirements:\n"
-        "- 5–10 items max\n"
-        "- include date + source link per item\n"
-        "- dedupe repeats\n"
-        "- explain why it matters\n"
-    ).format(
-        company=company_name,
-        begin=start_date,
-        end=end_date,
+    return build_fetch_news_analysis_prompt(
+        company_name,
+        start_date,
+        end_date,
     )
+
+
+def _build_web_search_fallback_prompt(
+    company_name: str, start_date: str, end_date: str
+) -> str:
+    return (
+        _build_web_search_prompt(company_name, start_date, end_date)
+        + "If initial retrieval is sparse, run additional web searches with alternate keywords "
+        + "(company alias, ticker, earnings, guidance, product, legal, regulation, analyst, M&A) "
+        + "and return all materially relevant items found in this date range.\n"
+    )
+
+
+def _dedupe_news_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in items:
+        title = str(item.get("news_title") or "").strip().lower()
+        news_dt = str(item.get("news_date_time") or "").strip().lower()
+        link = str(item.get("news_source_link") or "").strip().lower()
+        key = (title, news_dt, link)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _run_web_search_once(
+    *,
+    client: OpenAI,
+    model: str,
+    prompt: str,
+) -> List[Dict[str, Any]]:
+    response = client.responses.create(
+        model=model,
+        input=prompt,
+        tools=[{"type": "web_search"}],
+    )
+    output_text = getattr(response, "output_text", "")
+    return _normalize_news_items(_safe_json(output_text))
 
 
 def _fetch_news_with_web_search(
@@ -295,13 +371,41 @@ def _fetch_news_with_web_search(
         raise RuntimeError("openai package is required for web_search tool usage.")
     client = OpenAI(api_key=api_key)
     prompt = _build_web_search_prompt(company_name, start_date, end_date)
-    response = client.responses.create(
-        model=model,
-        input=prompt,
-        tools=[{"type": "web_search"}],
+    logger.info(
+        "OpenAI web_search fetch start: company=%s range=%s..%s",
+        company_name,
+        start_date,
+        end_date,
     )
-    output_text = getattr(response, "output_text", "")
-    return _normalize_news_items(_safe_json(output_text))
+    first_pass = _run_web_search_once(client=client, model=model, prompt=prompt)
+    merged = list(first_pass)
+    logger.info(
+        "OpenAI web_search fetch pass1: company=%s items=%d",
+        company_name,
+        len(first_pass),
+    )
+    if len(first_pass) < 3:
+        fallback_prompt = _build_web_search_fallback_prompt(
+            company_name, start_date, end_date
+        )
+        second_pass = _run_web_search_once(
+            client=client,
+            model=model,
+            prompt=fallback_prompt,
+        )
+        merged.extend(second_pass)
+        logger.info(
+            "OpenAI web_search fetch pass2: company=%s items=%d",
+            company_name,
+            len(second_pass),
+        )
+    deduped = _dedupe_news_items(_normalize_news_items(merged))
+    logger.info(
+        "OpenAI web_search fetch done: company=%s items=%d",
+        company_name,
+        len(deduped),
+    )
+    return deduped
 
 
 __all__ = ["OpenAINewsProvider", "resolve_openai_news_provider", "DEFAULT_NEWS_MODEL"]
