@@ -23,10 +23,13 @@ from market_agent.analysis.company.news import (
     get_news_report,
     list_watchlist_company_rows,
     ensure_company_profile,
+    filter_company_news_day,
+    filter_company_news_item,
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
     set_company_ticker,
+    summarize_company_news_day,
     summarize_company_news_item,
 )
 from market_agent.analysis import analyze_single_stock_sections
@@ -448,16 +451,21 @@ async def refresh_company_news(
     provider: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    before_count = len(get_company_news(company_name))
     selected_source = source or "openai"
-    if selected_source == "finnhub" and (start_date or end_date):
+    if start_date or end_date:
         if not start_date or not end_date:
-            return {"error": "start_date and end_date are required for finnhub"}
+            return {"error": "start_date and end_date are required"}
         try:
             start = datetime.fromisoformat(start_date).date()
             end = datetime.fromisoformat(end_date).date()
         except ValueError:
             return {"error": "start_date and end_date must be YYYY-MM-DD"}
-        refresh_company_news_for_range(
+        if selected_source == "openai":
+            today = datetime.now().date()
+            if end > today:
+                end = today
+        refresh_stats = refresh_company_news_for_range(
             company_name,
             start_date=start,
             end_date=end,
@@ -467,10 +475,17 @@ async def refresh_company_news(
         )
         articles = get_company_news(company_name)
         groups = _group_news_items(company_name, articles)
-        return {"company": company_name, "groups": groups}
-    if selected_source == "finnhub":
-        return {"error": "start_date and end_date are required for finnhub"}
+        added_count = max(0, len(articles) - before_count)
+        return {
+            "company": company_name,
+            "groups": groups,
+            "added_count": added_count,
+            "fetched_total": int(refresh_stats.get("fetched_total", 0)),
+            "filtered_out": int(refresh_stats.get("filtered_out", 0)),
+            "elapsed_sec": float(refresh_stats.get("elapsed_sec", 0.0)),
+        }
 
+    # Backward-compatible fallback for older UI using week_date only.
     selected = None
     if week_date:
         try:
@@ -485,7 +500,7 @@ async def refresh_company_news(
         today = datetime.now().date()
         if week_end > today:
             week_end = today
-    refresh_company_news_for_range(
+    refresh_stats = refresh_company_news_for_range(
         company_name,
         start_date=week_start,
         end_date=week_end,
@@ -495,7 +510,15 @@ async def refresh_company_news(
     )
     articles = get_company_news(company_name)
     groups = _group_news_items(company_name, articles)
-    return {"company": company_name, "groups": groups}
+    added_count = max(0, len(articles) - before_count)
+    return {
+        "company": company_name,
+        "groups": groups,
+        "added_count": added_count,
+        "fetched_total": int(refresh_stats.get("fetched_total", 0)),
+        "filtered_out": int(refresh_stats.get("filtered_out", 0)),
+        "elapsed_sec": float(refresh_stats.get("elapsed_sec", 0.0)),
+    }
 
 
 @app.post("/api/company/{company_name}/report")
@@ -547,6 +570,88 @@ async def summarize_company_news(
     articles = get_company_news(company_name)
     groups = _group_news_items(company_name, articles)
     return {"company": company_name, "groups": groups}
+
+
+@app.post("/api/company/{company_name}/news/{news_id}/filter")
+async def filter_company_news(
+    company_name: str,
+    news_id: int,
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    result = filter_company_news_item(
+        company_name,
+        news_id=news_id,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {"company": company_name, "groups": groups, "filter_result": result}
+
+
+@app.post("/api/company/{company_name}/news/filter/day")
+@app.post("/api/company/{company_name}/news/day/filter")
+async def filter_company_news_for_day(
+    company_name: str,
+    date: str = Query(...),
+    limit: int = Query(5),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    stats = filter_company_news_day(
+        company_name,
+        target_date=target_date,
+        limit=limit,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {
+        "company": company_name,
+        "groups": groups,
+        "processed_count": stats.get("processed", 0),
+        "kept_count": stats.get("kept", 0),
+        "dropped_count": stats.get("dropped", 0),
+        "elapsed_sec": stats.get("elapsed_sec", 0.0),
+    }
+
+
+@app.post("/api/company/{company_name}/news/summarize/day")
+@app.post("/api/company/{company_name}/news/day/summarize")
+async def summarize_company_news_for_day(
+    company_name: str,
+    date: str = Query(...),
+    limit: int = Query(5),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    stats = summarize_company_news_day(
+        company_name,
+        target_date=target_date,
+        limit=limit,
+        provider_name=provider or "openai",
+        model=model or "gpt-5.2",
+    )
+    articles = get_company_news(company_name)
+    groups = _group_news_items(company_name, articles)
+    return {
+        "company": company_name,
+        "groups": groups,
+        "processed_count": stats.get("processed", 0),
+        "analyzed_count": stats.get("analyzed", 0),
+        "dropped_count": stats.get("dropped", 0),
+        "elapsed_sec": stats.get("elapsed_sec", 0.0),
+    }
 
 
 def _format_value(value: object) -> str:
@@ -639,6 +744,7 @@ def _group_news_items(
             "news_source": article.news_source,
             "news_source_link": article.news_source_link,
             "is_analyzed": bool(article.is_analyzed),
+            "is_filtered": bool(getattr(article, "is_filtered", False)),
             "content": _decode_news_content(
                 article.llm_analyzed_content,
                 article.original_content,

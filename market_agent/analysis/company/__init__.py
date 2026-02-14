@@ -8,10 +8,13 @@ from .news import (
     generate_weekly_report,
     get_news_report,
     ensure_company_profile,
+    filter_company_news_day,
+    filter_company_news_item,
     list_watchlist_companies,
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
+    summarize_company_news_day,
     summarize_company_news_item,
 )
 
@@ -25,7 +28,10 @@ __all__ = [
     "generate_weekly_report",
     "get_news_report",
     "ensure_company_profile",
+    "filter_company_news_day",
+    "filter_company_news_item",
     "refresh_company_news_for_range",
     "refresh_company_news_if_needed",
+    "summarize_company_news_day",
     "summarize_company_news_item",
 ]

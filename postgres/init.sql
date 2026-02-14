@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS company_news_raw (
     source TEXT,
     source_link TEXT,
     is_analyzed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_filtered BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (company_name, id)
 );
 
@@ -41,6 +42,28 @@ CREATE INDEX IF NOT EXISTS idx_company_news_analyzed_date_time
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_company_news_analyzed_unique
     ON company_news_analyzed (company_name, news_title, news_date_time, llm_model);
+
+CREATE TABLE IF NOT EXISTS company_news_dropped (
+    id BIGSERIAL PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    raw_news_id BIGINT,
+    news_date_time TIMESTAMPTZ NOT NULL,
+    news_title TEXT NOT NULL,
+    raw_content TEXT,
+    raw_source TEXT,
+    raw_source_link TEXT,
+    raw_is_analyzed BOOLEAN NOT NULL DEFAULT FALSE,
+    analyzed_content TEXT,
+    analyzed_source TEXT,
+    analyzed_source_link TEXT,
+    analyzed_llm_model TEXT,
+    drop_reason TEXT,
+    dropped_by TEXT,
+    dropped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_news_dropped_company_name
+    ON company_news_dropped (company_name, dropped_at DESC);
 
 CREATE TABLE IF NOT EXISTS company_watchlist (
     company_name TEXT PRIMARY KEY,
