@@ -14,6 +14,7 @@ def render_company_detail_page(company_name: str) -> str:
     source_options = "".join(
         f'<option value="{source}">{source}</option>'
         for source in list_news_sources()
+        if source != "openai"
     )
     return f"""
         <html>
@@ -76,14 +77,98 @@ def render_company_detail_page(company_name: str) -> str:
                         align-items: center;
                         gap: 0.5rem;
                     }}
+                    .refresh-wrap {{
+                        position: relative;
+                        display: inline-flex;
+                        align-items: center;
+                    }}
+                    .refresh-status {{
+                        position: absolute;
+                        top: calc(100% + 2px);
+                        left: 12px;
+                        font-size: 0.72rem;
+                        color: #9ca3af;
+                        white-space: pre-line;
+                        line-height: 1.2;
+                        max-width: 320px;
+                    }}
+                    .day-analyze-controls {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.4rem;
+                    }}
+                    .day-analyze-result {{
+                        font-size: 0.75rem;
+                        color: #94a3b8;
+                        margin-left: 0.5rem;
+                        white-space: nowrap;
+                    }}
+                    .day-group-header {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: flex-start;
+                        flex-wrap: wrap;
+                        gap: 0.8rem;
+                        margin-bottom: 0.6rem;
+                    }}
+                    .day-group-header h2 {{
+                        margin: 0;
+                    }}
+                    .day-group-right {{
+                        display: inline-flex;
+                        align-items: center;
+                        flex-wrap: wrap;
+                        gap: 0.6rem;
+                        margin-left: 0;
+                    }}
+                    .day-total-count {{
+                        font-size: 0.74rem;
+                        color: #94a3b8;
+                        white-space: nowrap;
+                    }}
+                    .day-note {{
+                        font-size: 0.75rem;
+                        color: #94a3b8;
+                    }}
+                    .day-analyze-input {{
+                        width: 64px;
+                        min-width: 64px;
+                        height: 30px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.5rem;
+                        padding: 0.2rem 0.45rem;
+                        font-size: 0.8rem;
+                    }}
+                    .day-analyze-btn {{
+                        border: 1px solid #0f766e;
+                        background: #0f766e;
+                        color: #ffffff;
+                        border-radius: 999px;
+                        padding: 0.3rem 0.7rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .day-analyze-btn:hover {{
+                        background: #0d9488;
+                        border-color: #0d9488;
+                    }}
                     .week-input {{
                         padding: 0.25rem 0.45rem;
                         border-radius: 0.5rem;
                         border: 1px solid #d1d5db;
                         font-size: 0.85rem;
                         height: 32px;
-                        width: 120px;
-                        min-width: 120px;
+                        width: 180px;
+                        min-width: 180px;
+                    }}
+                    #news-source {{
+                        width: 112px;
+                        min-width: 112px;
+                    }}
+                    #range-date {{
+                        width: 230px;
+                        min-width: 230px;
                     }}
                     .flatpickr-input {{
                         line-height: 1.2;
@@ -191,6 +276,17 @@ def render_company_detail_page(company_name: str) -> str:
                     }}
                     .news-card h3 {{ margin: 0 0 0.6rem; font-size: 18px; color: var(--ink); }}
                     .news-meta {{ color: #334155; font-size: 0.9rem; }}
+                    .news-meta a {{
+                        color: #6b7280;
+                        text-decoration: underline;
+                        word-break: break-all;
+                    }}
+                    .news-meta a:visited {{
+                        color: #6b7280;
+                    }}
+                    .news-meta a:hover {{
+                        color: #4b5563;
+                    }}
                     .news-content div {{ margin-bottom: 0.4rem; }}
                     .news-summary {{ margin-top: 0.6rem; }}
                     .news-summary strong {{ color: #111827; }}
@@ -219,10 +315,17 @@ def render_company_detail_page(company_name: str) -> str:
                         border-color: #fecaca;
                         background: #fef2f2;
                     }}
-                    .news-action-btn.summarize {{
+                    .news-action-btn.analyze-inline {{
                         color: #0f766e;
                         border-color: #99f6e4;
                         background: #f0fdfa;
+                        margin-top: 0.5rem;
+                    }}
+                    .news-action-btn.remove-inline {{
+                        color: #b91c1c;
+                        border-color: #fecaca;
+                        background: #fef2f2;
+                        margin-top: 0.5rem;
                     }}
                     .news-source-tag {{
                         position: absolute;
@@ -249,12 +352,15 @@ def render_company_detail_page(company_name: str) -> str:
                             <h1>{display_company}</h1>
                             <div class="header-actions">
                                 <select class="week-input" id="news-source">
+                                    <option value="finnhub" selected>finnhub</option>
                                     <option value="openai">openai</option>
                                     {source_options}
                                 </select>
-                                <input class="week-input" type="date" id="week-date" />
-                                <input class="week-input" type="text" id="range-date" style="display: none;" />
-                                <button class="refresh-btn" id="refresh-btn">Refresh</button>
+                                <input class="week-input" type="text" id="range-date" />
+                                <div class="refresh-wrap">
+                                    <button class="refresh-btn" id="refresh-btn">Refresh</button>
+                                    <span class="refresh-status" id="refresh-status"></span>
+                                </div>
                             </div>
                         </div>
                         <div class="layout">
@@ -270,14 +376,18 @@ def render_company_detail_page(company_name: str) -> str:
                     const timelineEl = document.getElementById("timeline");
                     const contentEl = document.getElementById("news-content");
                     const refreshBtn = document.getElementById("refresh-btn");
-                    const weekInput = document.getElementById("week-date");
+                    const refreshStatus = document.getElementById("refresh-status");
                     const rangeInput = document.getElementById("range-date");
                     const sourceSelect = document.getElementById("news-source");
                     const companyName = "{safe_company}";
                     let selectedGroupKey = null;
 
                     function buildNewsCard(item) {{
-                        const meta = [item.publisher || item.content.publisher, item.news_source_link]
+                        const sourceText = item.publisher || item.content.publisher;
+                        const sourceLink = item.news_source_link
+                            ? `<a href="${{item.news_source_link}}" target="_blank" rel="noopener noreferrer">${{item.news_source_link}}</a>`
+                            : "";
+                        const meta = [sourceText, sourceLink]
                             .filter(Boolean)
                             .join(" · ");
                         const displayTime = formatPst(item.news_date_time);
@@ -288,20 +398,17 @@ def render_company_detail_page(company_name: str) -> str:
                         if (item.content.facts) {{
                             contentLines.push(`<div><strong>Facts:</strong> ${{item.content.facts}}</div>`);
                         }}
-                        if (item.content.bias) {{
-                            contentLines.push(`<div><strong>Bias:</strong> ${{item.content.bias}}</div>`);
-                        }}
                         if (item.content.reasoning) {{
                             contentLines.push(`<div><strong>Reasoning:</strong> ${{item.content.reasoning}}</div>`);
+                        }}
+                        if (item.content.uncertainties) {{
+                            contentLines.push(`<div><strong>Uncertainties:</strong> ${{item.content.uncertainties}}</div>`);
                         }}
                         if (item.content.short_term_impact) {{
                             contentLines.push(`<div><strong>Short-term impact:</strong> ${{item.content.short_term_impact}}</div>`);
                         }}
                         if (item.content.long_term_impact) {{
                             contentLines.push(`<div><strong>Long-term impact:</strong> ${{item.content.long_term_impact}}</div>`);
-                        }}
-                        if (item.content.uncertainties) {{
-                            contentLines.push(`<div><strong>Uncertainties:</strong> ${{item.content.uncertainties}}</div>`);
                         }}
                         if (item.content.priced_in) {{
                             contentLines.push(`<div><strong>Priced in:</strong> ${{item.content.priced_in}}</div>`);
@@ -316,7 +423,7 @@ def render_company_detail_page(company_name: str) -> str:
                             // Sentiment is already shown in the summary block.
                         }}
                         return `
-                            <div class="news-card" data-news-id="${{item.id}}">
+                            <div class="news-card ${{item.is_analyzed ? "analyzed" : "raw"}}" data-news-id="${{item.id}}">
                                 ${{item.news_source ? `<span class="news-source-tag">${{item.news_source}}</span>` : ""}}
                                 <h3>${{item.news_title}}</h3>
                                 <div class="news-meta">
@@ -327,29 +434,56 @@ def render_company_detail_page(company_name: str) -> str:
                                     <div class="news-summary">
                                         <div><strong>Summary:</strong> ${{item.content.summary || "—"}}</div>
                                         <div><strong>Sentiment:</strong> ${{item.content.sentiment || "—"}}</div>
+                                        ${{!item.is_analyzed ? '<button class="news-action-btn analyze-inline" type="button">Analyze</button>' : ''}}
+                                        ${{!item.is_analyzed ? '<button class="news-action-btn remove-inline" type="button">Remove</button>' : ''}}
                                     </div>
-                                    <div class="news-details">
+                                    ${{item.is_analyzed ? `<div class="news-details">
                                         ${{contentLines.join("")}}
                                         <div class="news-actions">
                                             <button class="news-action-btn original" type="button">Original</button>
-                                            ${{!item.is_analyzed ? '<button class="news-action-btn summarize" type="button">Summarize</button>' : ''}}
                                             <button class="news-action-btn delete" type="button">Remove</button>
                                         </div>
-                                    </div>
+                                    </div>` : ""}}
                                 </div>
                             </div>
                         `;
                     }}
 
-                    function renderNews(items, label) {{
+                    function renderNews(items, label, group) {{
                         if (!items.length) {{
                             contentEl.innerHTML = '<p class="placeholder">No news available for this date.</p>';
                             return;
                         }}
-                        const header = `<h2>${{label}}</h2>`;
+                        const isDaily = group && group.type === "daily";
+                        const rawCount = items.filter((item) => !item.is_analyzed).length;
+                        const filterableCount = items.length;
+                        const totalCountLabel = `${{filterableCount}} item${{filterableCount === 1 ? "" : "s"}}`;
+                        const dayDate = isDaily
+                            ? ((group.key || "").startsWith("day-") ? group.key.slice(4) : (group.label || ""))
+                            : "";
+                        const header = isDaily
+                            ? `
+                                <div class="day-group-header">
+                                    <h2>${{label}}</h2>
+                                    <div class="day-group-right">
+                                        ${{filterableCount > 0
+                                        ? `<div class="day-analyze-controls">
+                                                <button class="day-analyze-btn" id="day-analyze-btn" type="button">Analyze</button>
+                                                <input class="day-analyze-input" id="day-analyze-limit" type="number" min="1" max="${{filterableCount}}" value="${{Math.min(5, filterableCount)}}" />
+                                                <span class="day-analyze-result" id="day-analyze-result"></span>
+                                           </div>`
+                                        : `<span class="day-note">No items for day actions</span>`}}
+                                        <span class="day-total-count">${{totalCountLabel}}</span>
+                                    </div>
+                                </div>
+                            `
+                            : `<h2>${{label}}</h2>`;
                         contentEl.innerHTML = header + items.map(buildNewsCard).join("");
                         contentEl.querySelectorAll(".news-card").forEach((card) => {{
                             card.addEventListener("click", (event) => {{
+                                if (card.classList.contains("raw")) {{
+                                    return;
+                                }}
                                 if (event.target.closest(".news-action-btn")) {{
                                     return;
                                 }}
@@ -383,7 +517,7 @@ def render_company_detail_page(company_name: str) -> str:
                                 loadNews();
                             }});
                         }});
-                        contentEl.querySelectorAll(".news-action-btn.summarize").forEach((button) => {{
+                        contentEl.querySelectorAll(".news-action-btn.analyze-inline").forEach((button) => {{
                             button.addEventListener("click", async (event) => {{
                                 event.stopPropagation();
                                 const actionButton = event.target;
@@ -393,7 +527,7 @@ def render_company_detail_page(company_name: str) -> str:
                                     return;
                                 }}
                                 actionButton.disabled = true;
-                                actionButton.textContent = "Summarizing...";
+                                actionButton.textContent = "Analyzing...";
                                 try {{
                                     await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}/summarize`, {{
                                         method: "POST",
@@ -401,10 +535,82 @@ def render_company_detail_page(company_name: str) -> str:
                                     loadNews();
                                 }} finally {{
                                     actionButton.disabled = false;
-                                    actionButton.textContent = "Summarize";
+                                    actionButton.textContent = "Analyze";
                                 }}
                             }});
                         }});
+                        contentEl.querySelectorAll(".news-action-btn.remove-inline").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const actionButton = event.target;
+                                const card = actionButton.closest(".news-card");
+                                const newsId = card ? card.dataset.newsId : null;
+                                if (!newsId) {{
+                                    return;
+                                }}
+                                actionButton.disabled = true;
+                                actionButton.textContent = "Removing...";
+                                try {{
+                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}`, {{
+                                        method: "DELETE",
+                                    }});
+                                    loadNews();
+                                }} finally {{
+                                    actionButton.disabled = false;
+                                    actionButton.textContent = "Remove";
+                                }}
+                            }});
+                        }});
+                        const dayAnalyzeBtn = document.getElementById("day-analyze-btn");
+                        const dayAnalyzeLimit = document.getElementById("day-analyze-limit");
+                        const dayAnalyzeResult = document.getElementById("day-analyze-result");
+                        if (dayAnalyzeBtn && dayAnalyzeLimit && dayDate) {{
+                            dayAnalyzeBtn.addEventListener("click", async () => {{
+                                if (rawCount <= 0) {{
+                                    if (dayAnalyzeResult) {{
+                                        dayAnalyzeResult.textContent = "No raw items to analyze";
+                                    }}
+                                    return;
+                                }}
+                                const value = Number(dayAnalyzeLimit.value || 5);
+                                const limit = Number.isFinite(value) ? Math.max(1, Math.min(rawCount || 100, Math.trunc(value))) : 5;
+                                const dayAnalyzeStart = Date.now();
+                                dayAnalyzeBtn.disabled = true;
+                                dayAnalyzeBtn.textContent = "Analyzing...";
+                                if (dayAnalyzeResult) {{
+                                    dayAnalyzeResult.textContent = "";
+                                }}
+                                try {{
+                                    const url =
+                                        `/api/company/${{encodeURIComponent(companyName)}}/news/summarize/day` +
+                                        `?date=${{encodeURIComponent(dayDate)}}&limit=${{encodeURIComponent(String(limit))}}`;
+                                    const response = await fetch(url, {{ method: "POST" }});
+                                    const payload = await response.json();
+                                    if (!response.ok || payload.error) {{
+                                        if (dayAnalyzeResult) {{
+                                            dayAnalyzeResult.textContent = payload.error || "Analyze day failed";
+                                        }}
+                                        return;
+                                    }}
+                                    const groups = payload.groups || [];
+                                    if (groups.length) {{
+                                        renderTimeline(groups);
+                                    }}
+                                    if (dayAnalyzeResult) {{
+                                        const processed = Number(payload.processed_count || 0);
+                                        const analyzed = Number(payload.analyzed_count || 0);
+                                        const elapsedRaw = Number(payload.elapsed_sec);
+                                        const elapsedSec = Number.isFinite(elapsedRaw)
+                                            ? elapsedRaw.toFixed(1)
+                                            : ((Date.now() - dayAnalyzeStart) / 1000).toFixed(1);
+                                        dayAnalyzeResult.textContent = `${{analyzed}} analyzed (from ${{processed}}) in ${{elapsedSec}}s`;
+                                    }}
+                                }} finally {{
+                                    dayAnalyzeBtn.disabled = false;
+                                    dayAnalyzeBtn.textContent = "Analyze";
+                                }}
+                            }});
+                        }}
                     }}
 
                     function renderWeeklyReport(report, label, startDate, endDate, items) {{
@@ -447,11 +653,10 @@ def render_company_detail_page(company_name: str) -> str:
                             ["Sentiment", report.sentiment],
                             ["Facts", report.facts],
                             ["Viewpoint", report.viewpoint],
-                            ["Bias", report.bias],
                             ["Reasoning", report.reasoning],
+                            ["Uncertainties", report.uncertainties],
                             ["Short-term impact", report.short_term_impact],
                             ["Long-term impact", report.long_term_impact],
-                            ["Uncertainties", report.uncertainties],
                             ["Priced in", report.priced_in],
                             ["Insider signals", report.insider_signals],
                             ["Trends", report.trends],
@@ -525,7 +730,7 @@ def render_company_detail_page(company_name: str) -> str:
                             selectedGroupKey = group.key;
                             return;
                         }}
-                        renderNews(group.items || [], group.label);
+                        renderNews(group.items || [], group.label, group);
                         selectedGroupKey = group.key;
                     }}
 
@@ -578,22 +783,17 @@ def render_company_detail_page(company_name: str) -> str:
                         const start = Date.now();
                         refreshBtn.textContent = "Refreshing...";
                         try {{
-                            updateDateInputs();
                             let url = `/api/company/${{encodeURIComponent(companyName)}}/refresh`;
-                            if (sourceSelect && sourceSelect.value === "finnhub") {{
-                                if (!rangeInput.value || !rangeInput.value.includes(" to ")) {{
-                                    alert("Please select a start and end date.");
-                                    return;
-                                }}
-                                const [startDate, endDate] = rangeInput.value.split(" to ");
-                                if (!startDate || !endDate) {{
-                                    alert("Please select a start and end date.");
-                                    return;
-                                }}
-                                url += `?start_date=${{encodeURIComponent(startDate)}}&end_date=${{encodeURIComponent(endDate)}}`;
-                            }} else if (weekInput && weekInput.value) {{
-                                url += `?week_date=${{encodeURIComponent(weekInput.value)}}`;
+                            if (!rangeInput.value || !rangeInput.value.includes(" to ")) {{
+                                alert("Please select a start and end date.");
+                                return;
                             }}
+                            const [startDate, endDate] = rangeInput.value.split(" to ");
+                            if (!startDate || !endDate) {{
+                                alert("Please select a start and end date.");
+                                return;
+                            }}
+                            url += `?start_date=${{encodeURIComponent(startDate)}}&end_date=${{encodeURIComponent(endDate)}}`;
                             if (sourceSelect && sourceSelect.value) {{
                                 const joiner = url.includes("?") ? "&" : "?";
                                 url += `${{joiner}}source=${{encodeURIComponent(sourceSelect.value)}}`;
@@ -602,6 +802,8 @@ def render_company_detail_page(company_name: str) -> str:
                                 method: "POST",
                             }});
                             const payload = await response.json();
+                            const fetchedTotal = Number(payload.fetched_total || 0);
+                            const filteredOut = Number(payload.filtered_out || 0);
                             const groups = payload.groups || [];
                             if (!groups.length) {{
                                 timelineEl.innerHTML = '<p class="placeholder">No news yet.</p>';
@@ -609,10 +811,23 @@ def render_company_detail_page(company_name: str) -> str:
                             }} else {{
                                 renderTimeline(groups);
                             }}
-                            const elapsedMs = Date.now() - start;
-                            refreshBtn.textContent = `Refresh (${{(elapsedMs / 1000).toFixed(1)}}s)`;
+                            if (refreshStatus) {{
+                                const elapsedRaw = Number(payload.elapsed_sec);
+                                const elapsedSec = Number.isFinite(elapsedRaw)
+                                    ? elapsedRaw.toFixed(1)
+                                    : ((Date.now() - start) / 1000).toFixed(1);
+                                const selectedSource = sourceSelect && sourceSelect.value
+                                    ? String(sourceSelect.value).toLowerCase()
+                                    : "openai";
+                                if (selectedSource === "finnhub") {{
+                                    refreshStatus.textContent =
+                                        `fetched: ${{fetchedTotal}}\nfiltered: ${{filteredOut}}`;
+                                }} else {{
+                                    refreshStatus.textContent = `fetched: ${{fetchedTotal}}`;
+                                }}
+                                refreshBtn.textContent = `Refreshed (${{elapsedSec}}s)`;
+                            }}
                         }} finally {{
-                            updateDateInputs();
                             refreshBtn.disabled = false;
                             if (refreshBtn.textContent === "Refreshing...") {{
                                 refreshBtn.textContent = "Refresh";
@@ -620,33 +835,19 @@ def render_company_detail_page(company_name: str) -> str:
                         }}
                     }}
 
-                    function updateDateInputs() {{
-                        const isFinnhub = sourceSelect && sourceSelect.value === "finnhub";
-                        if (weekInput) {{
-                            weekInput.style.display = isFinnhub ? "none" : "inline-flex";
-                        }}
-                        if (rangeInput) {{
-                            rangeInput.style.display = isFinnhub ? "inline-flex" : "none";
-                        }}
-                    }}
-
 
                     refreshBtn.addEventListener("click", refreshNews);
-                    sourceSelect.addEventListener("change", updateDateInputs);
                     if (window.flatpickr) {{
                         const today = new Date();
-                        const config = {{
-                            dateFormat: "Y-m-d",
-                            defaultDate: today,
-                            locale: {{ firstDayOfWeek: 1 }},
-                        }};
-                        window.flatpickr(weekInput, config);
+                        const weekStart = new Date(today);
+                        weekStart.setDate(today.getDate() - today.getDay() + 1);
                         window.flatpickr(rangeInput, {{
-                            ...config,
+                            dateFormat: "Y-m-d",
+                            locale: {{ firstDayOfWeek: 1 }},
                             mode: "range",
+                            defaultDate: [weekStart, today],
                         }});
                     }}
-                    updateDateInputs();
                     loadNews();
 
                     function formatPst(isoString) {{
