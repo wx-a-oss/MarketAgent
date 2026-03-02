@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import json
+
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
 from market_agent.news_sources import list_news_sources
 
 
-def render_company_detail_page(company_name: str) -> str:
+def render_company_detail_page(
+    company_name: str,
+    *,
+    model_choices_by_provider: dict[str, list[str]] | None = None,
+    indicator_models: list[str] | None = None,
+) -> str:
     safe_company = company_name.replace('"', "")
     display_company = (
         safe_company[:1].upper() + safe_company[1:] if safe_company else safe_company
@@ -16,6 +23,12 @@ def render_company_detail_page(company_name: str) -> str:
         for source in list_news_sources()
         if source != "openai"
     )
+    flat_models: list[dict[str, str]] = []
+    for provider, models in (model_choices_by_provider or {}).items():
+        for model in models:
+            flat_models.append({"provider": str(provider), "model": str(model)})
+    model_choices_json = json.dumps(flat_models, ensure_ascii=False)
+    indicator_models_json = json.dumps(indicator_models or [], ensure_ascii=False)
     return f"""
         <html>
             <head>
@@ -25,7 +38,7 @@ def render_company_detail_page(company_name: str) -> str:
                     href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css"
                 />
                 <style>
-                    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
+                    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap");
                     {BASE_PAGE_STYLES}
                     :root {{
                         --ink: #0f172a;
@@ -76,6 +89,27 @@ def render_company_detail_page(company_name: str) -> str:
                         display: flex;
                         align-items: center;
                         gap: 0.5rem;
+                    }}
+                    .view-tabs {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.35rem;
+                        margin: 0.2rem 0 1rem;
+                    }}
+                    .view-tab {{
+                        border: 1px solid #d1d5db;
+                        background: #ffffff;
+                        color: #334155;
+                        border-radius: 999px;
+                        padding: 0.3rem 0.65rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .view-tab.active {{
+                        background: #0f172a;
+                        border-color: #0f172a;
+                        color: #ffffff;
                     }}
                     .refresh-wrap {{
                         position: relative;
@@ -130,9 +164,36 @@ def render_company_detail_page(company_name: str) -> str:
                         font-size: 0.75rem;
                         color: #94a3b8;
                     }}
+                    .daily-report-card {{
+                        border: 1px solid #dbeafe;
+                        background: #f8fbff;
+                        border-radius: 0.9rem;
+                        padding: 0.85rem 0.95rem;
+                        margin-bottom: 0.9rem;
+                    }}
+                    .daily-report-card .daily-report-meta {{
+                        font-size: 0.78rem;
+                        color: #64748b;
+                        margin-bottom: 0.35rem;
+                    }}
+                    .daily-report-card .daily-report-output {{
+                        line-height: 1.65;
+                        font-size: 0.92rem;
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
+                    }}
                     .day-analyze-input {{
                         width: 64px;
                         min-width: 64px;
+                        height: 30px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.5rem;
+                        padding: 0.2rem 0.45rem;
+                        font-size: 0.8rem;
+                    }}
+                    .day-analyze-prompt {{
+                        width: 124px;
+                        min-width: 124px;
                         height: 30px;
                         border: 1px solid #d1d5db;
                         border-radius: 0.5rem;
@@ -238,7 +299,8 @@ def render_company_detail_page(company_name: str) -> str:
                     .timeline-dot.weekly {{ background: var(--accent-2); }}
                     .timeline-label {{ font-size: 0.9rem; color: #374151; }}
                     .report {{
-                        font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+                        font-family: "Space Grotesk", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+                                     "Microsoft YaHei", "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
                         font-size: 14px;
                         line-height: 1.7;
                         color: var(--ink);
@@ -288,6 +350,17 @@ def render_company_detail_page(company_name: str) -> str:
                         color: #4b5563;
                     }}
                     .news-content div {{ margin-bottom: 0.4rem; }}
+                    .news-field pre {{
+                        margin: 0.35rem 0 0;
+                        padding: 0.55rem 0.65rem;
+                        border-radius: 0.55rem;
+                        border: 1px solid #e5e7eb;
+                        background: #f8fafc;
+                        font-size: 0.78rem;
+                        line-height: 1.35;
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
+                    }}
                     .news-summary {{ margin-top: 0.6rem; }}
                     .news-summary strong {{ color: #111827; }}
                     .news-details {{ margin-top: 0.6rem; display: none; }}
@@ -342,6 +415,327 @@ def render_company_detail_page(company_name: str) -> str:
                         box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
                     }}
                     .placeholder {{ color: #6b7280; }}
+                    .status-panel {{
+                        border: 1px solid #dbeafe;
+                        background: #f8fbff;
+                        border-radius: 1rem;
+                        padding: 0.95rem;
+                        box-shadow: var(--card-shadow);
+                    }}
+                    .status-panel-header {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 0.75rem;
+                        flex-wrap: wrap;
+                        margin-bottom: 0.65rem;
+                    }}
+                    .status-controls {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        flex-wrap: wrap;
+                    }}
+                    .status-select {{
+                        height: 30px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.5rem;
+                        padding: 0.2rem 0.45rem;
+                        font-size: 0.8rem;
+                        background: #fff;
+                    }}
+                    .status-btn {{
+                        border: 1px solid #2563eb;
+                        background: #2563eb;
+                        color: #fff;
+                        border-radius: 999px;
+                        padding: 0.35rem 0.7rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .status-btn:hover {{ background: #1d4ed8; border-color: #1d4ed8; }}
+                    .status-meta {{
+                        color: #64748b;
+                        font-size: 0.8rem;
+                        margin-bottom: 0.55rem;
+                    }}
+                    .status-output {{
+                        overflow-wrap: anywhere;
+                        line-height: 1.65;
+                        font-size: 0.92rem;
+                    }}
+                    .status-output p {{
+                        margin: 0.35rem 0 0.5rem;
+                    }}
+                    .status-output h1,
+                    .status-output h2,
+                    .status-output h3,
+                    .status-output h4 {{
+                        margin: 0.6rem 0 0.4rem;
+                        line-height: 1.35;
+                    }}
+                    .status-output ul,
+                    .status-output ol {{
+                        margin: 0.35rem 0 0.55rem;
+                        padding-left: 1.2rem;
+                    }}
+                    .status-output li {{
+                        margin: 0.18rem 0;
+                    }}
+                    .status-output pre {{
+                        margin: 0.45rem 0;
+                        padding: 0.55rem 0.65rem;
+                        border-radius: 0.55rem;
+                        border: 1px solid #e5e7eb;
+                        background: #f8fafc;
+                        overflow-x: auto;
+                    }}
+                    .status-output code {{
+                        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                        font-size: 0.84em;
+                    }}
+                    .status-output pre code {{
+                        font-size: 0.78rem;
+                        line-height: 1.35;
+                        white-space: pre;
+                    }}
+                    .status-output blockquote {{
+                        margin: 0.45rem 0;
+                        padding: 0.35rem 0.7rem;
+                        border-left: 3px solid #cbd5e1;
+                        color: #334155;
+                        background: #f8fafc;
+                    }}
+                    .stories-wrap {{
+                        display: grid;
+                        grid-template-columns: 280px 1fr;
+                        gap: 0.8rem;
+                    }}
+                    .stories-side {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.7rem;
+                        max-height: 70vh;
+                        overflow-y: auto;
+                    }}
+                    .story-list {{
+                        display: grid;
+                        gap: 0.5rem;
+                    }}
+                    .story-item {{
+                        border: 1px solid #dbeafe;
+                        background: #ffffff;
+                        border-radius: 0.7rem;
+                        padding: 0.55rem 0.6rem;
+                        cursor: pointer;
+                    }}
+                    .story-item.active {{
+                        border-color: #60a5fa;
+                        box-shadow: 0 0 0 1px #93c5fd inset;
+                    }}
+                    .story-item-title {{
+                        font-size: 0.9rem;
+                        font-weight: 700;
+                        color: #0f172a;
+                        margin-bottom: 0.25rem;
+                    }}
+                    .story-item-meta {{
+                        font-size: 0.76rem;
+                        color: #64748b;
+                    }}
+                    .stories-main {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.8rem;
+                    }}
+                    .story-detail-section {{
+                        margin-top: 0.65rem;
+                    }}
+                    .story-detail-section h3 {{
+                        margin: 0 0 0.28rem;
+                        font-size: 0.9rem;
+                    }}
+                    .story-detail-box {{
+                        border: 1px solid #e5e7eb;
+                        border-radius: 0.65rem;
+                        background: #fff;
+                        padding: 0.55rem 0.65rem;
+                        line-height: 1.6;
+                        font-size: 0.9rem;
+                    }}
+                    .story-ask-wrap {{
+                        margin-top: 0.75rem;
+                        display: grid;
+                        gap: 0.45rem;
+                    }}
+                    .story-ask-input {{
+                        width: 100%;
+                        min-height: 70px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.55rem;
+                        padding: 0.45rem 0.55rem;
+                        font-size: 0.86rem;
+                        background: #fff;
+                    }}
+                    .story-ask-btn {{
+                        width: fit-content;
+                        border: 1px solid #0f766e;
+                        background: #0f766e;
+                        color: #fff;
+                        border-radius: 999px;
+                        padding: 0.35rem 0.72rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .story-ask-log {{
+                        margin-top: 0.65rem;
+                        display: grid;
+                        gap: 0.5rem;
+                    }}
+                    .story-ask-row {{
+                        border: 1px solid #e5e7eb;
+                        background: #fff;
+                        border-radius: 0.6rem;
+                        padding: 0.5rem 0.6rem;
+                    }}
+                    .story-ask-meta {{
+                        font-size: 0.74rem;
+                        color: #64748b;
+                        margin-bottom: 0.2rem;
+                    }}
+                    @media (max-width: 980px) {{
+                        .stories-wrap {{
+                            grid-template-columns: 1fr;
+                        }}
+                    }}
+                    .stock-panel {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 1rem;
+                        background: #f8fbff;
+                        padding: 0.85rem;
+                        box-shadow: var(--card-shadow);
+                    }}
+                    .stock-controls {{
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        flex-wrap: wrap;
+                        margin-bottom: 0.9rem;
+                    }}
+                    .stock-range-btn {{
+                        border: 1px solid #cbd5e1;
+                        border-radius: 999px;
+                        padding: 0.28rem 0.62rem;
+                        background: #fff;
+                        color: #334155;
+                        font-size: 0.76rem;
+                        font-weight: 700;
+                        cursor: pointer;
+                    }}
+                    .stock-range-btn.active {{
+                        background: #0f172a;
+                        border-color: #0f172a;
+                        color: #fff;
+                    }}
+                    .stock-select {{
+                        height: 30px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.5rem;
+                        padding: 0.2rem 0.45rem;
+                        font-size: 0.8rem;
+                        background: #fff;
+                    }}
+                    .stock-chart-wrap {{
+                        border: 1px solid #e2e8f0;
+                        background: #fff;
+                        border-radius: 0.8rem;
+                        padding: 0.85rem 0.75rem 0.65rem;
+                        min-height: 460px;
+                        height: 460px;
+                    }}
+                    #stock-chart {{
+                        width: 100% !important;
+                        height: 420px !important;
+                    }}
+                    .stock-status {{
+                        font-size: 0.88rem;
+                        color: #64748b;
+                    }}
+                    .stock-analysis-list {{
+                        margin-top: 0.75rem;
+                        display: grid;
+                        gap: 0.55rem;
+                    }}
+                    .stock-analysis-item {{
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.7rem;
+                        background: #fff;
+                        padding: 0.55rem 0.65rem;
+                    }}
+                    .stock-analysis-meta {{
+                        font-size: 0.82rem;
+                        color: #64748b;
+                        margin-bottom: 0.25rem;
+                    }}
+                    @media (max-width: 980px) {{
+                        .stock-chart-wrap {{
+                            min-height: 380px;
+                            height: 380px;
+                        }}
+                        #stock-chart {{
+                            height: 340px !important;
+                        }}
+                    }}
+                    .indicator-section {{
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.75rem;
+                        background: #fff;
+                        padding: 0.65rem;
+                        margin-bottom: 0.65rem;
+                    }}
+                    .indicator-section h3 {{
+                        margin: 0 0 0.5rem;
+                        font-size: 0.96rem;
+                    }}
+                    .indicator-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        table-layout: fixed;
+                    }}
+                    .indicator-table th,
+                    .indicator-table td {{
+                        text-align: left;
+                        border-bottom: 1px solid #eef2f7;
+                        padding: 0.36rem 0.3rem;
+                        vertical-align: top;
+                        font-size: 0.86rem;
+                        overflow-wrap: anywhere;
+                    }}
+                    .indicator-table th {{
+                        width: 40%;
+                        color: #475569;
+                        font-weight: 600;
+                    }}
+                    .indicator-analysis-grid {{
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                        gap: 0.5rem;
+                        margin-top: 0.5rem;
+                    }}
+                    .indicator-analysis-card {{
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.6rem;
+                        background: #f8fafc;
+                        padding: 0.5rem 0.55rem;
+                    }}
+                    .indicator-analysis-card h4 {{
+                        margin: 0 0 0.35rem;
+                        font-size: 0.85rem;
+                    }}
                 </style>
             </head>
             <body class="report">
@@ -351,6 +745,10 @@ def render_company_detail_page(company_name: str) -> str:
                         <div class="header-row">
                             <h1>{display_company}</h1>
                             <div class="header-actions">
+                                <select class="week-input" id="output-language" title="Report language">
+                                    <option value="zh-CN" selected>简体中文</option>
+                                    <option value="en">English</option>
+                                </select>
                                 <select class="week-input" id="news-source">
                                     <option value="finnhub" selected>finnhub</option>
                                     <option value="openai">openai</option>
@@ -363,7 +761,14 @@ def render_company_detail_page(company_name: str) -> str:
                                 </div>
                             </div>
                         </div>
-                        <div class="layout">
+                        <div class="view-tabs" id="view-tabs">
+                            <button class="view-tab active" type="button" data-view-mode="stories">Stories</button>
+                            <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
+                            <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
+                            <button class="view-tab" type="button" data-view-mode="daily">Daily News</button>
+                            <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
+                        </div>
+                        <div class="layout" id="company-layout">
                             <div class="timeline" id="timeline"></div>
                             <div id="news-content">
                                 <p class="placeholder">Select a date from the timeline.</p>
@@ -372,15 +777,221 @@ def render_company_detail_page(company_name: str) -> str:
                     </section>
                 </div>
                 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+                <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                 <script>
+                    const stockModelChoices = {model_choices_json};
+                    const indicatorModels = {indicator_models_json};
                     const timelineEl = document.getElementById("timeline");
+                    const layoutEl = document.getElementById("company-layout");
                     const contentEl = document.getElementById("news-content");
+                    const viewTabsEl = document.getElementById("view-tabs");
                     const refreshBtn = document.getElementById("refresh-btn");
                     const refreshStatus = document.getElementById("refresh-status");
                     const rangeInput = document.getElementById("range-date");
+                    const outputLanguageSelect = document.getElementById("output-language");
                     const sourceSelect = document.getElementById("news-source");
+                    const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
-                    let selectedGroupKey = null;
+                    const VIEW_MODES = new Set(["stories", "stock", "indicators", "daily", "weekly"]);
+                    const RANGE_KEYS = new Set(["1D", "5D", "1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"]);
+                    function normalizeViewMode(raw) {{
+                        const token = String(raw || "").trim().toLowerCase();
+                        return VIEW_MODES.has(token) ? token : "stories";
+                    }}
+                    function normalizeRangeKey(raw) {{
+                        const token = String(raw || "").trim().toUpperCase();
+                        return RANGE_KEYS.has(token) ? token : "1Y";
+                    }}
+                    function readUrlState() {{
+                        const params = new URLSearchParams(window.location.search || "");
+                        const lang = String(params.get("lang") || "").trim();
+                        const source = String(params.get("source") || "").trim().toLowerCase();
+                        const dateRange = String(params.get("date_range") || "").trim();
+                        return {{
+                            viewMode: normalizeViewMode(params.get("view")),
+                            groupKey: String(params.get("group") || "").trim() || null,
+                            stockRange: normalizeRangeKey(params.get("range")),
+                            lang: lang === "en" ? "en" : "zh-CN",
+                            source: source || "finnhub",
+                            dateRange,
+                        }};
+                    }}
+                    function updateUrlState({{ viewMode = null, groupKey = null, stockRange = null }} = {{}}) {{
+                        const url = new URL(window.location.href);
+                        const params = url.searchParams;
+                        const mode = normalizeViewMode(viewMode || currentViewMode || "stories");
+                        params.set("view", mode);
+                        if ((mode === "daily" || mode === "weekly") && groupKey) {{
+                            params.set("group", String(groupKey));
+                        }} else {{
+                            params.delete("group");
+                        }}
+                        if (mode === "stock") {{
+                            params.set("range", normalizeRangeKey(stockRange || currentStockRange || "1Y"));
+                        }} else {{
+                            params.delete("range");
+                        }}
+                        params.set("lang", getOutputLanguage());
+                        if (sourceSelect && sourceSelect.value) {{
+                            params.set("source", String(sourceSelect.value || "finnhub").toLowerCase());
+                        }}
+                        if (rangeInput && rangeInput.value) {{
+                            params.set("date_range", String(rangeInput.value || "").trim());
+                        }}
+                        const next = `${{url.pathname}}?${{params.toString()}}`;
+                        window.history.replaceState({{}}, "", next);
+                    }}
+                    const initialUrlState = readUrlState();
+                    let selectedGroupKey = initialUrlState.groupKey;
+                    let currentViewMode = initialUrlState.viewMode;
+                    let currentStockRange = initialUrlState.stockRange;
+                    let allGroups = [];
+                    const statusCache = {{}};
+                    const storyCache = {{}};
+                    let stockChart = null;
+
+                    function getOutputLanguage() {{
+                        const selected = outputLanguageSelect && outputLanguageSelect.value
+                            ? String(outputLanguageSelect.value)
+                            : "zh-CN";
+                        return selected || "zh-CN";
+                    }}
+
+                    function initOutputLanguage() {{
+                        const key = "preferred_output_language";
+                        const saved = localStorage.getItem(key);
+                        const normalized = initialUrlState.lang || (saved === "en" ? "en" : "zh-CN");
+                        if (outputLanguageSelect) {{
+                            outputLanguageSelect.value = normalized;
+                            outputLanguageSelect.addEventListener("change", () => {{
+                                const next = getOutputLanguage();
+                                localStorage.setItem(key, next);
+                                for (const cacheKey of Object.keys(statusCache)) {{
+                                    delete statusCache[cacheKey];
+                                }}
+                                for (const cacheKey of Object.keys(storyCache)) {{
+                                    delete storyCache[cacheKey];
+                                }}
+                                if (currentViewMode === "stories") {{
+                                    renderStoriesView();
+                                }}
+                                updateUrlState({{
+                                    viewMode: currentViewMode,
+                                    groupKey: selectedGroupKey,
+                                    stockRange: currentStockRange,
+                                }});
+                            }});
+                        }}
+                    }}
+
+                    function escapeHtml(value) {{
+                        return String(value)
+                            .replace(/&/g, "&amp;")
+                            .replace(/</g, "&lt;")
+                            .replace(/>/g, "&gt;")
+                            .replace(/"/g, "&quot;")
+                            .replace(/'/g, "&#39;");
+                    }}
+
+                    function formatFieldLabel(key) {{
+                        const raw = String(key || "");
+                        if (!raw) return "";
+                        return raw
+                            .split("_")
+                            .filter(Boolean)
+                            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+                            .join(" ");
+                    }}
+
+                    function renderFieldValue(value) {{
+                        if (value === null || value === undefined) {{
+                            return "—";
+                        }}
+                        if (Array.isArray(value)) {{
+                            if (!value.length) {{
+                                return "—";
+                            }}
+                            const rows = value
+                                .map((entry) => `<li>${{renderFieldValue(entry)}}</li>`)
+                                .join("");
+                            return `<ul>${{rows}}</ul>`;
+                        }}
+                        if (typeof value === "object") {{
+                            const rows = Object.entries(value)
+                                .map(
+                                    ([subKey, subValue]) =>
+                                        `<li><strong>${{formatFieldLabel(subKey)}}:</strong> ${{renderFieldValue(subValue)}}</li>`
+                                )
+                                .join("");
+                            return rows ? `<ul>${{rows}}</ul>` : "—";
+                        }}
+                        const text = String(value).trim();
+                        return text ? toReadableBullets(text) : "—";
+                    }}
+
+                    function buildAllContentFields(content) {{
+                        if (!content || typeof content !== "object") {{
+                            return [];
+                        }}
+                        const skippedKeys = new Set(["summary", "sentiment"]);
+                        return Object.entries(content).map(
+                            ([key, value]) => {{
+                                if (skippedKeys.has(String(key || "").toLowerCase())) {{
+                                    return "";
+                                }}
+                                return (
+                                `<div class="news-field"><strong>${{formatFieldLabel(key)}}:</strong> ${{renderFieldValue(value)}}</div>`
+                                );
+                            }}
+                        ).filter(Boolean);
+                    }}
+
+                    function formatRawResponse(raw) {{
+                        if (!raw) {{
+                            return "";
+                        }}
+                        if (typeof raw !== "string") {{
+                            return escapeHtml(String(raw));
+                        }}
+                        try {{
+                            const parsed = JSON.parse(raw);
+                            return escapeHtml(JSON.stringify(parsed, null, 2));
+                        }} catch (_err) {{
+                            return escapeHtml(raw);
+                        }}
+                    }}
+
+                    function renderMarkdown(value) {{
+                        const content = String(value || "").trim();
+                        if (!content) {{
+                            return "<p>—</p>";
+                        }}
+                        if (window.marked && typeof window.marked.parse === "function") {{
+                            return window.marked.parse(content);
+                        }}
+                        return `<pre>${{escapeHtml(content)}}</pre>`;
+                    }}
+
+                    function toReadableBullets(raw) {{
+                        const text = String(raw || "").trim();
+                        if (!text) return "—";
+                        const clean = text.split("\\r").join("");
+                        const lines = clean.split("\\n").map((x) => x.trim()).filter(Boolean);
+                        if (lines.length >= 2) {{
+                            return `<ul>${{lines.map((line) => {{
+                                const stripped = line.startsWith("- ") || line.startsWith("* ")
+                                    ? line.slice(2).trim()
+                                    : line;
+                                return `<li>${{renderMarkdown(stripped)}}</li>`;
+                            }}).join("")}}</ul>`;
+                        }}
+                        const semis = clean.split(/\\s*[;；]\\s*/).map((x) => x.trim()).filter(Boolean);
+                        if (semis.length >= 2) {{
+                            return `<ul>${{semis.map((part) => `<li>${{renderMarkdown(part)}}</li>`).join("")}}</ul>`;
+                        }}
+                        return renderMarkdown(clean);
+                    }}
 
                     function buildNewsCard(item) {{
                         const sourceText = item.publisher || item.content.publisher;
@@ -391,37 +1002,14 @@ def render_company_detail_page(company_name: str) -> str:
                             .filter(Boolean)
                             .join(" · ");
                         const displayTime = formatPst(item.news_date_time);
-                        const contentLines = [];
-                        if (item.content.summary) {{
-                            // Summary is already shown in the summary block.
-                        }}
-                        if (item.content.facts) {{
-                            contentLines.push(`<div><strong>Facts:</strong> ${{item.content.facts}}</div>`);
-                        }}
-                        if (item.content.reasoning) {{
-                            contentLines.push(`<div><strong>Reasoning:</strong> ${{item.content.reasoning}}</div>`);
-                        }}
-                        if (item.content.uncertainties) {{
-                            contentLines.push(`<div><strong>Uncertainties:</strong> ${{item.content.uncertainties}}</div>`);
-                        }}
-                        if (item.content.short_term_impact) {{
-                            contentLines.push(`<div><strong>Short-term impact:</strong> ${{item.content.short_term_impact}}</div>`);
-                        }}
-                        if (item.content.long_term_impact) {{
-                            contentLines.push(`<div><strong>Long-term impact:</strong> ${{item.content.long_term_impact}}</div>`);
-                        }}
-                        if (item.content.priced_in) {{
-                            contentLines.push(`<div><strong>Priced in:</strong> ${{item.content.priced_in}}</div>`);
-                        }}
-                        if (item.content.insider_signals) {{
-                            contentLines.push(`<div><strong>Insider signals:</strong> ${{item.content.insider_signals}}</div>`);
-                        }}
-                        if (item.content.trends) {{
-                            contentLines.push(`<div><strong>Trends:</strong> ${{item.content.trends}}</div>`);
-                        }}
-                        if (item.content.sentiment) {{
-                            // Sentiment is already shown in the summary block.
-                        }}
+                        const summaryText = item.content && item.content.summary
+                            ? item.content.summary
+                            : "—";
+                        const sentimentText = item.content && item.content.sentiment
+                            ? item.content.sentiment
+                            : "—";
+                        const allContentFields = buildAllContentFields(item.content || {{}});
+                        const rawResponse = formatRawResponse(item.llm_response_raw || "");
                         return `
                             <div class="news-card ${{item.is_analyzed ? "analyzed" : "raw"}}" data-news-id="${{item.id}}">
                                 ${{item.news_source ? `<span class="news-source-tag">${{item.news_source}}</span>` : ""}}
@@ -431,14 +1019,17 @@ def render_company_detail_page(company_name: str) -> str:
                                     <div>${{meta}}</div>
                                 </div>
                                 <div class="news-content">
-                                    <div class="news-summary">
-                                        <div><strong>Summary:</strong> ${{item.content.summary || "—"}}</div>
-                                        <div><strong>Sentiment:</strong> ${{item.content.sentiment || "—"}}</div>
-                                        ${{!item.is_analyzed ? '<button class="news-action-btn analyze-inline" type="button">Analyze</button>' : ''}}
-                                        ${{!item.is_analyzed ? '<button class="news-action-btn remove-inline" type="button">Remove</button>' : ''}}
-                                    </div>
+                                    ${{!item.is_analyzed ? `<div class="news-summary">
+                                        <div><strong>Source:</strong> ${{sourceText || "—"}}</div>
+                                        <div>${{sourceLink || ""}}</div>
+                                        <button class="news-action-btn remove-inline" type="button">Remove</button>
+                                    </div>` : `<div class="news-summary">
+                                        <div><strong>Summary:</strong> ${{summaryText}}</div>
+                                        <div><strong>Sentiment:</strong> ${{sentimentText}}</div>
+                                    </div>`}}
                                     ${{item.is_analyzed ? `<div class="news-details">
-                                        ${{contentLines.join("")}}
+                                        ${{allContentFields.join("")}}
+                                        ${{rawResponse ? `<div class="news-field"><strong>OpenAI Response:</strong><pre>${{rawResponse}}</pre></div>` : ""}}
                                         <div class="news-actions">
                                             <button class="news-action-btn original" type="button">Original</button>
                                             <button class="news-action-btn delete" type="button">Remove</button>
@@ -447,6 +1038,909 @@ def render_company_detail_page(company_name: str) -> str:
                                 </div>
                             </div>
                         `;
+                    }}
+
+                    function getFilteredGroups() {{
+                        if (!Array.isArray(allGroups)) {{
+                            return [];
+                        }}
+                        if (currentViewMode === "daily") {{
+                            return allGroups.filter((g) => g.type === "daily");
+                        }}
+                        if (currentViewMode === "weekly") {{
+                            return allGroups.filter((g) => g.type === "weekly");
+                        }}
+                        return [];
+                    }}
+
+                    function setViewMode(mode) {{
+                        currentViewMode = normalizeViewMode(mode);
+                        updateUrlState({{
+                            viewMode: currentViewMode,
+                            groupKey: selectedGroupKey,
+                            stockRange: currentStockRange,
+                        }});
+                        const needsNewsRangeControls = currentViewMode === "daily" || currentViewMode === "weekly";
+                        if (sourceSelect) {{
+                            sourceSelect.style.display = needsNewsRangeControls ? "" : "none";
+                        }}
+                        if (rangeInput) {{
+                            rangeInput.style.display = needsNewsRangeControls ? "" : "none";
+                        }}
+                        if (refreshWrap) {{
+                            refreshWrap.style.display = needsNewsRangeControls ? "inline-flex" : "none";
+                        }}
+                        if (viewTabsEl) {{
+                            viewTabsEl.querySelectorAll(".view-tab").forEach((btn) => {{
+                                btn.classList.toggle("active", btn.dataset.viewMode === currentViewMode);
+                            }});
+                        }}
+                        if (currentViewMode === "status") {{
+                            timelineEl.style.display = "none";
+                            if (layoutEl) {{
+                                layoutEl.style.gridTemplateColumns = "1fr";
+                            }}
+                            renderStatusView();
+                            return;
+                        }}
+                        if (currentViewMode === "stories") {{
+                            timelineEl.style.display = "none";
+                            if (layoutEl) {{
+                                layoutEl.style.gridTemplateColumns = "1fr";
+                            }}
+                            renderStoriesView();
+                            return;
+                        }}
+                        if (currentViewMode === "stock") {{
+                            timelineEl.style.display = "none";
+                            if (layoutEl) {{
+                                layoutEl.style.gridTemplateColumns = "1fr";
+                            }}
+                            renderStockView();
+                            return;
+                        }}
+                        if (currentViewMode === "indicators") {{
+                            timelineEl.style.display = "none";
+                            if (layoutEl) {{
+                                layoutEl.style.gridTemplateColumns = "1fr";
+                            }}
+                            renderIndicatorsView();
+                            return;
+                        }}
+                        timelineEl.style.display = "";
+                        if (layoutEl) {{
+                            layoutEl.style.gridTemplateColumns = "200px 1fr";
+                        }}
+                        renderTimeline(getFilteredGroups());
+                    }}
+
+                    async function fetchCompanyStatus(promptStyle, generateIfMissing = true) {{
+                        const style = promptStyle || "simple";
+                        const outputLanguage = getOutputLanguage();
+                        const cacheKey = `${{style}}|${{outputLanguage}}`;
+                        const response = await fetch(
+                            `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=${{encodeURIComponent(style)}}`
+                        );
+                        const payload = await response.json();
+                        if (payload && payload.status) {{
+                            statusCache[cacheKey] = payload.status;
+                            return payload.status;
+                        }}
+                        if (!generateIfMissing) {{
+                            return null;
+                        }}
+                        const genResp = await fetch(
+                            `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`,
+                            {{ method: "POST" }}
+                        );
+                        const genPayload = await genResp.json();
+                        if (genPayload && genPayload.status) {{
+                            statusCache[cacheKey] = genPayload.status;
+                            return genPayload.status;
+                        }}
+                        return null;
+                    }}
+
+                    function renderStatusView() {{
+                        const outputLanguage = getOutputLanguage();
+                        const cachedSimple = statusCache[`simple|${{outputLanguage}}`] || null;
+                        const defaultStyle = cachedSimple ? "simple" : "simple";
+                        contentEl.innerHTML = `
+                            <div class="status-panel">
+                                <div class="status-panel-header">
+                                    <div>
+                                        <h2 style="margin:0;">Company Status</h2>
+                                        <div class="status-meta" id="status-meta">Loading status...</div>
+                                    </div>
+                                    <div class="status-controls">
+                                        <select class="status-select" id="status-prompt-style">
+                                            <option value="simple" selected>simple</option>
+                                            <option value="structured">structured</option>
+                                        </select>
+                                        <button class="status-btn" id="status-refresh-btn" type="button">Refresh Status</button>
+                                    </div>
+                                </div>
+                                <div class="status-output" id="status-output"></div>
+                            </div>
+                        `;
+                        const promptSelect = document.getElementById("status-prompt-style");
+                        const refreshStatusBtn = document.getElementById("status-refresh-btn");
+                        const statusOutput = document.getElementById("status-output");
+                        const statusMeta = document.getElementById("status-meta");
+                        if (promptSelect) {{
+                            promptSelect.value = defaultStyle;
+                        }}
+
+                        async function loadForStyle(style, forceGenerate = false) {{
+                            if (statusOutput) {{
+                                statusOutput.textContent = forceGenerate ? "Generating company status..." : "Loading company status...";
+                            }}
+                            if (statusMeta) {{
+                                statusMeta.textContent = "";
+                            }}
+                            let status = null;
+                            const outputLanguage = getOutputLanguage();
+                            const cacheKey = `${{style}}|${{outputLanguage}}`;
+                            if (!forceGenerate && statusCache[cacheKey]) {{
+                                status = statusCache[cacheKey];
+                            }} else if (!forceGenerate) {{
+                                status = await fetchCompanyStatus(style, true);
+                            }} else {{
+                                const resp = await fetch(
+                                    `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`,
+                                    {{ method: "POST" }}
+                                );
+                                const payload = await resp.json();
+                                status = payload && payload.status ? payload.status : null;
+                                if (status) {{
+                                    statusCache[cacheKey] = status;
+                                }}
+                            }}
+                            if (!status) {{
+                                if (statusOutput) {{
+                                    statusOutput.textContent = "No company status available yet.";
+                                }}
+                                if (statusMeta) {{
+                                    statusMeta.textContent = "Generate status after you have company news / daily reports.";
+                                }}
+                                return;
+                            }}
+                            if (statusMeta) {{
+                                statusMeta.textContent =
+                                    `as_of=${{status.as_of_date}} · window=${{status.window_start_date}} → ${{status.window_end_date}} · provider=${{status.provider}} · model=${{status.model}} · prompt=${{status.prompt_style}} · generated=${{status.created_at}}`;
+                            }}
+                            if (statusOutput) {{
+                                statusOutput.innerHTML = renderMarkdown(status.output_text || "—");
+                            }}
+                        }}
+
+                        if (promptSelect) {{
+                            promptSelect.addEventListener("change", () => {{
+                                loadForStyle(promptSelect.value, false);
+                            }});
+                        }}
+                        if (refreshStatusBtn) {{
+                            refreshStatusBtn.addEventListener("click", async () => {{
+                                refreshStatusBtn.disabled = true;
+                                refreshStatusBtn.textContent = "Refreshing...";
+                                try {{
+                                    const style = promptSelect ? promptSelect.value : "simple";
+                                    await loadForStyle(style, true);
+                                }} finally {{
+                                    refreshStatusBtn.disabled = false;
+                                    refreshStatusBtn.textContent = "Refresh Status";
+                                }}
+                            }});
+                        }}
+
+                        loadForStyle(defaultStyle, false);
+                    }}
+
+                    function formatStoryArray(value) {{
+                        if (!Array.isArray(value) || !value.length) {{
+                            return "<p>—</p>";
+                        }}
+                        function formatStoryEntry(entry) {{
+                            if (entry === null || entry === undefined) {{
+                                return "—";
+                            }}
+                            if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {{
+                                return renderMarkdown(String(entry));
+                            }}
+                            if (Array.isArray(entry)) {{
+                                return `<ul>${{entry.map((row) => `<li>${{formatStoryEntry(row)}}</li>`).join("")}}</ul>`;
+                            }}
+                            if (typeof entry === "object") {{
+                                const title = entry.title || entry.news_title || entry.headline || entry.label || entry.key || "";
+                                const date = entry.date || entry.news_date_time || entry.report_date || entry.as_of_date || "";
+                                const source = entry.source || entry.news_source || entry.provider || "";
+                                const link = entry.url || entry.news_source_link || entry.link || "";
+                                const summary = entry.summary || entry.note || entry.change || entry.text || "";
+                                if (title || date || source || link || summary) {{
+                                    const top = [
+                                        title ? `<strong>${{escapeHtml(String(title))}}</strong>` : "",
+                                        date ? escapeHtml(String(date)) : "",
+                                        source ? escapeHtml(String(source)) : "",
+                                    ].filter(Boolean).join(" · ");
+                                    const linkHtml = link
+                                        ? `<div><a href="${{escapeHtml(String(link))}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(String(link))}}</a></div>`
+                                        : "";
+                                    const summaryHtml = summary
+                                        ? `<div>${{renderMarkdown(String(summary))}}</div>`
+                                        : "";
+                                    return `<div>${{top || "Item"}}${{linkHtml}}${{summaryHtml}}</div>`;
+                                }}
+                                return `<pre>${{escapeHtml(JSON.stringify(entry, null, 2))}}</pre>`;
+                            }}
+                            return escapeHtml(String(entry));
+                        }}
+                        return `<ul>${{value.map((entry) => `<li>${{formatStoryEntry(entry)}}</li>`).join("")}}</ul>`;
+                    }}
+
+                    async function fetchJsonWithTimeout(url, options = {{}}, timeoutMs = 90000) {{
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {{
+                            const response = await fetch(url, {{ ...options, signal: controller.signal }});
+                            let payload = null;
+                            try {{
+                                payload = await response.json();
+                            }} catch (_err) {{
+                                payload = null;
+                            }}
+                            if (!response.ok) {{
+                                const msg = (payload && payload.error)
+                                    ? String(payload.error)
+                                    : `HTTP ${{response.status}}`;
+                                throw new Error(msg);
+                            }}
+                            if (payload && payload.error) {{
+                                throw new Error(String(payload.error));
+                            }}
+                            return payload || {{}};
+                        }} finally {{
+                            clearTimeout(timer);
+                        }}
+                    }}
+
+                    async function fetchStoryList(style, forceRefresh = false) {{
+                        const outputLanguage = getOutputLanguage();
+                        const cacheKey = `${{style}}|${{outputLanguage}}`;
+                        if (!forceRefresh && storyCache[cacheKey]) {{
+                            return storyCache[cacheKey];
+                        }}
+                        const url = forceRefresh
+                            ? `/api/company/${{encodeURIComponent(companyName)}}/stories/refresh?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`
+                            : `/api/company/${{encodeURIComponent(companyName)}}/stories?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`;
+                        const payload = await fetchJsonWithTimeout(
+                            url,
+                            {{ method: forceRefresh ? "POST" : "GET" }},
+                            forceRefresh ? 180000 : 30000,
+                        );
+                        const stories = Array.isArray(payload.stories) ? payload.stories : [];
+                        storyCache[cacheKey] = stories;
+                        return stories;
+                    }}
+
+                    async function fetchStoryDetail(storyKey, style) {{
+                        const outputLanguage = getOutputLanguage();
+                        return fetchJsonWithTimeout(
+                            `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`,
+                            {{ method: "GET" }},
+                            30000,
+                        );
+                    }}
+
+                    function renderStoryDetailBody(story, updates, qa) {{
+                        if (!story) {{
+                            return '<p class="placeholder">Select a story to see details.</p>';
+                        }}
+                        const updatesRows = Array.isArray(updates) && updates.length
+                            ? updates
+                                .slice(0, 6)
+                                .map((row) => `<li>${{row.as_of_date}} · model=${{row.model}} · provider=${{row.provider}}</li>`)
+                                .join("")
+                            : "<li>—</li>";
+                        const qaRows = Array.isArray(qa) && qa.length
+                            ? qa.map((row) => `
+                                <div class="story-ask-row">
+                                    <div class="story-ask-meta">${{row.created_at}} · ${{row.provider}} · ${{row.model}}</div>
+                                    <div><strong>Q:</strong> ${{escapeHtml(row.question || "")}}</div>
+                                    <div><strong>A:</strong> ${{renderMarkdown(row.answer || "")}}</div>
+                                </div>
+                              `).join("")
+                            : '<p class="placeholder">No Q&A yet.</p>';
+                        return `
+                            <div class="story-detail-section">
+                                <h3>${{escapeHtml(story.story_title || "")}}</h3>
+                                <div class="story-item-meta">status=${{story.story_status}} · confidence=${{Number(story.confidence || 0).toFixed(2)}} · updated=${{story.updated_at || ""}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Past</h3>
+                                <div class="story-detail-box">${{toReadableBullets(story.happened_text || "—")}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Now</h3>
+                                <div class="story-detail-box">${{toReadableBullets(story.happening_text || "—")}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Next</h3>
+                                <div class="story-detail-box">${{toReadableBullets(story.next_text || "—")}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Open Questions</h3>
+                                <div class="story-detail-box">${{formatStoryArray(story.open_questions || [])}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Evidence</h3>
+                                <div class="story-detail-box">${{formatStoryArray(story.evidence || [])}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Recent Changes</h3>
+                                <div class="story-detail-box">${{formatStoryArray(story.change_log || [])}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Update History</h3>
+                                <div class="story-detail-box"><ul>${{updatesRows}}</ul></div>
+                            </div>
+                            <div class="story-ask-wrap">
+                                <h3 style="margin:0;">Deep Dive Question</h3>
+                                <textarea class="story-ask-input" id="story-ask-input" placeholder="Ask a question for this story..."></textarea>
+                                <button class="story-ask-btn" id="story-ask-btn" type="button">Ask</button>
+                            </div>
+                            <div class="story-ask-log" id="story-ask-log">${{qaRows}}</div>
+                        `;
+                    }}
+
+                    function renderStoriesView() {{
+                        contentEl.innerHTML = `
+                            <div class="status-panel">
+                                <div class="status-panel-header">
+                                    <div>
+                                        <h2 style="margin:0;">Company Stories</h2>
+                                        <div class="status-meta" id="stories-meta">Loading stories...</div>
+                                    </div>
+                                    <div class="status-controls">
+                                        <select class="status-select" id="stories-prompt-style">
+                                            <option value="simple" selected>simple</option>
+                                            <option value="structured">structured</option>
+                                        </select>
+                                        <button class="status-btn" id="stories-refresh-btn" type="button">Refresh Stories</button>
+                                    </div>
+                                </div>
+                                <div class="stories-wrap">
+                                    <div class="stories-side"><div class="story-list" id="story-list"></div></div>
+                                    <div class="stories-main" id="story-detail"><p class="placeholder">Select a story to see details.</p></div>
+                                </div>
+                            </div>
+                        `;
+                        const promptSelect = document.getElementById("stories-prompt-style");
+                        const refreshBtn = document.getElementById("stories-refresh-btn");
+                        const metaEl = document.getElementById("stories-meta");
+                        const listEl = document.getElementById("story-list");
+                        const detailEl = document.getElementById("story-detail");
+                        let activeStoryKey = "";
+
+                        async function renderDetail(storyKey, style) {{
+                            if (!storyKey || !detailEl) return;
+                            detailEl.innerHTML = '<p class="placeholder">Loading story detail...</p>';
+                            try {{
+                                const payload = await fetchStoryDetail(storyKey, style);
+                                if (!payload || !payload.story) {{
+                                    detailEl.innerHTML = '<p class="placeholder">Story detail not found.</p>';
+                                    return;
+                                }}
+                                detailEl.innerHTML = renderStoryDetailBody(
+                                    payload.story,
+                                    payload.updates || [],
+                                    payload.qa || [],
+                                );
+                            }} catch (err) {{
+                                const msg = err && err.message ? err.message : "Failed to load story detail.";
+                                detailEl.innerHTML = `<p class="placeholder">${{escapeHtml(String(msg))}}</p>`;
+                                return;
+                            }}
+                            const askBtn = document.getElementById("story-ask-btn");
+                            const askInput = document.getElementById("story-ask-input");
+                            if (askBtn && askInput) {{
+                                askBtn.addEventListener("click", async () => {{
+                                    const question = String(askInput.value || "").trim();
+                                    if (!question) return;
+                                    askBtn.disabled = true;
+                                    askBtn.textContent = "Asking...";
+                                    try {{
+                                        const response = await fetch(
+                                            `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/ask?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                            {{
+                                                method: "POST",
+                                                headers: {{ "Content-Type": "application/json" }},
+                                                body: JSON.stringify({{ question }}),
+                                            }}
+                                        );
+                                        const askPayload = await response.json();
+                                        if (askPayload && !askPayload.error) {{
+                                            askInput.value = "";
+                                            await renderDetail(storyKey, style);
+                                        }}
+                                    }} finally {{
+                                        askBtn.disabled = false;
+                                        askBtn.textContent = "Ask";
+                                    }}
+                                }});
+                            }}
+                        }}
+
+                        async function loadStories(forceRefresh = false) {{
+                            const style = promptSelect ? promptSelect.value : "simple";
+                            if (metaEl) {{
+                                metaEl.textContent = forceRefresh ? "Refreshing stories..." : "Loading stories...";
+                            }}
+                            let stories = [];
+                            try {{
+                                stories = await fetchStoryList(style, forceRefresh);
+                            }} catch (err) {{
+                                const msg = err && err.message ? err.message : "Failed to load stories.";
+                                if (metaEl) {{
+                                    metaEl.textContent = `Error: ${{msg}}`;
+                                }}
+                                if (listEl) {{
+                                    listEl.innerHTML = `<p class="placeholder">${{escapeHtml(String(msg))}}</p>`;
+                                }}
+                                if (detailEl) {{
+                                    detailEl.innerHTML = '<p class="placeholder">No story detail available.</p>';
+                                }}
+                                return;
+                            }}
+                            if (metaEl) {{
+                                metaEl.textContent = `${{stories.length}} stor${{stories.length === 1 ? "y" : "ies"}}`;
+                            }}
+                            if (!listEl) return;
+                            if (!stories.length) {{
+                                listEl.innerHTML = '<p class="placeholder">No stories yet. Click Refresh Stories.</p>';
+                                if (detailEl) {{
+                                    detailEl.innerHTML = '<p class="placeholder">No story detail available.</p>';
+                                }}
+                                return;
+                            }}
+                            if (!activeStoryKey) {{
+                                activeStoryKey = stories[0].story_key;
+                            }}
+                            listEl.innerHTML = stories.map((story) => `
+                                <div class="story-item ${{story.story_key === activeStoryKey ? "active" : ""}}" data-story-key="${{story.story_key}}">
+                                    <div class="story-item-title">${{escapeHtml(story.story_title || "")}}</div>
+                                    <div class="story-item-meta">#${{story.importance_rank}} · ${{story.story_status}} · conf=${{Number(story.confidence || 0).toFixed(2)}}</div>
+                                </div>
+                            `).join("");
+                            listEl.querySelectorAll(".story-item").forEach((node) => {{
+                                node.addEventListener("click", async () => {{
+                                    activeStoryKey = node.dataset.storyKey || "";
+                                    listEl.querySelectorAll(".story-item").forEach((x) => x.classList.remove("active"));
+                                    node.classList.add("active");
+                                    await renderDetail(activeStoryKey, style);
+                                }});
+                            }});
+                            await renderDetail(activeStoryKey, style);
+                        }}
+
+                        if (promptSelect) {{
+                            promptSelect.addEventListener("change", () => {{
+                                activeStoryKey = "";
+                                loadStories(false);
+                            }});
+                        }}
+                        if (refreshBtn) {{
+                            refreshBtn.addEventListener("click", async () => {{
+                                refreshBtn.disabled = true;
+                                refreshBtn.textContent = "Refreshing...";
+                                try {{
+                                    activeStoryKey = "";
+                                    await loadStories(true);
+                                }} finally {{
+                                    refreshBtn.disabled = false;
+                                    refreshBtn.textContent = "Refresh Stories";
+                                }}
+                            }});
+                        }}
+
+                        loadStories(false);
+                    }}
+
+                    function renderStockView() {{
+                        const defaultRange = normalizeRangeKey(currentStockRange || "1Y");
+                        const defaultModel = "gpt-5.2";
+                        const modelOptions = Array.isArray(stockModelChoices)
+                            ? stockModelChoices.map((item) => {{
+                                const provider = String(item.provider || "");
+                                const model = String(item.model || "");
+                                const selected = model === defaultModel ? "selected" : "";
+                                return `<option value="${{model}}" data-provider="${{provider}}" ${{selected}}>${{provider}} · ${{model}}</option>`;
+                            }}).join("")
+                            : `<option value="${{defaultModel}}" data-provider="openai" selected>openai · ${{defaultModel}}</option>`;
+                        contentEl.innerHTML = `
+                            <div class="stock-panel">
+                                <div class="status-panel-header">
+                                    <div>
+                                        <h2 style="margin:0;">Company Stock</h2>
+                                        <div class="stock-status" id="stock-status">Loading price series...</div>
+                                    </div>
+                                    <div class="stock-controls">
+                                        <button class="stock-range-btn" data-range="1D" type="button">1D</button>
+                                        <button class="stock-range-btn" data-range="5D" type="button">5D</button>
+                                        <button class="stock-range-btn" data-range="1M" type="button">1M</button>
+                                        <button class="stock-range-btn" data-range="3M" type="button">3M</button>
+                                        <button class="stock-range-btn" data-range="6M" type="button">6M</button>
+                                        <button class="stock-range-btn" data-range="8M" type="button">8M</button>
+                                        <button class="stock-range-btn active" data-range="1Y" type="button">1Y</button>
+                                        <button class="stock-range-btn" data-range="2Y" type="button">2Y</button>
+                                        <button class="stock-range-btn" data-range="3Y" type="button">3Y</button>
+                                        <button class="stock-range-btn" data-range="5Y" type="button">5Y</button>
+                                        <select class="stock-select" id="stock-analysis-model">${{modelOptions}}</select>
+                                        <button class="status-btn" id="stock-analyze-btn" type="button">Analyze Moves</button>
+                                    </div>
+                                </div>
+                                <div class="stock-chart-wrap">
+                                    <canvas id="stock-chart" height="120"></canvas>
+                                </div>
+                                <div class="stock-analysis-list" id="stock-analysis-list"></div>
+                            </div>
+                        `;
+                        const statusEl = document.getElementById("stock-status");
+                        const chartEl = document.getElementById("stock-chart");
+                        const analysisListEl = document.getElementById("stock-analysis-list");
+                        const analyzeBtn = document.getElementById("stock-analyze-btn");
+                        const modelSelect = document.getElementById("stock-analysis-model");
+                        const rangeButtons = Array.from(contentEl.querySelectorAll(".stock-range-btn"));
+                        let activeRange = defaultRange;
+                        let latestSeries = [];
+                        let latestTicker = "";
+
+                        function getSelectedModel() {{
+                            return modelSelect && modelSelect.value ? String(modelSelect.value) : defaultModel;
+                        }}
+
+                        function getSelectedProvider() {{
+                            if (!modelSelect) return "openai";
+                            const selected = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
+                            if (!selected) return "openai";
+                            return String(selected.dataset.provider || "openai");
+                        }}
+
+                        function renderChart(points) {{
+                            if (!chartEl || !window.Chart) return;
+                            const labels = points.map((p) => String(p.date || ""));
+                            const closeData = points.map((p) => (typeof p.close === "number" ? p.close : null));
+                            const volumeData = points.map((p) => (typeof p.volume === "number" ? p.volume : null));
+                            const ma20 = points.map((p) => (typeof p.ma_20 === "number" ? p.ma_20 : null));
+                            const ma50 = points.map((p) => (typeof p.ma_50 === "number" ? p.ma_50 : null));
+                            const ma200 = points.map((p) => (typeof p.ma_200 === "number" ? p.ma_200 : null));
+                            if (stockChart) {{
+                                stockChart.destroy();
+                                stockChart = null;
+                            }}
+                            stockChart = new window.Chart(chartEl, {{
+                                type: "line",
+                                data: {{
+                                    labels,
+                                    datasets: [
+                                        {{
+                                            label: "Close",
+                                            data: closeData,
+                                            borderColor: "#0f172a",
+                                            backgroundColor: "rgba(15,23,42,0.06)",
+                                            tension: 0.15,
+                                            pointRadius: 0,
+                                            yAxisID: "y",
+                                        }},
+                                        {{
+                                            label: "MA20",
+                                            data: ma20,
+                                            borderColor: "#2563eb",
+                                            borderDash: [5, 4],
+                                            tension: 0.1,
+                                            pointRadius: 0,
+                                            yAxisID: "y",
+                                        }},
+                                        {{
+                                            label: "MA50",
+                                            data: ma50,
+                                            borderColor: "#16a34a",
+                                            borderDash: [6, 5],
+                                            tension: 0.1,
+                                            pointRadius: 0,
+                                            yAxisID: "y",
+                                        }},
+                                        {{
+                                            label: "MA200",
+                                            data: ma200,
+                                            borderColor: "#dc2626",
+                                            borderDash: [8, 6],
+                                            tension: 0.1,
+                                            pointRadius: 0,
+                                            yAxisID: "y",
+                                        }},
+                                        {{
+                                            label: "Volume",
+                                            type: "bar",
+                                            data: volumeData,
+                                            backgroundColor: "rgba(59,130,246,0.18)",
+                                            borderWidth: 0,
+                                            yAxisID: "y1",
+                                        }},
+                                    ],
+                                }},
+                                options: {{
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    interaction: {{ mode: "index", intersect: false }},
+                                    plugins: {{
+                                        legend: {{ display: true, labels: {{ boxWidth: 14 }} }},
+                                    }},
+                                    scales: {{
+                                        y: {{
+                                            position: "left",
+                                            title: {{ display: true, text: "Price" }},
+                                        }},
+                                        y1: {{
+                                            position: "right",
+                                            grid: {{ drawOnChartArea: false }},
+                                            title: {{ display: true, text: "Volume" }},
+                                        }},
+                                        x: {{
+                                            ticks: {{ maxTicksLimit: 10 }},
+                                        }},
+                                    }},
+                                }},
+                            }});
+                        }}
+
+                        function renderAnalysisRows(rows) {{
+                            if (!analysisListEl) return;
+                            if (!rows || !rows.length) {{
+                                analysisListEl.innerHTML = '<p class="placeholder">Run "Analyze Moves" to generate explanations for critical points.</p>';
+                                return;
+                            }}
+                            analysisListEl.innerHTML = rows.map((item) => {{
+                                const pct = typeof item.pct_change === "number" ? `${{item.pct_change.toFixed(2)}}%` : "—";
+                                const close = typeof item.close_price === "number" ? item.close_price.toFixed(2) : "—";
+                                const vol = item.volume !== null && item.volume !== undefined ? String(item.volume) : "—";
+                                return `
+                                    <div class="stock-analysis-item">
+                                        <div class="stock-analysis-meta">${{item.point_label || item.point_date_time}} · close=${{close}} · change=${{pct}} · volume=${{vol}}</div>
+                                        <div>${{renderMarkdown(item.output_text || "—")}}</div>
+                                    </div>
+                                `;
+                            }}).join("");
+                        }}
+
+                        async function loadSeries() {{
+                            if (statusEl) {{
+                                statusEl.textContent = `Loading ${{activeRange}} series...`;
+                            }}
+                            const response = await fetch(
+                                `/api/company/${{encodeURIComponent(companyName)}}/stock/series?range_key=${{encodeURIComponent(activeRange)}}`
+                            );
+                            const payload = await response.json();
+                            if (!response.ok || payload.error) {{
+                                if (statusEl) {{
+                                    statusEl.textContent = payload.error || "Failed to load stock series.";
+                                }}
+                                latestSeries = [];
+                                latestTicker = "";
+                                renderAnalysisRows([]);
+                                if (stockChart) {{
+                                    stockChart.destroy();
+                                    stockChart = null;
+                                }}
+                                return;
+                            }}
+                            latestSeries = Array.isArray(payload.points) ? payload.points : [];
+                            latestTicker = String(payload.ticker || "");
+                            const firstDate = latestSeries.length ? latestSeries[0].date : "";
+                            const lastDate = latestSeries.length ? latestSeries[latestSeries.length - 1].date : "";
+                            if (statusEl) {{
+                                statusEl.textContent = `${{latestTicker}} · ${{activeRange}} · ${{latestSeries.length}} points · ${{firstDate}} → ${{lastDate}}`;
+                            }}
+                            renderChart(latestSeries);
+                            renderAnalysisRows([]);
+                        }}
+
+                        async function analyzeMoves() {{
+                            if (!analyzeBtn) return;
+                            analyzeBtn.disabled = true;
+                            analyzeBtn.textContent = "Analyzing...";
+                            try {{
+                                const provider = getSelectedProvider();
+                                const model = getSelectedModel();
+                                const response = await fetch(
+                                    `/api/company/${{encodeURIComponent(companyName)}}/stock/moves/analyze?range_key=${{encodeURIComponent(activeRange)}}&provider=${{encodeURIComponent(provider)}}&model=${{encodeURIComponent(model)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                    {{ method: "POST" }}
+                                );
+                                const payload = await response.json();
+                                if (!response.ok || payload.error) {{
+                                    if (statusEl) {{
+                                        statusEl.textContent = payload.error || "Analyze failed";
+                                    }}
+                                    return;
+                                }}
+                                renderAnalysisRows(payload.analyses || []);
+                            }} finally {{
+                                analyzeBtn.disabled = false;
+                                analyzeBtn.textContent = "Analyze Moves";
+                            }}
+                        }}
+
+                        rangeButtons.forEach((btn) => {{
+                            const isActive = String(btn.dataset.range || "").toUpperCase() === activeRange;
+                            btn.classList.toggle("active", isActive);
+                            btn.addEventListener("click", async () => {{
+                                activeRange = String(btn.dataset.range || defaultRange);
+                                currentStockRange = normalizeRangeKey(activeRange);
+                                updateUrlState({{
+                                    viewMode: "stock",
+                                    stockRange: currentStockRange,
+                                }});
+                                rangeButtons.forEach((b) => b.classList.remove("active"));
+                                btn.classList.add("active");
+                                await loadSeries();
+                            }});
+                        }});
+                        if (analyzeBtn) {{
+                            analyzeBtn.addEventListener("click", analyzeMoves);
+                        }}
+                        loadSeries();
+                    }}
+
+                    function renderIndicatorRows(rows) {{
+                        if (!Array.isArray(rows) || !rows.length) {{
+                            return '<p class="placeholder">No indicator rows.</p>';
+                        }}
+                        const formatCellValue = (value) => {{
+                            if (value === null || value === undefined) {{
+                                return "—";
+                            }}
+                            if (typeof value === "object") {{
+                                return `<pre>${{escapeHtml(JSON.stringify(value, null, 2))}}</pre>`;
+                            }}
+                            return escapeHtml(String(value));
+                        }};
+                        const body = rows.map((row) => `
+                            <tr>
+                                <th>${{escapeHtml(String(row.label || ""))}}</th>
+                                <td>${{formatCellValue(row.value)}}</td>
+                            </tr>
+                        `).join("");
+                        return `<table class="indicator-table">${{body}}</table>`;
+                    }}
+
+                    function renderIndicatorsView() {{
+                        const defaultModel = (Array.isArray(indicatorModels) && indicatorModels.length)
+                            ? String(indicatorModels[0])
+                            : "gpt-4o-mini";
+                        const modelOptions = (Array.isArray(indicatorModels) && indicatorModels.length
+                            ? indicatorModels
+                            : [defaultModel]
+                        ).map((model) => `
+                            <option value="${{escapeHtml(String(model))}}">${{escapeHtml(String(model))}}</option>
+                        `).join("");
+                        contentEl.innerHTML = `
+                            <div class="status-panel">
+                                <div class="status-panel-header">
+                                    <div>
+                                        <h2 style="margin:0;">Indicators</h2>
+                                        <div class="status-meta" id="indicators-meta">Loading indicators...</div>
+                                    </div>
+                                    <div class="status-controls">
+                                        <select class="status-select" id="indicators-model">${{modelOptions}}</select>
+                                        <button class="status-btn" id="indicators-analyze-btn" type="button">Analyze Indicators</button>
+                                    </div>
+                                </div>
+                                <div id="indicators-sections"></div>
+                            </div>
+                        `;
+                        const sectionsEl = document.getElementById("indicators-sections");
+                        const metaEl = document.getElementById("indicators-meta");
+                        const modelEl = document.getElementById("indicators-model");
+                        const analyzeBtn = document.getElementById("indicators-analyze-btn");
+                        let sections = [];
+
+                        function renderSections(analysisBySection = null) {{
+                            if (!sectionsEl) return;
+                            if (!Array.isArray(sections) || !sections.length) {{
+                                sectionsEl.innerHTML = '<p class="placeholder">No indicator data available.</p>';
+                                return;
+                            }}
+                            sectionsEl.innerHTML = sections.map((section) => {{
+                                const sectionName = String(section.name || "");
+                                const sectionAnalysis = analysisBySection && analysisBySection[sectionName]
+                                    ? analysisBySection[sectionName]
+                                    : null;
+                                const analysisCards = sectionAnalysis
+                                    ? `
+                                        <div class="indicator-analysis-grid">
+                                            <div class="indicator-analysis-card">
+                                                <h4>Summary</h4>
+                                                <div>${{renderMarkdown(sectionAnalysis.summary || "—")}}</div>
+                                            </div>
+                                            <div class="indicator-analysis-card">
+                                                <h4>Highlights</h4>
+                                                <div>${{Array.isArray(sectionAnalysis.highlights) && sectionAnalysis.highlights.length ? `<ul>${{sectionAnalysis.highlights.map((x) => `<li>${{escapeHtml(String(x))}}</li>`).join("")}}</ul>` : "—"}}</div>
+                                            </div>
+                                            <div class="indicator-analysis-card">
+                                                <h4>Risks</h4>
+                                                <div>${{Array.isArray(sectionAnalysis.risks) && sectionAnalysis.risks.length ? `<ul>${{sectionAnalysis.risks.map((x) => `<li>${{escapeHtml(String(x))}}</li>`).join("")}}</ul>` : "—"}}</div>
+                                            </div>
+                                            <div class="indicator-analysis-card">
+                                                <h4>Questions</h4>
+                                                <div>${{Array.isArray(sectionAnalysis.questions) && sectionAnalysis.questions.length ? `<ul>${{sectionAnalysis.questions.map((x) => `<li>${{escapeHtml(String(x))}}</li>`).join("")}}</ul>` : "—"}}</div>
+                                            </div>
+                                        </div>
+                                      `
+                                    : "";
+                                return `
+                                    <div class="indicator-section" data-section-name="${{escapeHtml(sectionName)}}">
+                                        <h3>${{escapeHtml(sectionName)}}</h3>
+                                        ${{renderIndicatorRows(section.rows || [])}}
+                                        ${{analysisCards}}
+                                    </div>
+                                `;
+                            }}).join("");
+                        }}
+
+                        async function loadIndicators() {{
+                            if (metaEl) {{
+                                metaEl.textContent = "Loading indicators...";
+                            }}
+                            const response = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/indicators`);
+                            const payload = await response.json();
+                            if (!response.ok || payload.error) {{
+                                if (metaEl) {{
+                                    metaEl.textContent = payload.error || "Failed to load indicators";
+                                }}
+                                sections = [];
+                                renderSections(null);
+                                return;
+                            }}
+                            sections = Array.isArray(payload.sections) ? payload.sections : [];
+                            if (metaEl) {{
+                                metaEl.textContent = `ticker=${{payload.ticker || "—"}} · ${{sections.length}} sections`;
+                            }}
+                            renderSections(null);
+                        }}
+
+                        async function analyzeIndicators() {{
+                            if (!analyzeBtn) return;
+                            const selectedModel = modelEl && modelEl.value ? String(modelEl.value) : defaultModel;
+                            analyzeBtn.disabled = true;
+                            analyzeBtn.textContent = "Analyzing...";
+                            try {{
+                                const response = await fetch(
+                                    `/api/company/${{encodeURIComponent(companyName)}}/indicators/analyze?provider=openai&model=${{encodeURIComponent(selectedModel)}}`,
+                                    {{ method: "POST" }}
+                                );
+                                const payload = await response.json();
+                                if (!response.ok || payload.error) {{
+                                    if (metaEl) {{
+                                        metaEl.textContent = payload.error || "Analyze failed";
+                                    }}
+                                    return;
+                                }}
+                                const sectionResults = payload.analysis && payload.analysis.sections
+                                    ? payload.analysis.sections
+                                    : null;
+                                renderSections(sectionResults);
+                                if (metaEl) {{
+                                    metaEl.textContent = `ticker=${{payload.ticker || "—"}} · model=${{payload.model || selectedModel}}`;
+                                }}
+                            }} finally {{
+                                analyzeBtn.disabled = false;
+                                analyzeBtn.textContent = "Analyze Indicators";
+                            }}
+                        }}
+
+                        if (analyzeBtn) {{
+                            analyzeBtn.addEventListener("click", analyzeIndicators);
+                        }}
+                        loadIndicators();
                     }}
 
                     function renderNews(items, label, group) {{
@@ -461,6 +1955,17 @@ def render_company_detail_page(company_name: str) -> str:
                         const dayDate = isDaily
                             ? ((group.key || "").startsWith("day-") ? group.key.slice(4) : (group.label || ""))
                             : "";
+                        const dailyReport = isDaily ? (group.daily_report || null) : null;
+                        const dailyReportHtml = isDaily
+                            ? (dailyReport
+                                ? `<div class="daily-report-card">
+                                    <div class="daily-report-meta">Daily report · ${{dailyReport.created_at || ""}} · provider=${{dailyReport.provider}} · model=${{dailyReport.model}} · prompt=${{dailyReport.prompt_style}}</div>
+                                    <div class="daily-report-output">${{renderMarkdown(dailyReport.output_text || "")}}</div>
+                                   </div>`
+                                : `<div class="daily-report-card">
+                                    <div class="daily-report-meta">No daily report yet for this day.</div>
+                                   </div>`)
+                            : "";
                         const header = isDaily
                             ? `
                                 <div class="day-group-header">
@@ -468,8 +1973,11 @@ def render_company_detail_page(company_name: str) -> str:
                                     <div class="day-group-right">
                                         ${{filterableCount > 0
                                         ? `<div class="day-analyze-controls">
-                                                <button class="day-analyze-btn" id="day-analyze-btn" type="button">Analyze</button>
-                                                <input class="day-analyze-input" id="day-analyze-limit" type="number" min="1" max="${{filterableCount}}" value="${{Math.min(5, filterableCount)}}" />
+                                                <button class="day-analyze-btn" id="day-analyze-btn" type="button">Daily Report</button>
+                                                <select class="day-analyze-prompt" id="day-analyze-prompt">
+                                                    <option value="structured">structured</option>
+                                                    <option value="simple" selected>simple</option>
+                                                </select>
                                                 <span class="day-analyze-result" id="day-analyze-result"></span>
                                            </div>`
                                         : `<span class="day-note">No items for day actions</span>`}}
@@ -478,7 +1986,7 @@ def render_company_detail_page(company_name: str) -> str:
                                 </div>
                             `
                             : `<h2>${{label}}</h2>`;
-                        contentEl.innerHTML = header + items.map(buildNewsCard).join("");
+                        contentEl.innerHTML = header + dailyReportHtml + items.map(buildNewsCard).join("");
                         contentEl.querySelectorAll(".news-card").forEach((card) => {{
                             card.addEventListener("click", (event) => {{
                                 if (card.classList.contains("raw")) {{
@@ -511,32 +2019,13 @@ def render_company_detail_page(company_name: str) -> str:
                                 if (!newsId) {{
                                     return;
                                 }}
-                                await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}`, {{
+                                const removeUrl =
+                                    `/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}` +
+                                    `?output_language=${{encodeURIComponent(getOutputLanguage())}}`;
+                                await fetch(removeUrl, {{
                                     method: "DELETE",
                                 }});
                                 loadNews();
-                            }});
-                        }});
-                        contentEl.querySelectorAll(".news-action-btn.analyze-inline").forEach((button) => {{
-                            button.addEventListener("click", async (event) => {{
-                                event.stopPropagation();
-                                const actionButton = event.target;
-                                const card = actionButton.closest(".news-card");
-                                const newsId = card ? card.dataset.newsId : null;
-                                if (!newsId) {{
-                                    return;
-                                }}
-                                actionButton.disabled = true;
-                                actionButton.textContent = "Analyzing...";
-                                try {{
-                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}/summarize`, {{
-                                        method: "POST",
-                                    }});
-                                    loadNews();
-                                }} finally {{
-                                    actionButton.disabled = false;
-                                    actionButton.textContent = "Analyze";
-                                }}
                             }});
                         }});
                         contentEl.querySelectorAll(".news-action-btn.remove-inline").forEach((button) => {{
@@ -551,7 +2040,10 @@ def render_company_detail_page(company_name: str) -> str:
                                 actionButton.disabled = true;
                                 actionButton.textContent = "Removing...";
                                 try {{
-                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}`, {{
+                                    const removeUrl =
+                                        `/api/company/${{encodeURIComponent(companyName)}}/news/${{newsId}}` +
+                                        `?output_language=${{encodeURIComponent(getOutputLanguage())}}`;
+                                    await fetch(removeUrl, {{
                                         method: "DELETE",
                                     }});
                                     loadNews();
@@ -562,28 +2054,34 @@ def render_company_detail_page(company_name: str) -> str:
                             }});
                         }});
                         const dayAnalyzeBtn = document.getElementById("day-analyze-btn");
-                        const dayAnalyzeLimit = document.getElementById("day-analyze-limit");
+                        const dayAnalyzePrompt = document.getElementById("day-analyze-prompt");
                         const dayAnalyzeResult = document.getElementById("day-analyze-result");
-                        if (dayAnalyzeBtn && dayAnalyzeLimit && dayDate) {{
+                        if (dayAnalyzeBtn && dayDate) {{
                             dayAnalyzeBtn.addEventListener("click", async () => {{
-                                if (rawCount <= 0) {{
+                                if (filterableCount <= 0) {{
                                     if (dayAnalyzeResult) {{
-                                        dayAnalyzeResult.textContent = "No raw items to analyze";
+                                        dayAnalyzeResult.textContent = "No news for daily report";
                                     }}
                                     return;
                                 }}
-                                const value = Number(dayAnalyzeLimit.value || 5);
-                                const limit = Number.isFinite(value) ? Math.max(1, Math.min(rawCount || 100, Math.trunc(value))) : 5;
+                                const analysisPrompt = dayAnalyzePrompt && dayAnalyzePrompt.value
+                                    ? String(dayAnalyzePrompt.value)
+                                    : "simple";
                                 const dayAnalyzeStart = Date.now();
                                 dayAnalyzeBtn.disabled = true;
-                                dayAnalyzeBtn.textContent = "Analyzing...";
+                                if (dayAnalyzePrompt) {{
+                                    dayAnalyzePrompt.disabled = true;
+                                }}
+                                dayAnalyzeBtn.textContent = "Generating...";
                                 if (dayAnalyzeResult) {{
                                     dayAnalyzeResult.textContent = "";
                                 }}
                                 try {{
                                     const url =
                                         `/api/company/${{encodeURIComponent(companyName)}}/news/summarize/day` +
-                                        `?date=${{encodeURIComponent(dayDate)}}&limit=${{encodeURIComponent(String(limit))}}`;
+                                        `?date=${{encodeURIComponent(dayDate)}}` +
+                                        `&analysis_prompt=${{encodeURIComponent(analysisPrompt)}}` +
+                                        `&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
                                     const response = await fetch(url, {{ method: "POST" }});
                                     const payload = await response.json();
                                     if (!response.ok || payload.error) {{
@@ -603,11 +2101,14 @@ def render_company_detail_page(company_name: str) -> str:
                                         const elapsedSec = Number.isFinite(elapsedRaw)
                                             ? elapsedRaw.toFixed(1)
                                             : ((Date.now() - dayAnalyzeStart) / 1000).toFixed(1);
-                                        dayAnalyzeResult.textContent = `${{analyzed}} analyzed (from ${{processed}}) in ${{elapsedSec}}s`;
+                                        dayAnalyzeResult.textContent = `${{analyzed ? "daily report updated" : "no report"}} · ${{processed}} items · ${{elapsedSec}}s`;
                                     }}
                                 }} finally {{
                                     dayAnalyzeBtn.disabled = false;
-                                    dayAnalyzeBtn.textContent = "Analyze";
+                                    if (dayAnalyzePrompt) {{
+                                        dayAnalyzePrompt.disabled = false;
+                                    }}
+                                    dayAnalyzeBtn.textContent = "Daily Report";
                                 }}
                             }});
                         }}
@@ -633,7 +2134,7 @@ def render_company_detail_page(company_name: str) -> str:
                                     button.disabled = true;
                                     button.textContent = "Generating...";
                                     try {{
-                                        const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}`;
+                                        const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
                                         const response = await fetch(url, {{ method: "POST" }});
                                         const payload = await response.json();
                                         const groups = payload.groups || [];
@@ -703,7 +2204,7 @@ def render_company_detail_page(company_name: str) -> str:
                                 rebuildBtn.disabled = true;
                                 rebuildBtn.textContent = "Rebuilding...";
                                 try {{
-                                    const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}`;
+                                    const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
                                     const response = await fetch(url, {{ method: "POST" }});
                                     const payload = await response.json();
                                     const groups = payload.groups || [];
@@ -728,14 +2229,27 @@ def render_company_detail_page(company_name: str) -> str:
                                 group.items
                             );
                             selectedGroupKey = group.key;
+                            updateUrlState({{
+                                viewMode: currentViewMode,
+                                groupKey: selectedGroupKey,
+                            }});
                             return;
                         }}
                         renderNews(group.items || [], group.label, group);
                         selectedGroupKey = group.key;
+                        updateUrlState({{
+                            viewMode: currentViewMode,
+                            groupKey: selectedGroupKey,
+                        }});
                     }}
 
                     function renderTimeline(groups) {{
                         timelineEl.innerHTML = "";
+                        if (!groups || !groups.length) {{
+                            timelineEl.innerHTML = '<p class="placeholder">No items for this view.</p>';
+                            contentEl.innerHTML = '<p class="placeholder">No items for this view.</p>';
+                            return;
+                        }}
                         let selectedGroup = null;
                         groups.forEach((group) => {{
                             if (selectedGroupKey && group.key === selectedGroupKey) {{
@@ -767,15 +2281,18 @@ def render_company_detail_page(company_name: str) -> str:
                     }}
 
                     async function loadNews() {{
-                        const response = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/news`);
+                        const response = await fetch(
+                            `/api/company/${{encodeURIComponent(companyName)}}/news?output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                        );
                         const payload = await response.json();
                         const groups = payload.groups || [];
+                        allGroups = groups;
                         if (!groups.length) {{
                             timelineEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                             contentEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                             return;
                         }}
-                        renderTimeline(groups);
+                        setViewMode(currentViewMode || "stories");
                     }}
 
                     async function refreshNews() {{
@@ -798,6 +2315,8 @@ def render_company_detail_page(company_name: str) -> str:
                                 const joiner = url.includes("?") ? "&" : "?";
                                 url += `${{joiner}}source=${{encodeURIComponent(sourceSelect.value)}}`;
                             }}
+                            const joiner = url.includes("?") ? "&" : "?";
+                            url += `${{joiner}}output_language=${{encodeURIComponent(getOutputLanguage())}}`;
                             const response = await fetch(url, {{
                                 method: "POST",
                             }});
@@ -805,11 +2324,12 @@ def render_company_detail_page(company_name: str) -> str:
                             const fetchedTotal = Number(payload.fetched_total || 0);
                             const filteredOut = Number(payload.filtered_out || 0);
                             const groups = payload.groups || [];
+                            allGroups = groups;
                             if (!groups.length) {{
                                 timelineEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                                 contentEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                             }} else {{
-                                renderTimeline(groups);
+                                setViewMode(currentViewMode || "stories");
                             }}
                             if (refreshStatus) {{
                                 const elapsedRaw = Number(payload.elapsed_sec);
@@ -836,17 +2356,46 @@ def render_company_detail_page(company_name: str) -> str:
                     }}
 
 
+                    if (viewTabsEl) {{
+                        viewTabsEl.querySelectorAll(".view-tab").forEach((button) => {{
+                            button.addEventListener("click", () => {{
+                                setViewMode(button.dataset.viewMode || "stories");
+                            }});
+                        }});
+                    }}
+                    initOutputLanguage();
+                    if (sourceSelect) {{
+                        sourceSelect.value = initialUrlState.source || "finnhub";
+                        sourceSelect.addEventListener("change", () => updateUrlState({{
+                            viewMode: currentViewMode,
+                            groupKey: selectedGroupKey,
+                            stockRange: currentStockRange,
+                        }}));
+                    }}
                     refreshBtn.addEventListener("click", refreshNews);
                     if (window.flatpickr) {{
                         const today = new Date();
                         const weekStart = new Date(today);
-                        weekStart.setDate(today.getDate() - today.getDay() + 1);
-                        window.flatpickr(rangeInput, {{
+                        // Monday-based week start; on Sunday this should go back 6 days (not forward 1 day).
+                        const mondayOffset = (today.getDay() + 6) % 7;
+                        weekStart.setDate(today.getDate() - mondayOffset);
+                        const fp = window.flatpickr(rangeInput, {{
                             dateFormat: "Y-m-d",
                             locale: {{ firstDayOfWeek: 1 }},
                             mode: "range",
                             defaultDate: [weekStart, today],
                         }});
+                        if (initialUrlState.dateRange && initialUrlState.dateRange.includes(" to ")) {{
+                            const parts = initialUrlState.dateRange.split(" to ").map((x) => x.trim()).filter(Boolean);
+                            if (parts.length === 2) {{
+                                fp.setDate(parts, false);
+                            }}
+                        }}
+                        rangeInput.addEventListener("change", () => updateUrlState({{
+                            viewMode: currentViewMode,
+                            groupKey: selectedGroupKey,
+                            stockRange: currentStockRange,
+                        }}));
                     }}
                     loadNews();
 
@@ -874,7 +2423,15 @@ def render_company_detail_page(company_name: str) -> str:
                         if (typeof entry !== "string") {{
                             return entry;
                         }}
-                        return entry.replace(/^[-•\u2022]\s*/, "");
+                        const trimmed = entry.trimStart();
+                        if (
+                            trimmed.startsWith("- ") ||
+                            trimmed.startsWith("• ") ||
+                            trimmed.startsWith("* ")
+                        ) {{
+                            return trimmed.slice(2);
+                        }}
+                        return trimmed;
                     }}
                 </script>
             </body>
