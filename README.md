@@ -46,6 +46,25 @@ cd ..
 bash postgres/init_db.sh
 ```
 
+Schema notes:
+- `postgres/init.sql` defines base schema for local setup.
+- `postgres/migrations/*.sql` contains incremental migrations (also applied by `postgres/init_db.sh`).
+- `market_agent/schema_fields.py` is the central registry for newly added DB field/table names used in Python code.
+
+Current tables in use:
+- `company_news_raw`: raw news records per company.
+- `company_news_analyzed`: analyzed news content per company/model.
+- `company_news_daily_report`: daily company report snapshots (provider/prompt-specific).
+- `company_status_snapshot`: rolling company status snapshots built from daily/weekly reports.
+- `company_news_dropped`: archived/dropped news with drop metadata.
+- `company_watchlist`: tracked companies for company page.
+- `company_profile`: company metadata (ticker/profile fields).
+- `news_report`: weekly company news report payloads.
+- `market_news_daily_summary`: Market tab daily summary history (LLM input/output + provider/model/prompt style).
+- `market_news_item_analysis`: per-market-news single-item analysis cache (by date/url/model/language).
+- `market_price_daily_snapshot`: end-of-day market price snapshots (sectioned JSON for indexes/bonds/commodities/crypto and future extensions).
+- `company_price_daily`: cached daily OHLCV price history per company/ticker for stock chart ranges (with catch-up backfill on access).
+
 ## 3) Run Web App (Dev)
 
 From project root:
@@ -53,6 +72,10 @@ From project root:
 ```bash
 uvicorn frontend.web.server:app --reload --log-level info
 ```
+
+Market tab behavior:
+- On `/market`, summaries are loaded from `market_news_daily_summary` for today first.
+- If no summary exists for today, the app auto-generates one in real time and stores it.
 
 Open:
 
@@ -69,3 +92,7 @@ python3 -m py_compile frontend/web/server.py market_agent/analysis/company/news/
 # run tests (if pytest installed)
 pytest -q
 ```
+
+## 5) Roadmap
+
+See [roadmap.md](./roadmap.md) for roadmap and future work.
