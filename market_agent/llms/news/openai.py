@@ -11,8 +11,9 @@ from typing import Any, Dict, Iterable, List
 from market_agent.llms.news.interfaces import NewsProvider
 from market_agent.llms.news.prompts import (
     build_fetch_news_analysis_prompt,
+    build_news_analysis_prompt_simple,
+    build_news_analysis_prompt_structured,
     build_news_filter_prompt,
-    build_input_news_analysis_prompt,
     build_weekly_report_prompt,
 )
 from market_agent.llms.openai import chat_completion
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 DEFAULT_NEWS_MODEL = "gpt-5.2"
 WEB_SEARCH_ENV_FLAG = "OPENAI_USE_WEB_SEARCH"
+ANALYSIS_LOG_PREVIEW_MAX_CHARS = 4000
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -60,6 +62,19 @@ class OpenAINewsProvider(NewsProvider):
             end_date=end_date,
         )
 
+    def generate_text(
+        self,
+        *,
+        prompt: str,
+    ) -> str:
+        return chat_completion(
+            api_key=self.api_key,
+            model=self.model,
+            temperature=self.temperature,
+            timeout_sec=self.timeout_sec,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
     def fetch_weekly_report(
         self,
         *,
@@ -67,9 +82,14 @@ class OpenAINewsProvider(NewsProvider):
         start_date: str,
         end_date: str,
         articles: Iterable[Dict[str, Any]],
+        output_language: str = "en",
     ) -> Dict[str, Any]:
         prompt = _build_weekly_report_prompt(
-            company_name, start_date, end_date, articles
+            company_name,
+            start_date,
+            end_date,
+            articles,
+            output_language=output_language,
         )
         response = chat_completion(
             api_key=self.api_key,
@@ -90,9 +110,16 @@ class OpenAINewsProvider(NewsProvider):
         start_date: str,
         end_date: str,
         items: Iterable[Dict[str, Any]],
+        analysis_prompt: str = "simple",
     ) -> List[Dict[str, Any]]:
         serialized = list(items)
-        prompt = _build_analysis_prompt(company_name, start_date, end_date, serialized)
+        prompt = _build_analysis_prompt(
+            company_name,
+            start_date,
+            end_date,
+            serialized,
+            analysis_prompt=analysis_prompt,
+        )
         response = chat_completion(
             api_key=self.api_key,
             model=self.model,
@@ -102,8 +129,23 @@ class OpenAINewsProvider(NewsProvider):
                 {"role": "user", "content": prompt},
             ],
         )
+        selected_prompt = str(analysis_prompt or "simple").strip().lower()
+        logger.info(
+            "OpenAI analyze raw response: company=%s prompt=%s chars=%d preview=%s",
+            company_name,
+            selected_prompt,
+            len(response),
+            _preview_text(response, ANALYSIS_LOG_PREVIEW_MAX_CHARS),
+        )
         payload = _safe_json(response)
-        return _merge_analysis_items(serialized, _normalize_news_items(payload))
+        normalized = _normalize_news_items(payload)
+        logger.info(
+            "OpenAI analyze parsed response: company=%s prompt=%s items=%d",
+            company_name,
+            selected_prompt,
+            len(normalized),
+        )
+        return _merge_analysis_items(serialized, normalized)
 
     def filter_news_items(
         self,
@@ -170,12 +212,15 @@ def _build_weekly_report_prompt(
     start_date: str,
     end_date: str,
     articles: Iterable[Dict[str, Any]],
+    *,
+    output_language: str = "en",
 ) -> str:
     return build_weekly_report_prompt(
         company_name,
         start_date,
         end_date,
         articles,
+        output_language=output_language,
     )
 
 
@@ -184,8 +229,16 @@ def _build_analysis_prompt(
     start_date: str,
     end_date: str,
     items: List[Dict[str, Any]],
+    *,
+    analysis_prompt: str = "simple",
 ) -> str:
-    return build_input_news_analysis_prompt(
+    selected = str(analysis_prompt or "simple").strip().lower()
+    if selected == "simple":
+        return build_news_analysis_prompt_simple(
+            company_name,
+            items,
+        )
+    return build_news_analysis_prompt_structured(
         company_name,
         start_date,
         end_date,
@@ -342,6 +395,12 @@ def _dedupe_news_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _preview_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
 
 
 def _run_web_search_once(

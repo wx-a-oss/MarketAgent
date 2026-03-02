@@ -12,3 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PGGSSENCMODE=disable PGPASSWORD="${PGPASSWORD}" \
 psql "host=${PGHOST} port=${PGPORT} user=${PGUSER} dbname=${PGDATABASE}" \
   -f "${SCRIPT_DIR}/init.sql"
+
+if [ -d "${SCRIPT_DIR}/migrations" ]; then
+  for migration in "${SCRIPT_DIR}"/migrations/*.sql; do
+    [ -e "${migration}" ] || continue
+    echo "Applying migration: ${migration}"
+    PGGSSENCMODE=disable PGPASSWORD="${PGPASSWORD}" \
+    psql "host=${PGHOST} port=${PGPORT} user=${PGUSER} dbname=${PGDATABASE}" \
+      -f "${migration}"
+  done
+fi

@@ -19,3 +19,4 @@ class NewsArticle:
     id: Optional[int] = None
     is_analyzed: bool = False
     is_filtered: bool = False
+    analyzed_output_language: Optional[str] = None

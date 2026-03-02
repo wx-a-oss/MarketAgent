@@ -8,6 +8,13 @@ from typing import Any, Dict, Iterable, List, Protocol
 class NewsProvider(Protocol):
     name: str
 
+    def generate_text(
+        self,
+        *,
+        prompt: str,
+    ) -> str:
+        """Generate free-form text output for a prompt."""
+
     def fetch_news(
         self,
         *,
@@ -24,6 +31,7 @@ class NewsProvider(Protocol):
         start_date: str,
         end_date: str,
         articles: Iterable[Dict[str, Any]],
+        output_language: str = "en",
     ) -> Dict[str, Any]:
         """Return a weekly report object with required sections."""
 
@@ -34,6 +42,7 @@ class NewsProvider(Protocol):
         start_date: str,
         end_date: str,
         items: Iterable[Dict[str, Any]],
+        analysis_prompt: str = "simple",
     ) -> List[Dict[str, Any]]:
         """Analyze raw news items and return enriched items."""
 

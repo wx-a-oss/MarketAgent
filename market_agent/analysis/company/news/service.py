@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import logging
 import time as pytime
 from datetime import date, datetime, time, timedelta, timezone
@@ -14,6 +15,14 @@ from market_agent.analysis.company.news.db import get_connection
 from market_agent.analysis.company.news.datamodels import NewsArticle
 from market_agent.datasources.finnhub import FinnhubClient
 from market_agent.news_sources import get_news_source
+from market_agent.schema_fields import (
+    COL_OUTPUT_LANGUAGE,
+    COL_STORY_KEY,
+    TBL_COMPANY_NEWS_ANALYZED,
+    TBL_COMPANY_STORY_QA,
+    TBL_COMPANY_STORY_STATE,
+    TBL_COMPANY_STORY_UPDATE,
+)
 
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_PROVIDER = "openai"
@@ -108,13 +117,14 @@ def get_company_news(
     company_name: str,
     *,
     llm_model: str = DEFAULT_MODEL,
+    output_language: str = "zh-CN",
 ) -> List[NewsArticle]:
     _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     r.id AS raw_id,
                     r.company_name,
@@ -122,6 +132,7 @@ def get_company_news(
                     r.news_title,
                     r.content AS original_content,
                     a.content AS llm_analyzed_content,
+                    a.{COL_OUTPUT_LANGUAGE} AS analyzed_output_language,
                     COALESCE(a.source_link, r.source_link) AS news_source_link,
                     COALESCE(a.source, r.source) AS news_source,
                     COALESCE(r.is_analyzed, FALSE) AS is_analyzed,
@@ -130,13 +141,15 @@ def get_company_news(
                 LEFT JOIN LATERAL (
                     SELECT
                         aa.content,
+                        aa.{COL_OUTPUT_LANGUAGE},
                         aa.source_link,
                         aa.source
-                    FROM company_news_analyzed AS aa
+                    FROM {TBL_COMPANY_NEWS_ANALYZED} AS aa
                     WHERE aa.company_name = r.company_name
                       AND aa.news_title = r.news_title
                       AND aa.news_date_time = r.news_date_time
                     ORDER BY
+                        CASE WHEN aa.{COL_OUTPUT_LANGUAGE} = %s THEN 0 ELSE 1 END,
                         CASE WHEN aa.llm_model = %s THEN 0 ELSE 1 END,
                         aa.id DESC
                     LIMIT 1
@@ -144,7 +157,7 @@ def get_company_news(
                 WHERE r.company_name = %s
                 ORDER BY r.news_date_time DESC, r.id DESC
                 """,
-                (llm_model, company_name),
+                (output_language, llm_model, company_name),
             )
             return [
                 NewsArticle(
@@ -158,6 +171,7 @@ def get_company_news(
                     news_source=row["news_source"],
                     is_analyzed=bool(row["is_analyzed"]),
                     is_filtered=bool(row["is_filtered"]),
+                    analyzed_output_language=row.get("analyzed_output_language"),
                 )
                 for row in cur.fetchall()
             ]
@@ -189,12 +203,150 @@ def get_news_report(
                 return {"summary": row["content"]}
 
 
+def get_company_daily_report(
+    company_name: str,
+    *,
+    report_date: date,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    provider,
+                    model,
+                    prompt_style,
+                    input_payload,
+                    output_text,
+                    created_at
+                FROM company_news_daily_report
+                WHERE company_name = %s
+                  AND report_date = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (company_name, report_date, provider_name, prompt_style),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "provider": row["provider"],
+                "model": row["model"],
+                "prompt_style": row["prompt_style"],
+                "input_payload": row["input_payload"],
+                "output_text": row["output_text"],
+                "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+
+def get_company_daily_reports_for_range(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (report_date)
+                    report_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    input_payload,
+                    output_text,
+                    created_at
+                FROM company_news_daily_report
+                WHERE company_name = %s
+                  AND report_date >= %s
+                  AND report_date <= %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY report_date DESC, created_at DESC, id DESC
+                """,
+                (company_name, start_date, end_date, provider_name, prompt_style),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "report_date": row["report_date"].isoformat(),
+            "provider": row["provider"],
+            "model": row["model"],
+            "prompt_style": row["prompt_style"],
+            "input_payload": row["input_payload"],
+            "output_text": row["output_text"],
+            "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for row in rows
+    ]
+
+
+def get_company_status_snapshot(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    as_of_date,
+                    window_start_date,
+                    window_end_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    input_payload,
+                    output_text,
+                    created_at
+                FROM company_status_snapshot
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (company_name, provider_name, prompt_style),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "as_of_date": row["as_of_date"].isoformat(),
+        "window_start_date": row["window_start_date"].isoformat(),
+        "window_end_date": row["window_end_date"].isoformat(),
+        "provider": row["provider"],
+        "model": row["model"],
+        "prompt_style": row["prompt_style"],
+        "input_payload": row["input_payload"],
+        "output_text": row["output_text"],
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def get_company_news_for_range(
     company_name: str,
     *,
     start_date: date,
     end_date: date,
     llm_model: str = DEFAULT_MODEL,
+    output_language: str = "zh-CN",
 ) -> List[NewsArticle]:
     _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
@@ -203,7 +355,7 @@ def get_company_news_for_range(
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     r.id AS raw_id,
                     r.company_name,
@@ -211,6 +363,7 @@ def get_company_news_for_range(
                     r.news_title,
                     r.content AS original_content,
                     a.content AS llm_analyzed_content,
+                    a.{COL_OUTPUT_LANGUAGE} AS analyzed_output_language,
                     COALESCE(a.source_link, r.source_link) AS news_source_link,
                     COALESCE(a.source, r.source) AS news_source,
                     COALESCE(r.is_analyzed, FALSE) AS is_analyzed,
@@ -219,13 +372,15 @@ def get_company_news_for_range(
                 LEFT JOIN LATERAL (
                     SELECT
                         aa.content,
+                        aa.{COL_OUTPUT_LANGUAGE},
                         aa.source_link,
                         aa.source
-                    FROM company_news_analyzed AS aa
+                    FROM {TBL_COMPANY_NEWS_ANALYZED} AS aa
                     WHERE aa.company_name = r.company_name
                       AND aa.news_title = r.news_title
                       AND aa.news_date_time = r.news_date_time
                     ORDER BY
+                        CASE WHEN aa.{COL_OUTPUT_LANGUAGE} = %s THEN 0 ELSE 1 END,
                         CASE WHEN aa.llm_model = %s THEN 0 ELSE 1 END,
                         aa.id DESC
                     LIMIT 1
@@ -235,7 +390,7 @@ def get_company_news_for_range(
                   AND r.news_date_time < %s
                 ORDER BY r.news_date_time DESC, r.id DESC
                 """,
-                (llm_model, company_name, start_dt, end_dt),
+                (output_language, llm_model, company_name, start_dt, end_dt),
             )
             return [
                 NewsArticle(
@@ -249,6 +404,7 @@ def get_company_news_for_range(
                     news_source=row["news_source"],
                     is_analyzed=bool(row["is_analyzed"]),
                     is_filtered=bool(row["is_filtered"]),
+                    analyzed_output_language=row.get("analyzed_output_language"),
                 )
                 for row in cur.fetchall()
             ]
@@ -259,6 +415,7 @@ def generate_weekly_report(
     *,
     start_date: date,
     end_date: date,
+    output_language: str = "zh-CN",
     provider_name: str = DEFAULT_PROVIDER,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.2,
@@ -273,34 +430,21 @@ def generate_weekly_report(
         temperature=temperature,
         timeout_sec=timeout_sec,
     )
-    articles = get_company_news_for_range(
+    items = _build_weekly_report_input_items(
         company_name,
         start_date=start_date,
         end_date=end_date,
         llm_model=model,
+        provider_name=provider_name,
     )
-    if not articles:
+    if not items:
         return None
-    items = []
-    seen_keys: set[tuple[str, datetime]] = set()
-    for article in articles:
-        article_key = (article.news_title, article.news_date_time)
-        if article_key in seen_keys:
-            continue
-        seen_keys.add(article_key)
-        content = _decode_llm_content(
-            article.llm_analyzed_content,
-            article.original_content,
-        )
-        content["news_title"] = article.news_title
-        content["news_date_time"] = article.news_date_time.isoformat()
-        content["original_content"] = article.original_content
-        items.append(content)
     report = provider.fetch_weekly_report(
         company_name=company_name,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
         articles=items,
+        output_language=output_language,
     )
     _store_weekly_report(
         company_name,
@@ -311,12 +455,519 @@ def generate_weekly_report(
     return report
 
 
+def generate_company_daily_report(
+    company_name: str,
+    *,
+    target_date: date,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 90,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    started_at = pytime.perf_counter()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return {"generated": False, "item_count": 0, "elapsed_sec": 0.0}
+
+    items = _build_company_daily_report_input_items(
+        company_name,
+        target_date=target_date,
+        llm_model=model,
+    )
+    if not items:
+        return {"generated": False, "item_count": 0, "elapsed_sec": round(pytime.perf_counter() - started_at, 2)}
+
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    prompt = _build_company_daily_report_prompt(
+        company_name,
+        target_date=target_date,
+        items=items,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    output_text = provider.generate_text(prompt=prompt)
+    _upsert_company_daily_report(
+        company_name=company_name,
+        report_date=target_date,
+        provider=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        input_payload={"items": items, "prompt": prompt},
+        output_text=output_text,
+    )
+    return {
+        "generated": True,
+        "item_count": len(items),
+        "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+    }
+
+
+def generate_company_status_snapshot(
+    company_name: str,
+    *,
+    as_of_date: Optional[date] = None,
+    window_days: int = 21,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 120,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    started_at = pytime.perf_counter()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return {"generated": False, "daily_report_count": 0, "weekly_report_count": 0, "elapsed_sec": 0.0}
+
+    end_date = as_of_date or datetime.now(timezone.utc).date()
+    safe_window_days = max(7, min(int(window_days), 90))
+    start_date = end_date - timedelta(days=safe_window_days - 1)
+    status_input = _build_company_status_input(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        provider_name=provider_name,
+    )
+    if not status_input["daily_reports"] and not status_input["weekly_reports"] and not status_input["raw_news"]:
+        return {
+            "generated": False,
+            "daily_report_count": 0,
+            "weekly_report_count": 0,
+            "raw_news_count": 0,
+            "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+        }
+
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    prompt = _build_company_status_prompt(
+        company_name,
+        as_of_date=end_date,
+        prompt_style=prompt_style,
+        status_input=status_input,
+        output_language=output_language,
+    )
+    output_text = provider.generate_text(prompt=prompt)
+    _upsert_company_status_snapshot(
+        company_name=company_name,
+        as_of_date=end_date,
+        window_start_date=start_date,
+        window_end_date=end_date,
+        provider=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        input_payload={"prompt": prompt, **status_input},
+        output_text=output_text,
+    )
+    return {
+        "generated": True,
+        "daily_report_count": len(status_input["daily_reports"]),
+        "weekly_report_count": len(status_input["weekly_reports"]),
+        "raw_news_count": len(status_input["raw_news"]),
+        "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+    }
+
+
+def list_company_story_states(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    story_title,
+                    importance_rank,
+                    story_status,
+                    confidence,
+                    happened_text,
+                    happening_text,
+                    next_text,
+                    open_questions_json,
+                    evidence_json,
+                    change_log_json,
+                    last_event_at,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    is_active,
+                    updated_at,
+                    created_at
+                FROM {TBL_COMPANY_STORY_STATE}
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                  AND is_active = TRUE
+                ORDER BY importance_rank ASC, updated_at DESC, id DESC
+                """,
+                (company_name, provider_name, prompt_style, output_language),
+            )
+            rows = cur.fetchall()
+    return [_row_to_story_state(row) for row in rows]
+
+
+def get_company_story_state(
+    company_name: str,
+    *,
+    story_key: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    story_title,
+                    importance_rank,
+                    story_status,
+                    confidence,
+                    happened_text,
+                    happening_text,
+                    next_text,
+                    open_questions_json,
+                    evidence_json,
+                    change_log_json,
+                    last_event_at,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    is_active,
+                    updated_at,
+                    created_at
+                FROM {TBL_COMPANY_STORY_STATE}
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (company_name, story_key, provider_name, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    return _row_to_story_state(row)
+
+
+def list_company_story_updates(
+    company_name: str,
+    *,
+    story_key: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    safe_limit = max(1, min(int(limit), 60))
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    as_of_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload,
+                    output_json,
+                    created_at
+                FROM {TBL_COMPANY_STORY_UPDATE}
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (
+                    company_name,
+                    story_key,
+                    provider_name,
+                    prompt_style,
+                    output_language,
+                    safe_limit,
+                ),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "company_name": row["company_name"],
+            "story_key": row[COL_STORY_KEY],
+            "as_of_date": row["as_of_date"].isoformat(),
+            "provider": row["provider"],
+            "model": row["model"],
+            "prompt_style": row["prompt_style"],
+            "output_language": row[COL_OUTPUT_LANGUAGE],
+            "input_payload": row["input_payload"] or "",
+            "output_json": row["output_json"] or "",
+            "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for row in rows
+    ]
+
+
+def list_company_story_qa(
+    company_name: str,
+    *,
+    story_key: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    safe_limit = max(1, min(int(limit), 40))
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    question,
+                    answer,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload,
+                    created_at
+                FROM {TBL_COMPANY_STORY_QA}
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (
+                    company_name,
+                    story_key,
+                    provider_name,
+                    prompt_style,
+                    output_language,
+                    safe_limit,
+                ),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "company_name": row["company_name"],
+            "story_key": row[COL_STORY_KEY],
+            "question": row["question"] or "",
+            "answer": row["answer"] or "",
+            "provider": row["provider"],
+            "model": row["model"],
+            "prompt_style": row["prompt_style"],
+            "output_language": row[COL_OUTPUT_LANGUAGE],
+            "input_payload": row["input_payload"] or "",
+            "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for row in rows
+    ]
+
+
+def refresh_company_story_states(
+    company_name: str,
+    *,
+    as_of_date: Optional[date] = None,
+    window_days: int = 21,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 120,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    started_at = pytime.perf_counter()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return {"generated": False, "story_count": 0, "elapsed_sec": 0.0}
+
+    end_date = as_of_date or datetime.now(timezone.utc).date()
+    safe_window_days = max(7, min(int(window_days), 90))
+    start_date = end_date - timedelta(days=safe_window_days - 1)
+    status_input = _build_company_status_input(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        provider_name=provider_name,
+    )
+    existing = list_company_story_states(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    prompt = _build_company_story_update_prompt(
+        company_name,
+        as_of_date=end_date,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        existing_stories=existing,
+        status_input=status_input,
+    )
+    raw_output = provider.generate_text(prompt=prompt)
+    payload = _parse_json_object(raw_output) or {}
+    stories = payload.get("stories")
+    if not isinstance(stories, list):
+        stories = []
+    normalized = [_normalize_story_record(item) for item in stories if isinstance(item, dict)]
+    normalized = [item for item in normalized if item]
+    if not normalized:
+        return {
+            "generated": False,
+            "story_count": 0,
+            "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+        }
+    _persist_story_refresh(
+        company_name=company_name,
+        as_of_date=end_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={
+            "prompt": prompt,
+            "existing_story_count": len(existing),
+            "status_input": status_input,
+        },
+        raw_output=raw_output,
+        stories=normalized,
+    )
+    return {
+        "generated": True,
+        "story_count": len(normalized),
+        "daily_report_count": len(status_input.get("daily_reports") or []),
+        "weekly_report_count": len(status_input.get("weekly_reports") or []),
+        "raw_news_count": len(status_input.get("raw_news") or []),
+        "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+    }
+
+
+def ask_company_story_question(
+    company_name: str,
+    *,
+    story_key: str,
+    question: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 90,
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    story_key = str(story_key or "").strip()
+    question = str(question or "").strip()
+    if not company_name or not story_key or not question:
+        return None
+    story = get_company_story_state(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if not story:
+        return None
+    updates = list_company_story_updates(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        limit=4,
+    )
+    prompt = _build_company_story_qa_prompt(
+        company_name=company_name,
+        output_language=output_language,
+        story=story,
+        recent_updates=updates,
+        question=question,
+    )
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    answer = provider.generate_text(prompt=prompt)
+    row = _insert_story_qa(
+        company_name=company_name,
+        story_key=story_key,
+        question=question,
+        answer=answer,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={"prompt": prompt, "story": story, "recent_updates": updates},
+    )
+    return row
+
+
 def summarize_company_news_item(
     company_name: str,
     *,
     news_id: int,
     provider_name: str = DEFAULT_PROVIDER,
     model: str = DEFAULT_MODEL,
+    analysis_prompt: str = "simple",
+    output_language: str = "zh-CN",
     temperature: float = 0.2,
     timeout_sec: int = 60,
 ) -> bool:
@@ -325,11 +976,12 @@ def summarize_company_news_item(
     if not company_name:
         return False
     logger.info(
-        "Analyze single news start: company=%s news_id=%s model=%s provider=%s",
+        "Analyze single news start: company=%s news_id=%s model=%s provider=%s prompt=%s",
         company_name,
         news_id,
         model,
         provider_name,
+        analysis_prompt,
     )
 
     with get_connection() as conn:
@@ -371,6 +1023,7 @@ def summarize_company_news_item(
         company_name=company_name,
         start_date=start_date,
         end_date=end_date,
+        analysis_prompt=analysis_prompt,
         items=[
             {
                 "news_date_time": row["news_date_time"].isoformat(),
@@ -395,7 +1048,7 @@ def summarize_company_news_item(
         end_date=row["news_date_time"].date(),
         analyzed=True,
     )
-    _store_articles([article], llm_model=model)
+    _store_articles([article], llm_model=model, output_language=output_language)
     logger.info(
         "Analyze single news finish: company=%s news_id=%s outcome=analyzed",
         company_name,
@@ -411,6 +1064,8 @@ def summarize_company_news_day(
     limit: int = 5,
     provider_name: str = DEFAULT_PROVIDER,
     model: str = DEFAULT_MODEL,
+    analysis_prompt: str = "simple",
+    output_language: str = "zh-CN",
     temperature: float = 0.2,
     timeout_sec: int = 60,
 ) -> Dict[str, Any]:
@@ -420,12 +1075,13 @@ def summarize_company_news_day(
     if not company_name:
         return {"processed": 0, "analyzed": 0, "dropped": 0, "elapsed_sec": 0.0}
     logger.info(
-        "Analyze day start: company=%s date=%s limit=%s model=%s provider=%s",
+        "Analyze day start: company=%s date=%s limit=%s model=%s provider=%s prompt=%s",
         company_name,
         target_date.isoformat(),
         limit,
         model,
         provider_name,
+        analysis_prompt,
     )
 
     safe_limit = max(1, min(int(limit), 100))
@@ -500,6 +1156,7 @@ def summarize_company_news_day(
             company_name=company_name,
             start_date=target_date.isoformat(),
             end_date=target_date.isoformat(),
+            analysis_prompt=analysis_prompt,
             items=[
                 {
                     "news_date_time": row["news_date_time"].isoformat(),
@@ -542,7 +1199,11 @@ def summarize_company_news_day(
                 )
             )
         if batch_articles:
-            _store_articles(batch_articles, llm_model=model)
+            _store_articles(
+                batch_articles,
+                llm_model=model,
+                output_language=output_language,
+            )
             analyzed_count += len(batch_articles)
 
     logger.info(
@@ -1189,19 +1850,10 @@ def _news_item_from_payload(
 ) -> NewsArticle:
     news_date_time = _parse_date_time(item.get("news_date_time"), end_date=end_date)
     original_content = _as_text(item.get("original_content"))
-    content = {
-        "summary": item.get("summary"),
-        "facts": item.get("facts"),
-        "viewpoint": item.get("viewpoint") or item.get("pointview"),
-        "reasoning": item.get("reasoning"),
-        "uncertainties": item.get("uncertainties"),
-        "short_term_impact": item.get("short_term_impact"),
-        "long_term_impact": item.get("long_term_impact"),
-        "priced_in": item.get("priced_in"),
-        "insider_signals": item.get("insider_signals"),
-        "trends": item.get("trends"),
-        "sentiment": item.get("sentiment"),
-    }
+    content = _extract_analyzed_content(item)
+    if analyzed and not content:
+        fallback_summary = item.get("summary") or original_content or ""
+        content = {"summary": fallback_summary}
     return NewsArticle(
         company_name=company_name,
         news_date_time=news_date_time,
@@ -1212,6 +1864,30 @@ def _news_item_from_payload(
         news_source=_as_text(item.get("news_source")),
         is_analyzed=analyzed,
     )
+
+
+def _extract_analyzed_content(item: Dict[str, Any]) -> Dict[str, Any]:
+    metadata_keys = {
+        "id",
+        "company_name",
+        "news_date_time",
+        "news_title",
+        "original_content",
+        "news_source",
+        "news_source_link",
+        "source",
+        "source_link",
+        "publisher",
+        "is_analyzed",
+        "is_filtered",
+        "keep_for_company",
+    }
+    content: Dict[str, Any] = {}
+    for key, value in item.items():
+        if key in metadata_keys:
+            continue
+        content[key] = value
+    return content
 
 
 def _news_items_from_provider(
@@ -1719,7 +2395,12 @@ def _get_latest_news_date(company_name: str) -> Optional[datetime]:
             return row["news_date_time"] if row else None
 
 
-def _store_articles(articles: Iterable[NewsArticle], *, llm_model: str) -> None:
+def _store_articles(
+    articles: Iterable[NewsArticle],
+    *,
+    llm_model: str,
+    output_language: str = "en",
+) -> None:
     _ensure_news_schema()
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1758,20 +2439,26 @@ def _store_articles(articles: Iterable[NewsArticle], *, llm_model: str) -> None:
                 )
                 if not article.llm_analyzed_content:
                     continue
-                if _exists_analyzed_article(cur, article, llm_model=llm_model):
+                if _exists_analyzed_article(
+                    cur,
+                    article,
+                    llm_model=llm_model,
+                    output_language=output_language,
+                ):
                     continue
                 cur.execute(
-                    """
-                    INSERT INTO company_news_analyzed (
+                    f"""
+                    INSERT INTO {TBL_COMPANY_NEWS_ANALYZED} (
                         company_name,
                         news_date_time,
                         news_title,
                         content,
                         source,
                         source_link,
-                        llm_model
+                        llm_model,
+                        {COL_OUTPUT_LANGUAGE}
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         article.company_name,
@@ -1781,6 +2468,7 @@ def _store_articles(articles: Iterable[NewsArticle], *, llm_model: str) -> None:
                         article.news_source,
                         article.news_source_link,
                         llm_model,
+                        output_language,
                     ),
                 )
                 cur.execute(
@@ -1815,17 +2503,25 @@ def _exists_analyzed_article(
     article: NewsArticle,
     *,
     llm_model: str,
+    output_language: str,
 ) -> bool:
     cur.execute(
-        """
+        f"""
         SELECT 1
-        FROM company_news_analyzed
+        FROM {TBL_COMPANY_NEWS_ANALYZED}
         WHERE company_name = %s
           AND news_title = %s
           AND news_date_time = %s
           AND llm_model = %s
+          AND {COL_OUTPUT_LANGUAGE} = %s
         """,
-        (article.company_name, article.news_title, article.news_date_time, llm_model),
+        (
+            article.company_name,
+            article.news_title,
+            article.news_date_time,
+            llm_model,
+            output_language,
+        ),
     )
     return cur.fetchone() is not None
 
@@ -1851,6 +2547,860 @@ def _store_weekly_report(
                 (company_name, start_date, end_date, json.dumps(report_payload)),
             )
         conn.commit()
+
+
+def _upsert_company_daily_report(
+    *,
+    company_name: str,
+    report_date: date,
+    provider: str,
+    model: str,
+    prompt_style: str,
+    input_payload: Dict[str, Any],
+    output_text: str,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM company_news_daily_report
+                WHERE company_name = %s
+                  AND report_date = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (company_name, report_date, provider, prompt_style),
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    """
+                    UPDATE company_news_daily_report
+                    SET model = %s,
+                        input_payload = %s,
+                        output_text = %s,
+                        created_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (model, json.dumps(input_payload), output_text, existing["id"]),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM company_news_daily_report
+                    WHERE company_name = %s
+                      AND report_date = %s
+                      AND provider = %s
+                      AND prompt_style = %s
+                      AND id <> %s
+                    """,
+                    (company_name, report_date, provider, prompt_style, existing["id"]),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO company_news_daily_report (
+                        company_name,
+                        report_date,
+                        provider,
+                        model,
+                        prompt_style,
+                        input_payload,
+                        output_text
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        company_name,
+                        report_date,
+                        provider,
+                        model,
+                        prompt_style,
+                        json.dumps(input_payload),
+                        output_text,
+                    ),
+                )
+        conn.commit()
+
+
+def _upsert_company_status_snapshot(
+    *,
+    company_name: str,
+    as_of_date: date,
+    window_start_date: date,
+    window_end_date: date,
+    provider: str,
+    model: str,
+    prompt_style: str,
+    input_payload: Dict[str, Any],
+    output_text: str,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM company_status_snapshot
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (company_name, provider, prompt_style),
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    """
+                    UPDATE company_status_snapshot
+                    SET as_of_date = %s,
+                        window_start_date = %s,
+                        window_end_date = %s,
+                        model = %s,
+                        input_payload = %s,
+                        output_text = %s,
+                        created_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        as_of_date,
+                        window_start_date,
+                        window_end_date,
+                        model,
+                        json.dumps(input_payload),
+                        output_text,
+                        existing["id"],
+                    ),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM company_status_snapshot
+                    WHERE company_name = %s
+                      AND provider = %s
+                      AND prompt_style = %s
+                      AND id <> %s
+                    """,
+                    (company_name, provider, prompt_style, existing["id"]),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO company_status_snapshot (
+                        company_name,
+                        as_of_date,
+                        window_start_date,
+                        window_end_date,
+                        provider,
+                        model,
+                        prompt_style,
+                        input_payload,
+                        output_text
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        company_name,
+                        as_of_date,
+                        window_start_date,
+                        window_end_date,
+                        provider,
+                        model,
+                        prompt_style,
+                        json.dumps(input_payload),
+                        output_text,
+                    ),
+                )
+        conn.commit()
+
+
+def _persist_story_refresh(
+    *,
+    company_name: str,
+    as_of_date: date,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    input_payload: Dict[str, Any],
+    raw_output: str,
+    stories: List[Dict[str, Any]],
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            active_keys: List[str] = []
+            for item in stories:
+                story_key = str(item["story_key"]).strip()
+                active_keys.append(story_key)
+                cur.execute(
+                    f"""
+                    INSERT INTO {TBL_COMPANY_STORY_STATE} (
+                        company_name,
+                        {COL_STORY_KEY},
+                        story_title,
+                        importance_rank,
+                        story_status,
+                        confidence,
+                        happened_text,
+                        happening_text,
+                        next_text,
+                        open_questions_json,
+                        evidence_json,
+                        change_log_json,
+                        last_event_at,
+                        provider,
+                        model,
+                        prompt_style,
+                        {COL_OUTPUT_LANGUAGE},
+                        is_active,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, TRUE, NOW())
+                    ON CONFLICT (company_name, {COL_STORY_KEY}, provider, prompt_style, {COL_OUTPUT_LANGUAGE})
+                    DO UPDATE SET
+                        story_title = EXCLUDED.story_title,
+                        importance_rank = EXCLUDED.importance_rank,
+                        story_status = EXCLUDED.story_status,
+                        confidence = EXCLUDED.confidence,
+                        happened_text = EXCLUDED.happened_text,
+                        happening_text = EXCLUDED.happening_text,
+                        next_text = EXCLUDED.next_text,
+                        open_questions_json = EXCLUDED.open_questions_json,
+                        evidence_json = EXCLUDED.evidence_json,
+                        change_log_json = EXCLUDED.change_log_json,
+                        last_event_at = NOW(),
+                        model = EXCLUDED.model,
+                        is_active = TRUE,
+                        updated_at = NOW()
+                    """,
+                    (
+                        company_name,
+                        story_key,
+                        item["story_title"],
+                        int(item["importance_rank"]),
+                        item["story_status"],
+                        float(item["confidence"]),
+                        item["happened_text"],
+                        item["happening_text"],
+                        item["next_text"],
+                        json.dumps(item.get("open_questions") or [], ensure_ascii=False),
+                        json.dumps(item.get("evidence") or [], ensure_ascii=False),
+                        json.dumps(item.get("change_log") or [], ensure_ascii=False),
+                        provider_name,
+                        model,
+                        prompt_style,
+                        output_language,
+                    ),
+                )
+                cur.execute(
+                    f"""
+                    INSERT INTO {TBL_COMPANY_STORY_UPDATE} (
+                        company_name,
+                        {COL_STORY_KEY},
+                        as_of_date,
+                        provider,
+                        model,
+                        prompt_style,
+                        {COL_OUTPUT_LANGUAGE},
+                        input_payload,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        company_name,
+                        story_key,
+                        as_of_date,
+                        provider_name,
+                        model,
+                        prompt_style,
+                        output_language,
+                        json.dumps(input_payload, ensure_ascii=False),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+
+            if active_keys:
+                cur.execute(
+                    f"""
+                    UPDATE {TBL_COMPANY_STORY_STATE}
+                    SET is_active = FALSE,
+                        updated_at = NOW()
+                    WHERE company_name = %s
+                      AND provider = %s
+                      AND prompt_style = %s
+                      AND {COL_OUTPUT_LANGUAGE} = %s
+                      AND {COL_STORY_KEY} <> ALL(%s)
+                    """,
+                    (
+                        company_name,
+                        provider_name,
+                        prompt_style,
+                        output_language,
+                        active_keys,
+                    ),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    UPDATE {TBL_COMPANY_STORY_STATE}
+                    SET is_active = FALSE,
+                        updated_at = NOW()
+                    WHERE company_name = %s
+                      AND provider = %s
+                      AND prompt_style = %s
+                      AND {COL_OUTPUT_LANGUAGE} = %s
+                    """,
+                    (company_name, provider_name, prompt_style, output_language),
+                )
+            cur.execute(
+                f"""
+                INSERT INTO {TBL_COMPANY_STORY_UPDATE} (
+                    company_name,
+                    {COL_STORY_KEY},
+                    as_of_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload,
+                    output_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    company_name,
+                    "__refresh__",
+                    as_of_date,
+                    provider_name,
+                    model,
+                    prompt_style,
+                    output_language,
+                    json.dumps(input_payload, ensure_ascii=False),
+                    raw_output,
+                ),
+            )
+        conn.commit()
+
+
+def _insert_story_qa(
+    *,
+    company_name: str,
+    story_key: str,
+    question: str,
+    answer: str,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    input_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {TBL_COMPANY_STORY_QA} (
+                    company_name,
+                    {COL_STORY_KEY},
+                    question,
+                    answer,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    question,
+                    answer,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload,
+                    created_at
+                """,
+                (
+                    company_name,
+                    story_key,
+                    question,
+                    answer,
+                    provider_name,
+                    model,
+                    prompt_style,
+                    output_language,
+                    json.dumps(input_payload, ensure_ascii=False),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return {
+        "id": int(row["id"]),
+        "company_name": row["company_name"],
+        "story_key": row[COL_STORY_KEY],
+        "question": row["question"] or "",
+        "answer": row["answer"] or "",
+        "provider": row["provider"],
+        "model": row["model"],
+        "prompt_style": row["prompt_style"],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "input_payload": row["input_payload"] or "",
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _build_company_daily_report_input_items(
+    company_name: str,
+    *,
+    target_date: date,
+    llm_model: str = DEFAULT_MODEL,
+) -> List[Dict[str, Any]]:
+    articles = get_company_news_for_range(
+        company_name,
+        start_date=target_date,
+        end_date=target_date,
+        llm_model=llm_model,
+    )
+    items: List[Dict[str, Any]] = []
+    seen_keys: set[tuple[str, datetime]] = set()
+    for article in articles:
+        key = (article.news_title, article.news_date_time)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        content = _decode_llm_content(article.llm_analyzed_content, article.original_content)
+        items.append(
+            {
+                "news_date_time": article.news_date_time.isoformat(),
+                "news_title": article.news_title,
+                "news_source": article.news_source,
+                "news_source_link": article.news_source_link,
+                "original_content": article.original_content,
+                "analyzed_content": content if article.llm_analyzed_content else None,
+                "is_analyzed": bool(article.is_analyzed),
+            }
+        )
+    return items
+
+
+def _build_company_daily_report_prompt(
+    company_name: str,
+    *,
+    target_date: date,
+    items: List[Dict[str, Any]],
+    prompt_style: str,
+    output_language: str = "zh-CN",
+) -> str:
+    items_json = json.dumps(items, ensure_ascii=False, indent=2)
+    normalized_prompt = str(prompt_style or "simple").strip().lower()
+    language_line = _build_output_language_line(output_language)
+    if normalized_prompt == "structured":
+        return (
+            f"Summarize all {company_name} news for {target_date.isoformat()} into a structured daily company report.\n"
+            "Requirements:\n"
+            "- Ignore duplicate or near-duplicate news items.\n"
+            "- Keep all material company-related points; ignore unrelated points.\n"
+            "- Rank information by importance to this company.\n"
+            "- Try to open links first for more context; if inaccessible, use available content/web search.\n"
+            "- Use layered structure with clear sections and bullet points.\n"
+            f"{language_line}"
+            "Sections:\n"
+            "1. Top Summary\n2. Important News & Insights\n3. What Changed Today\n4. What To Watch Next\n"
+            f"News items JSON:\n{items_json}\n"
+        )
+    return (
+        f"Please summarize all {company_name} news for {target_date.isoformat()}.\n"
+        "Goal: help me quickly understand what happened to the company today and the most important insights.\n"
+        "Requirements:\n"
+        "- Ignore duplicate or near-duplicate news items.\n"
+        "- Keep all material points and do not omit important company-related information.\n"
+        "- Ignore points not related to this company or its market/investor outlook.\n"
+        "- Rank information by importance to this company (most important first).\n"
+        "- Try to open links first for fuller context. If inaccessible, use available content and best available information.\n"
+        "- Use layered structure for output which is easy for reading.\n"
+        f"{language_line}"
+        f"News items JSON:\n{items_json}\n"
+    )
+
+
+def _build_weekly_report_input_items(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    llm_model: str,
+    provider_name: str,
+) -> List[Dict[str, Any]]:
+    daily_reports = get_company_daily_reports_for_range(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        provider_name=provider_name,
+        prompt_style="simple",
+    )
+    if daily_reports:
+        items: List[Dict[str, Any]] = []
+        for report in sorted(daily_reports, key=lambda x: x["report_date"]):
+            items.append(
+                {
+                    "news_title": f"Daily report for {company_name}",
+                    "news_date_time": report["report_date"],
+                    "news_source": "company_daily_report",
+                    "news_source_link": None,
+                    "summary": report["output_text"],
+                    "facts": [],
+                    "viewpoint": [],
+                    "reasoning": [],
+                    "uncertainties": [],
+                    "short_term_impact": [],
+                    "long_term_impact": [],
+                    "priced_in": [],
+                    "insider_signals": [],
+                    "trends": [],
+                    "sentiment": [],
+                }
+            )
+        return items
+
+    articles = get_company_news_for_range(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        llm_model=llm_model,
+    )
+    if not articles:
+        return []
+    items: List[Dict[str, Any]] = []
+    seen_keys: set[tuple[str, datetime]] = set()
+    for article in articles:
+        article_key = (article.news_title, article.news_date_time)
+        if article_key in seen_keys:
+            continue
+        seen_keys.add(article_key)
+        content = _decode_llm_content(
+            article.llm_analyzed_content,
+            article.original_content,
+        )
+        content["news_title"] = article.news_title
+        content["news_date_time"] = article.news_date_time.isoformat()
+        content["original_content"] = article.original_content
+        items.append(content)
+    return items
+
+
+def _build_company_status_input(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    provider_name: str,
+) -> Dict[str, Any]:
+    daily_reports = get_company_daily_reports_for_range(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        provider_name=provider_name,
+        prompt_style="simple",
+    )
+
+    weekly_reports: List[Dict[str, Any]] = []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT beginning_date, end_date, content
+                FROM news_report
+                WHERE company_name = %s
+                  AND end_date >= %s
+                  AND beginning_date <= %s
+                ORDER BY end_date DESC, beginning_date DESC
+                LIMIT 8
+                """,
+                (company_name, start_date, end_date),
+            )
+            rows = cur.fetchall()
+    for row in rows:
+        content = row["content"]
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else content
+        except json.JSONDecodeError:
+            parsed = {"summary": content}
+        weekly_reports.append(
+            {
+                "beginning_date": row["beginning_date"].isoformat(),
+                "end_date": row["end_date"].isoformat(),
+                "report": parsed,
+            }
+        )
+
+    raw_news: List[Dict[str, Any]] = []
+    if not daily_reports:
+        for article in get_company_news_for_range(
+            company_name,
+            start_date=start_date,
+            end_date=end_date,
+        )[:60]:
+            raw_news.append(
+                {
+                    "news_date_time": article.news_date_time.isoformat(),
+                    "news_title": article.news_title,
+                    "news_source": article.news_source,
+                    "news_source_link": article.news_source_link,
+                    "summary": _decode_llm_content(
+                        article.llm_analyzed_content,
+                        article.original_content,
+                    ).get("summary"),
+                }
+            )
+
+    return {
+        "daily_reports": daily_reports,
+        "weekly_reports": weekly_reports,
+        "raw_news": raw_news,
+    }
+
+
+def _build_company_status_prompt(
+    company_name: str,
+    *,
+    as_of_date: date,
+    prompt_style: str,
+    status_input: Dict[str, Any],
+    output_language: str = "zh-CN",
+) -> str:
+    normalized_prompt = str(prompt_style or "simple").strip().lower()
+    payload_json = json.dumps(status_input, ensure_ascii=False, indent=2)
+    language_line = _build_output_language_line(output_language)
+    if normalized_prompt == "structured":
+        return (
+            f"You are building a rolling company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
+            "Use the provided daily reports and weekly reports as the primary source, and raw news only as fallback context.\n"
+            "Goals:\n"
+            "- Help me quickly catch up on what happened, what is happening now, and what may happen next.\n"
+            "- Merge duplicates and repeated coverage.\n"
+            "- Preserve all material company-related developments.\n"
+            "- Rank storylines by importance to this company.\n"
+            "- Use layered structure and clear bullet points.\n"
+            f"{language_line}"
+            "Sections:\n"
+            "1. Company Status (current state)\n"
+            "2. Active Storylines (ranked)\n"
+            "3. What Changed Recently\n"
+            "4. What To Watch Next\n"
+            "5. Uncertainties / Open Questions\n"
+            f"Inputs JSON:\n{payload_json}\n"
+        )
+    return (
+        f"Please build a company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
+        "Goal: help me quickly catch up on what happened to the company, what is happening now, and what may happen next.\n"
+        "Requirements:\n"
+        "- Use daily reports and weekly reports as primary sources; use raw news only as fallback context.\n"
+        "- Ignore duplicate or near-duplicate information.\n"
+        "- Keep all material company-related points and do not omit important developments.\n"
+        "- Rank information by importance to this company.\n"
+        "- Use layered structure for output which is easy for reading.\n"
+        f"{language_line}"
+        f"Inputs JSON:\n{payload_json}\n"
+    )
+
+
+def _build_company_story_update_prompt(
+    company_name: str,
+    *,
+    as_of_date: date,
+    prompt_style: str,
+    output_language: str,
+    existing_stories: List[Dict[str, Any]],
+    status_input: Dict[str, Any],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload = {
+        "existing_stories": existing_stories,
+        "new_evidence": status_input,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    normalized_prompt = str(prompt_style or "simple").strip().lower()
+    if normalized_prompt == "structured":
+        return (
+            f"You maintain a rolling story map for {company_name} as of {as_of_date.isoformat()}.\n"
+            "Update the existing stories with new evidence.\n"
+            "Rules:\n"
+            "- Keep story continuity across time; move points between happened/happening/next when state changes.\n"
+            "- Merge duplicate or near-duplicate stories.\n"
+            "- Preserve material company-related developments.\n"
+            "- Rank stories by importance.\n"
+            "- Return JSON only.\n"
+            f"{language_line}"
+            "Output JSON schema:\n"
+            "{\n"
+            '  "stories": [\n'
+            "    {\n"
+            '      "story_key": "stable_slug_key",\n'
+            '      "story_title": "short title",\n'
+            '      "importance_rank": 1,\n'
+            '      "story_status": "rising|stable|fading|resolved",\n'
+            '      "confidence": 0.0,\n'
+            '      "happened_text": "what happened",\n'
+            '      "happening_text": "what is happening now",\n'
+            '      "next_text": "what may happen next",\n'
+            '      "open_questions": ["..."],\n'
+            '      "evidence": ["..."],\n'
+            '      "change_log": ["..."]\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            f"Inputs JSON:\n{payload_json}\n"
+        )
+    return (
+        f"Update the company stories for {company_name} as of {as_of_date.isoformat()}.\n"
+        "Use existing stories + new evidence to update story progression.\n"
+        "Rules:\n"
+        "- Keep continuity over time.\n"
+        "- If a predicted item is now happening or happened, move it to the right section.\n"
+        "- Ignore duplicates.\n"
+        "- Rank stories by importance.\n"
+        "- Return JSON only with key `stories`.\n"
+        f"{language_line}"
+        "Each story object fields:\n"
+        "story_key, story_title, importance_rank, story_status, confidence, happened_text, happening_text, next_text, open_questions, evidence, change_log.\n"
+        f"Inputs JSON:\n{payload_json}\n"
+    )
+
+
+def _build_company_story_qa_prompt(
+    *,
+    company_name: str,
+    output_language: str,
+    story: Dict[str, Any],
+    recent_updates: List[Dict[str, Any]],
+    question: str,
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(
+        {"story": story, "recent_updates": recent_updates},
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        f"You are answering a deep-dive question for company {company_name}.\n"
+        "Use the story state and recent updates as the primary context.\n"
+        "If evidence is insufficient, say what is missing.\n"
+        "Use concise layered structure.\n"
+        f"{language_line}"
+        f"Question:\n{question}\n\n"
+        f"Context JSON:\n{payload_json}\n"
+    )
+
+
+def _build_output_language_line(output_language: str) -> str:
+    normalized = str(output_language or "").strip().lower()
+    if normalized in {"zh", "zh-cn", "zh_hans", "chinese", "simplified chinese"}:
+        return "- Output should be written in Simplified Chinese.\n"
+    return ""
+
+
+def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _normalize_story_key(value: Any, *, fallback_title: str = "", fallback_index: int = 0) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        text = str(fallback_title or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    if not text:
+        text = f"story-{fallback_index + 1}"
+    return text[:80]
+
+
+def _normalize_story_record(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    title = _as_text(item.get("story_title") or item.get("title"))
+    if not title:
+        return None
+    rank_raw = item.get("importance_rank")
+    try:
+        rank = int(rank_raw)
+    except (TypeError, ValueError):
+        rank = 999
+    confidence_raw = item.get("confidence")
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(confidence, 1.0))
+    story_key = _normalize_story_key(item.get("story_key"), fallback_title=title, fallback_index=rank)
+    return {
+        "story_key": story_key,
+        "story_title": title,
+        "importance_rank": max(1, rank),
+        "story_status": _as_text(item.get("story_status")) or "stable",
+        "confidence": confidence,
+        "happened_text": _as_text(item.get("happened_text")) or "",
+        "happening_text": _as_text(item.get("happening_text")) or "",
+        "next_text": _as_text(item.get("next_text")) or "",
+        "open_questions": item.get("open_questions") if isinstance(item.get("open_questions"), list) else [],
+        "evidence": item.get("evidence") if isinstance(item.get("evidence"), list) else [],
+        "change_log": item.get("change_log") if isinstance(item.get("change_log"), list) else [],
+    }
+
+
+def _row_to_story_state(row: Dict[str, Any]) -> Dict[str, Any]:
+    def _safe_json_list(value: Any) -> List[Any]:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                return []
+        return []
+
+    return {
+        "id": int(row["id"]),
+        "company_name": row["company_name"],
+        "story_key": row[COL_STORY_KEY],
+        "story_title": row["story_title"] or "",
+        "importance_rank": int(row["importance_rank"] or 999),
+        "story_status": row["story_status"] or "stable",
+        "confidence": float(row["confidence"] or 0.5),
+        "happened_text": row["happened_text"] or "",
+        "happening_text": row["happening_text"] or "",
+        "next_text": row["next_text"] or "",
+        "open_questions": _safe_json_list(row["open_questions_json"]),
+        "evidence": _safe_json_list(row["evidence_json"]),
+        "change_log": _safe_json_list(row["change_log_json"]),
+        "last_event_at": row["last_event_at"].strftime("%Y-%m-%d %H:%M:%S") if row["last_event_at"] else "",
+        "provider": row["provider"],
+        "model": row["model"],
+        "prompt_style": row["prompt_style"],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "is_active": bool(row["is_active"]),
+        "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def _normalize_company_name(name: str) -> str:
@@ -1922,6 +3472,29 @@ def _ensure_news_schema() -> None:
                 """
             )
             cur.execute(
+                f"""
+                ALTER TABLE {TBL_COMPANY_NEWS_ANALYZED}
+                ADD COLUMN IF NOT EXISTS {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'en'
+                """
+            )
+            cur.execute(
+                """
+                DROP INDEX IF EXISTS idx_company_news_analyzed_unique
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_news_analyzed_unique
+                ON {TBL_COMPANY_NEWS_ANALYZED} (
+                    company_name,
+                    news_title,
+                    news_date_time,
+                    llm_model,
+                    {COL_OUTPUT_LANGUAGE}
+                )
+                """
+            )
+            cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS company_news_dropped (
                     id BIGSERIAL PRIMARY KEY,
@@ -1951,11 +3524,179 @@ def _ensure_news_schema() -> None:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS company_news_daily_report (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    report_date DATE NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_style TEXT NOT NULL,
+                    input_payload TEXT NOT NULL,
+                    output_text TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_company_news_daily_report_lookup
+                ON company_news_daily_report (
+                    company_name,
+                    report_date DESC,
+                    provider,
+                    prompt_style,
+                    created_at DESC
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS company_status_snapshot (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    as_of_date DATE NOT NULL,
+                    window_start_date DATE NOT NULL,
+                    window_end_date DATE NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_style TEXT NOT NULL,
+                    input_payload TEXT NOT NULL,
+                    output_text TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_company_status_snapshot_lookup
+                ON company_status_snapshot (
+                    company_name,
+                    provider,
+                    prompt_style,
+                    created_at DESC
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_STATE} (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    {COL_STORY_KEY} TEXT NOT NULL,
+                    story_title TEXT NOT NULL,
+                    importance_rank INTEGER NOT NULL DEFAULT 999,
+                    story_status TEXT NOT NULL DEFAULT 'stable',
+                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+                    happened_text TEXT,
+                    happening_text TEXT,
+                    next_text TEXT,
+                    open_questions_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    change_log_json TEXT NOT NULL DEFAULT '[]',
+                    last_event_at TIMESTAMPTZ,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_style TEXT NOT NULL,
+                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_story_state_unique
+                ON {TBL_COMPANY_STORY_STATE} (
+                    company_name,
+                    {COL_STORY_KEY},
+                    provider,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE}
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_company_story_state_lookup
+                ON {TBL_COMPANY_STORY_STATE} (
+                    company_name,
+                    provider,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    is_active,
+                    importance_rank,
+                    updated_at DESC
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_UPDATE} (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    {COL_STORY_KEY} TEXT NOT NULL,
+                    as_of_date DATE NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_style TEXT NOT NULL,
+                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
+                    input_payload TEXT NOT NULL,
+                    output_json TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_company_story_update_lookup
+                ON {TBL_COMPANY_STORY_UPDATE} (
+                    company_name,
+                    {COL_STORY_KEY},
+                    provider,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    created_at DESC
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_QA} (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    {COL_STORY_KEY} TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_style TEXT NOT NULL,
+                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
+                    input_payload TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_company_story_qa_lookup
+                ON {TBL_COMPANY_STORY_QA} (
+                    company_name,
+                    {COL_STORY_KEY},
+                    provider,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    created_at DESC
+                )
+                """
+            )
+            cur.execute(
+                f"""
                 UPDATE company_news_raw AS r
                 SET is_analyzed = TRUE
                 WHERE EXISTS (
                     SELECT 1
-                    FROM company_news_analyzed AS a
+                    FROM {TBL_COMPANY_NEWS_ANALYZED} AS a
                     WHERE a.company_name = r.company_name
                       AND a.news_title = r.news_title
                       AND a.news_date_time = r.news_date_time
