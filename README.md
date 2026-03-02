@@ -95,4 +95,8 @@ pytest -q
 
 ## 5) Roadmap
 
-See [roadmap.md](./roadmap.md) for roadmap and future work.
+See [documents/roadmap.md](./documents/roadmap.md) for roadmap and future work.
+
+## 6) Implemented Features
+
+See [documents/implemented_features.md](./documents/implemented_features.md) for user-facing features that are already shipped.
