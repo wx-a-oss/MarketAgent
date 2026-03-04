@@ -53,6 +53,17 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 3. `[partial]` User-guided deep-dive Q&A over company stories with stronger context stitching.
 4. `[todo]` International market breadth:
    - broader Asia/Europe coverage strategy and stable data-source policy.
+5. `[todo]` Real-time signal pipeline for fast trading (late stage):
+   - use low-cost cloud agents (for example OpenClaw + inexpensive LLMs) to ingest real-time news/social streams,
+   - build a low-latency path for fetch -> summarize -> signal scoring -> trade decision support,
+   - prioritize cost/performance evaluation before implementation.
+6. `[todo]` New **Trade** tab (major feature):
+   - subscribe to a portfolio of company tickers for decision support,
+   - evaluate current price position versus historical ranges and moving averages,
+   - generate buy/hold/sell recommendations with confidence and rationale,
+   - combine signals from company news, broader market news, and market regime,
+   - include capital-flow/rotation signals (large capital moving across sectors and asset classes),
+   - add a stock “personality profile” layer (for example: stable vs. volatile behavior, narrative sensitivity, and typical reaction patterns driven by company fundamentals and investor mix such as institutions vs. retail).
 
 ## Cloud Migration (Separate Track)
 
@@ -82,6 +93,10 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 3. `[todo]` Run logs + metrics + alerting.
 4. `[todo]` Idempotent upserts and replay-safe job design.
 5. `[todo]` Cloud deployment runbooks and migration docs.
+6. `[todo]` Real-time market-data cost investigation:
+   - compare cheapest reliable options for real-time news, X/Twitter-like streams, and public sentiment feeds,
+   - define target SLA for ingestion speed, analysis latency, and decision freshness,
+   - choose cloud architecture for always-on low-latency processing.
 
 
 ## Detailed Plans
