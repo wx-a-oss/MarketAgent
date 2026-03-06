@@ -5,39 +5,26 @@
 Completed items are tracked in [implemented_features.md](./implemented_features.md). This backlog focuses on remaining work.
 
 ### 1) Company Stories Warm-Up and Lifecycle
-- `[todo]` Build company stories warm-up + daily incremental pipeline (60+ day bootstrapping).
-- `[todo]` Add story lifecycle management:
-  - keep active stories hot,
-  - archive closed stories,
-  - track timeline events/history.
-- `[partial]` Improve company stories UX:
-  - story-first browsing,
-  - drill-down by story,
-  - evidence/recent changes/update history quality fixes.
-- `[partial]` Add stronger deep-dive Q&A context stitching for story follow-up.
+- `[partial]` Refine story deep-dive Q&A workflow so users can ask questions, get an LLM response, and explicitly decide whether to merge that question and answer into the current story; it should never be merged automatically by the LLM.
 
-### 2) Market History and News Coverage
-- `[todo]` Add market historical date picker with “has report” visibility by day.
-- `[partial]` Expand/normalize market news sources (Finnhub + Yahoo feed) with reliable source tags on cards.
-- `[todo]` Expand international market breadth:
-  - broader Asia/Europe coverage strategy,
-  - stable data-source policy.
 
-### 3) New Data Modules
+### 3) Earnings Report Module
 - `[todo]` Add earnings report module:
   - pull earnings data/transcripts/estimates (where available),
   - generate company-level earnings summary and impact analysis.
+
+### 4) Government Document and Report Module
 - `[todo]` Add government document/report module:
   - ingest government releases relevant to companies/markets (policy, regulation, macro reports),
   - map documents to impacted companies/themes.
 
-### 4) Company Status and Price Intelligence
+### 5) Company Status and Price Intelligence
 - `[todo]` Build company status v2:
   - combine narrative stories with multi-year price context and moving averages.
 - `[partial]` Improve “explain price move” intelligence:
   - link critical price points to company news + macro market context.
 
-### 5) Trade System (Later Stage)
+### 6) Trade System (Later Stage)
 - `[todo]` Build a new **Trade** tab (major feature):
   - subscribe to a portfolio of company tickers for decision support,
   - evaluate current price position versus historical ranges and moving averages,
@@ -49,6 +36,27 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
   - use low-cost cloud agents (for example OpenClaw + inexpensive LLMs) to ingest real-time news/social streams,
   - build a low-latency path for fetch -> summarize -> signal scoring -> trade decision support,
   - prioritize cost/performance validation before implementation.
+- `[todo]` Solve real-time high-value news ingestion:
+  - ingest valuable breaking news and viewpoints from X/Twitter and other fast-moving sources,
+  - distinguish high-signal items from noise in real time,
+  - make this feed reliable enough to support future fast-decision and trading workflows.
+
+### 7) Strategy & Plan Board (User Workspace)
+- `[todo]` Add a top-level **Plan Board** tab for users to write and track their own trading plans.
+- `[todo]` Support flexible plan formats:
+  - vague/idea-stage plans,
+  - rule-based plans with specific price levels, triggers, and time windows,
+  - short-term and long-term strategy plans.
+- `[todo]` Add LLM evaluation workflow for each plan:
+  - evaluate from multiple perspectives (thesis quality, risk, timing, scenario coverage, execution realism),
+  - return confidence bands / estimated win-probability ranges with explicit assumptions.
+- `[todo]` Add plan lifecycle tracking:
+  - draft -> active -> closed/canceled,
+  - version history and update notes,
+  - user-friendly timeline view of plan changes and outcomes.
+- `[todo]` Add post-trade review loop:
+  - compare plan vs. actual outcome,
+  - capture lessons learned and strategy adjustments.
 
 ### Technical Debt and Polish
 - `[partial]` Stock history cache lifecycle polish:
