@@ -1,34 +1,22 @@
-"""Postgres connection helpers for the news system."""
+"""Backward-compatible database helpers for the company news system."""
 
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from typing import Iterator
 
 import psycopg2
-from psycopg2.extras import DictCursor
 
-
-def _build_dsn() -> str:
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
-
-    host = os.getenv("PGHOST", "localhost")
-    port = os.getenv("PGPORT", "5432")
-    user = os.getenv("PGUSER", "market_agent")
-    password = os.getenv("PGPASSWORD", "market_agent_password")
-    database = os.getenv("PGDATABASE", "market_agent")
-    return (
-        f"host={host} port={port} user={user} password={password} dbname={database}"
-    )
+from market_agent.db.bootstrap import ensure_database_schema, get_connection as _get_connection
 
 
 @contextmanager
 def get_connection() -> Iterator[psycopg2.extensions.connection]:
-    conn = psycopg2.connect(_build_dsn(), cursor_factory=DictCursor)
+    conn = _get_connection()
     try:
         yield conn
     finally:
         conn.close()
+
+
+__all__ = ["ensure_database_schema", "get_connection"]

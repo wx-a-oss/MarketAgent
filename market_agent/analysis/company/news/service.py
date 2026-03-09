@@ -6,13 +6,15 @@ import json
 import os
 import re
 import logging
+import threading
 import time as pytime
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 from market_agent.llms.news import get_news_provider
-from market_agent.analysis.company.news.db import get_connection
+from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
 from market_agent.analysis.company.news.datamodels import NewsArticle
+from market_agent.analysis.company.ticker_fallbacks import resolve_company_ticker_fallback
 from market_agent.datasources.finnhub import FinnhubClient
 from market_agent.news_sources import get_news_source
 from market_agent.schema_fields import (
@@ -22,6 +24,7 @@ from market_agent.schema_fields import (
     TBL_COMPANY_STORY_QA,
     TBL_COMPANY_STORY_STATE,
     TBL_COMPANY_STORY_UPDATE,
+    TBL_COMPANY_STORY_WARMUP_STATE,
 )
 
 DEFAULT_MODEL = "gpt-5.2"
@@ -30,9 +33,28 @@ DEFAULT_SOURCE = "openai"
 FINNHUB_AUTO_ANALYZE_LIMIT = 10
 ANALYZE_DAY_BATCH_SIZE = 3
 FILTER_DAY_BATCH_SIZE = 10
+DEFAULT_STORY_WARMUP_DAYS = max(
+    1, int(os.getenv("COMPANY_STORY_WARMUP_DAYS", "10").strip() or "10")
+)
+DEFAULT_STORY_WARMUP_SLICE_DAYS = max(
+    1, int(os.getenv("COMPANY_STORY_WARMUP_SLICE_DAYS", "10").strip() or "10")
+)
+DEFAULT_STORY_WARMUP_MAX_RETRIES = max(
+    1, int(os.getenv("COMPANY_STORY_WARMUP_MAX_RETRIES", "3").strip() or "3")
+)
+DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC = max(
+    1, int(os.getenv("COMPANY_STORY_WARMUP_RETRY_DELAY_SEC", "60").strip() or "60")
+)
+STORY_WARMUP_PROMPT_JSON_LIMIT = max(
+    12000, int(os.getenv("COMPANY_STORY_WARMUP_PROMPT_JSON_LIMIT", "45000").strip() or "45000")
+)
+STORY_WARMUP_CHUNK_SIZE = max(
+    5, int(os.getenv("COMPANY_STORY_WARMUP_CHUNK_SIZE", "25").strip() or "25")
+)
 
 logger = logging.getLogger("uvicorn.error")
-_SCHEMA_READY = False
+_WARMUP_THREADS: Dict[str, threading.Thread] = {}
+_WARMUP_THREADS_LOCK = threading.Lock()
 
 
 def list_watchlist_companies() -> List[str]:
@@ -111,6 +133,113 @@ def remove_company_from_watchlist(company_name: str) -> None:
                 (normalized,),
             )
         conn.commit()
+
+
+def get_company_story_warmup_state(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    normalized = _normalize_company_name(company_name)
+    default_payload = {
+        "company_name": normalized,
+        "provider": provider_name,
+        "prompt_style": prompt_style,
+        "output_language": output_language,
+        "job_state": "not_started",
+        "current_stage": "idle",
+        "window_days": DEFAULT_STORY_WARMUP_DAYS,
+        "slice_days": DEFAULT_STORY_WARMUP_SLICE_DAYS,
+        "window_start_date": "",
+        "window_end_date": "",
+        "total_slices": 0,
+        "completed_slices": 0,
+        "current_slice_start_date": "",
+        "current_slice_end_date": "",
+        "last_completed_slice_end_date": "",
+        "analysis_started": False,
+        "analysis_completed": False,
+        "raw_fetched_count": 0,
+        "raw_stored_count": 0,
+        "filtered_kept_count": 0,
+        "ongoing_story_count": 0,
+        "finished_story_count": 0,
+        "retry_count": 0,
+        "last_retry_at": "",
+        "last_error": "",
+        "failed_stage": "",
+        "started_at": "",
+        "updated_at": "",
+        "completed_at": "",
+        "elapsed_sec": 0.0,
+    }
+    if not normalized:
+        return default_payload
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM {TBL_COMPANY_STORY_WARMUP_STATE}
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                LIMIT 1
+                """,
+                (normalized, provider_name, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    if not row:
+        return default_payload
+    return _row_to_story_warmup_state(row)
+
+
+def ensure_company_story_warmup_started(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    warmup_days: int = DEFAULT_STORY_WARMUP_DAYS,
+    slice_days: int = DEFAULT_STORY_WARMUP_SLICE_DAYS,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    normalized = _normalize_company_name(company_name)
+    if not normalized:
+        return get_company_story_warmup_state(
+            company_name,
+            provider_name=provider_name,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+    state = get_company_story_warmup_state(
+        normalized,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if state.get("job_state") == "completed":
+        return state
+    _ensure_story_warmup_thread(
+        normalized,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        warmup_days=warmup_days,
+        slice_days=slice_days,
+    )
+    return get_company_story_warmup_state(
+        normalized,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
 
 
 def get_company_news(
@@ -831,42 +960,60 @@ def refresh_company_story_states(
         return {"generated": False, "story_count": 0, "elapsed_sec": 0.0}
 
     end_date = as_of_date or datetime.now(timezone.utc).date()
-    safe_window_days = max(7, min(int(window_days), 90))
-    start_date = end_date - timedelta(days=safe_window_days - 1)
-    status_input = _build_company_status_input(
-        company_name,
-        start_date=start_date,
-        end_date=end_date,
-        provider_name=provider_name,
-    )
     existing = list_company_story_states(
         company_name,
         provider_name=provider_name,
         prompt_style=prompt_style,
         output_language=output_language,
     )
+    daily_news = _build_company_story_incremental_news_items(
+        company_name,
+        target_date=end_date,
+        llm_model=model,
+        output_language=output_language,
+    )
+    if not daily_news:
+        return {
+            "generated": False,
+            "story_count": len(existing),
+            "routed_news_count": 0,
+            "updated_story_count": 0,
+            "new_story_count": 0,
+            "ignored_news_count": 0,
+            "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+        }
     provider = get_news_provider(
         provider_name,
         model=model,
         temperature=temperature,
         timeout_sec=timeout_sec,
     )
-    prompt = _build_company_story_update_prompt(
+    routing_prompt = _build_company_story_routing_prompt(
         company_name,
         as_of_date=end_date,
         prompt_style=prompt_style,
         output_language=output_language,
         existing_stories=existing,
-        status_input=status_input,
+        news_items=daily_news,
     )
-    raw_output = provider.generate_text(prompt=prompt)
-    payload = _parse_json_object(raw_output) or {}
-    stories = payload.get("stories")
-    if not isinstance(stories, list):
-        stories = []
-    normalized = [_normalize_story_record(item) for item in stories if isinstance(item, dict)]
-    normalized = [item for item in normalized if item]
-    if not normalized:
+    routing_raw_output = provider.generate_text(prompt=routing_prompt)
+    routing_payload = _parse_json_object(routing_raw_output) or {}
+    routing_result = _normalize_story_routing_result(
+        existing_stories=existing,
+        news_items=daily_news,
+        payload=routing_payload,
+    )
+    applied = _apply_incremental_story_updates(
+        company_name=company_name,
+        as_of_date=end_date,
+        provider=provider,
+        existing_stories=existing,
+        routed=routing_result,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    final_stories = applied["stories"]
+    if not final_stories:
         return {
             "generated": False,
             "story_count": 0,
@@ -880,19 +1027,29 @@ def refresh_company_story_states(
         prompt_style=prompt_style,
         output_language=output_language,
         input_payload={
-            "prompt": prompt,
+            "routing_prompt": routing_prompt,
+            "routing_result": routing_result,
+            "daily_news": daily_news,
             "existing_story_count": len(existing),
-            "status_input": status_input,
+            "updated_story_keys": applied["updated_story_keys"],
+            "new_story_keys": applied["new_story_keys"],
         },
-        raw_output=raw_output,
-        stories=normalized,
+        raw_output=json.dumps(
+            {
+                "routing": routing_payload,
+                "applied": applied["raw_outputs"],
+            },
+            ensure_ascii=False,
+        ),
+        stories=final_stories,
     )
     return {
         "generated": True,
-        "story_count": len(normalized),
-        "daily_report_count": len(status_input.get("daily_reports") or []),
-        "weekly_report_count": len(status_input.get("weekly_reports") or []),
-        "raw_news_count": len(status_input.get("raw_news") or []),
+        "story_count": len(final_stories),
+        "routed_news_count": len(daily_news),
+        "updated_story_count": len(applied["updated_story_keys"]),
+        "new_story_count": len(applied["new_story_keys"]),
+        "ignored_news_count": len(routing_result["ignored_items"]),
         "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
     }
 
@@ -958,6 +1115,110 @@ def ask_company_story_question(
         input_payload={"prompt": prompt, "story": story, "recent_updates": updates},
     )
     return row
+
+
+def merge_company_story_qa_answer(
+    company_name: str,
+    *,
+    story_key: str,
+    qa_id: int,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 90,
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    story_key = str(story_key or "").strip()
+    if not company_name or not story_key:
+        return None
+    story = get_company_story_state(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if not story:
+        return None
+    qa_row = _get_company_story_qa_row(
+        company_name,
+        story_key=story_key,
+        qa_id=qa_id,
+    )
+    if not qa_row:
+        return None
+    recent_updates = list_company_story_updates(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        limit=4,
+    )
+    prompt = _build_company_story_qa_merge_prompt(
+        company_name=company_name,
+        output_language=output_language,
+        story=story,
+        recent_updates=recent_updates,
+        qa_row=qa_row,
+    )
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    raw_output = provider.generate_text(prompt=prompt)
+    payload = _parse_json_object(raw_output) or {}
+    merged_story = _normalize_incremental_story_item(
+        payload,
+        fallback_story_key=story_key,
+        fallback_story_title=str(story.get("story_title") or story_key),
+        fallback_rank=int(story.get("importance_rank") or 999),
+    )
+    if not merged_story:
+        return None
+    all_stories = list_company_story_states(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    merged_stories: List[Dict[str, Any]] = []
+    replaced = False
+    for item in all_stories:
+        if str(item.get("story_key") or "").strip() == story_key:
+            merged_stories.append(merged_story)
+            replaced = True
+        else:
+            merged_stories.append(item)
+    if not replaced:
+        merged_stories.append(merged_story)
+    merged_stories = sorted(
+        [_normalize_story_record(item) for item in merged_stories if isinstance(item, dict)],
+        key=lambda item: (int(item.get("importance_rank") or 999), str(item.get("story_title") or "")),
+    )
+    _persist_story_refresh(
+        company_name=company_name,
+        as_of_date=datetime.now(timezone.utc).date(),
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={
+            "merge_source": "story_qa",
+            "qa_row": qa_row,
+            "story": story,
+            "recent_updates": recent_updates,
+            "prompt": prompt,
+        },
+        raw_output=raw_output,
+        stories=merged_stories,
+    )
+    return merged_story
 
 
 def summarize_company_news_item(
@@ -1569,8 +1830,16 @@ def ensure_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
     logger.info("Resolving ticker via Finnhub symbol lookup for %s", company_name)
     ticker = _resolve_symbol_from_lookup(client.symbol_lookup(company_name), company_name)
     if not ticker:
-        logger.warning("Symbol lookup returned no ticker for %s", company_name)
-        return None
+        fallback_ticker = resolve_company_ticker_fallback(company_name)
+        if not fallback_ticker:
+            logger.warning("Symbol lookup returned no ticker for %s", company_name)
+            return None
+        ticker = fallback_ticker
+        logger.info(
+            "Using manual ticker fallback for %s (ticker=%s)",
+            company_name,
+            ticker,
+        )
     logger.info("Fetching company profile from Finnhub for %s (ticker=%s)", company_name, ticker)
     profile = client.company_profile(ticker)
     if not profile:
@@ -2065,6 +2334,74 @@ def _filter_finnhub_items_in_batches(
     return kept_items
 
 
+def _filter_company_news_range_raw(
+    *,
+    company_name: str,
+    start_date: date,
+    end_date: date,
+    provider,
+    llm_model: str,
+) -> int:
+    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, news_title, news_date_time
+                FROM company_news_raw
+                WHERE company_name = %s
+                  AND news_date_time >= %s
+                  AND news_date_time < %s
+                  AND COALESCE(is_filtered, FALSE) = FALSE
+                ORDER BY news_date_time ASC, id ASC
+                """,
+                (company_name, start_dt, end_dt),
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return 0
+    title_to_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        title = str(row["news_title"] or "").strip()
+        if not title:
+            continue
+        title_to_rows.setdefault(title.lower(), []).append(row)
+    unique_titles = [
+        {"news_title": bucket[0]["news_title"]}
+        for bucket in title_to_rows.values()
+        if bucket and bucket[0].get("news_title")
+    ]
+    kept_ids: List[int] = []
+    for offset in range(0, len(unique_titles), FILTER_DAY_BATCH_SIZE):
+        batch = unique_titles[offset : offset + FILTER_DAY_BATCH_SIZE]
+        decisions = provider.filter_news_items(company_name=company_name, items=batch)
+        decision_map = {
+            str(item.get("news_title") or "").strip().lower(): item
+            for item in decisions
+            if str(item.get("news_title") or "").strip()
+        }
+        for title_key, bucket in title_to_rows.items():
+            if title_key not in {str(item.get("news_title") or "").strip().lower() for item in batch}:
+                continue
+            decision = decision_map.get(title_key) or {"keep_for_company": True}
+            if _is_item_relevant(decision):
+                kept_ids.extend(int(row["id"]) for row in bucket)
+                continue
+            for row in bucket:
+                _delete_news_by_signature(
+                    company_name,
+                    row["news_title"],
+                    row["news_date_time"],
+                    archive=True,
+                    drop_reason=_extract_drop_reason(decision),
+                    llm_model=llm_model,
+                    dropped_by="story_warmup_filter",
+                )
+    _mark_raw_news_filtered_by_ids(company_name, kept_ids)
+    return len(kept_ids)
+
+
 def _is_item_relevant(item: Dict[str, Any]) -> bool:
     for key in ("keep_for_company", "is_relevant", "keep"):
         if key not in item:
@@ -2332,6 +2669,16 @@ def _as_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_iso_date(value: Any) -> Optional[date]:
+    text = _as_text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _decode_llm_content(
@@ -2955,6 +3302,54 @@ def _insert_story_qa(
     }
 
 
+def _get_company_story_qa_row(
+    company_name: str,
+    *,
+    story_key: str,
+    qa_id: int,
+) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    company_name,
+                    {COL_STORY_KEY},
+                    question,
+                    answer,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    input_payload,
+                    created_at
+                FROM {TBL_COMPANY_STORY_QA}
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND id = %s
+                LIMIT 1
+                """,
+                (company_name, story_key, qa_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "company_name": row["company_name"],
+        "story_key": row[COL_STORY_KEY],
+        "question": row["question"] or "",
+        "answer": row["answer"] or "",
+        "provider": row["provider"],
+        "model": row["model"],
+        "prompt_style": row["prompt_style"],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "input_payload": row["input_payload"] or "",
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def _build_company_daily_report_input_items(
     company_name: str,
     *,
@@ -3210,6 +3605,262 @@ def _build_company_status_prompt(
     )
 
 
+def _build_company_story_warmup_input_items(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    llm_model: str = DEFAULT_MODEL,
+    output_language: str = "zh-CN",
+) -> List[Dict[str, Any]]:
+    articles = get_company_news_for_range(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        llm_model=llm_model,
+        output_language=output_language,
+    )
+    items: List[Dict[str, Any]] = []
+    seen_keys: set[tuple[str, datetime]] = set()
+    for article in sorted(articles, key=lambda item: item.news_date_time):
+        article_key = (article.news_title, article.news_date_time)
+        if article_key in seen_keys:
+            continue
+        seen_keys.add(article_key)
+        content = _decode_llm_content(
+            article.llm_analyzed_content,
+            article.original_content,
+        )
+        items.append(
+            {
+                "news_date_time": article.news_date_time.isoformat(),
+                "news_title": article.news_title,
+                "news_source": article.news_source,
+                "news_source_link": article.news_source_link,
+                "summary": content.get("summary") or article.original_content or "",
+            }
+        )
+    return items
+
+
+def _build_company_story_warmup_prompt(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    output_language: str,
+    items: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    items_json = json.dumps(items, ensure_ascii=False, indent=2)
+    return (
+        f"You are building a {company_name} story map from company news between {start_date.isoformat()} and {end_date.isoformat()}.\n"
+        "Find all material storylines for this company.\n"
+        "Do not miss important storylines.\n"
+        "Merge duplicate or overlapping coverage.\n"
+        "Separate ongoing stories from finished stories.\n"
+        "Use the timeline across all news to connect related events into storylines.\n"
+        "Mark a story as finished only if the main event is resolved or no longer actively developing.\n"
+        "Rules:\n"
+        "- Focus on company-specific and investor-relevant developments.\n"
+        "- Past and Now must be bullet points.\n"
+        "- Next must be bullet points, and each bullet must include expected scenario, impact, probability/confidence, and sentiment.\n"
+        "- Keep evidence references so we know which news supports each storyline.\n"
+        "- Return JSON only.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "ongoing_stories": [\n'
+        "    {\n"
+        '      "story_key": "stable_key",\n'
+        '      "story_title": "short title",\n'
+        '      "importance_rank": 1,\n'
+        '      "past": ["..."],\n'
+        '      "now": ["..."],\n'
+        '      "next": ["Scenario: ... | Impact: ... | Probability: ... | Sentiment: ..."],\n'
+        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}]\n'
+        "    }\n"
+        "  ],\n"
+        '  "finished_stories": [\n'
+        "    {\n"
+        '      "story_key": "stable_key",\n'
+        '      "story_title": "short title",\n'
+        '      "importance_rank": 1,\n'
+        '      "past": ["..."],\n'
+        '      "now": ["Final state / resolution ..."],\n'
+        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        f"News corpus JSON:\n{items_json}\n"
+    )
+
+
+def _build_company_story_warmup_consolidation_prompt(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    output_language: str,
+    chunk_results: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(chunk_results, ensure_ascii=False, indent=2)
+    return (
+        f"Merge chunk-level story drafts for {company_name} between {start_date.isoformat()} and {end_date.isoformat()}.\n"
+        "Goal:\n"
+        "- Merge duplicate or overlapping stories.\n"
+        "- Keep all material company storylines.\n"
+        "- Separate ongoing stories from finished stories.\n"
+        "- Preserve timeline continuity.\n"
+        "- Return JSON only with keys ongoing_stories and finished_stories.\n"
+        f"{language_line}"
+        f"Chunk story drafts JSON:\n{payload_json}\n"
+    )
+
+
+def _normalize_story_warmup_groups(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    ongoing_raw = payload.get("ongoing_stories")
+    finished_raw = payload.get("finished_stories")
+    if not isinstance(ongoing_raw, list):
+        ongoing_raw = []
+    if not isinstance(finished_raw, list):
+        finished_raw = []
+
+    def _normalize_group(items: List[Dict[str, Any]], *, story_status: str) -> List[Dict[str, Any]]:
+        normalized_items: List[Dict[str, Any]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            title = _as_text(item.get("story_title") or item.get("title"))
+            if not title:
+                continue
+            rank_raw = item.get("importance_rank")
+            try:
+                rank = int(rank_raw)
+            except (TypeError, ValueError):
+                rank = index + 1
+            past = item.get("past") if isinstance(item.get("past"), list) else [item.get("past")] if item.get("past") else []
+            now = item.get("now") if isinstance(item.get("now"), list) else [item.get("now")] if item.get("now") else []
+            nxt = item.get("next") if isinstance(item.get("next"), list) else [item.get("next")] if item.get("next") else []
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+            story_key = _normalize_story_key(item.get("story_key"), fallback_title=title, fallback_index=index)
+            normalized_items.append(
+                {
+                    "story_key": story_key,
+                    "story_title": title,
+                    "importance_rank": max(1, rank),
+                    "story_status": story_status,
+                    "confidence": 0.5,
+                    "happened_text": _format_story_section_bullets(past),
+                    "happening_text": _format_story_section_bullets(now),
+                    "next_text": _format_story_section_bullets(nxt),
+                    "open_questions": [],
+                    "evidence": evidence,
+                    "change_log": [],
+                }
+            )
+        return normalized_items
+
+    ongoing = _normalize_group(ongoing_raw, story_status="stable")
+    finished = _normalize_group(finished_raw, story_status="resolved")
+    return {"ongoing_stories": ongoing, "finished_stories": finished}
+
+
+def _format_story_section_bullets(items: List[Any]) -> str:
+    cleaned: List[str] = []
+    for item in items:
+        text = _as_text(item)
+        if text:
+            cleaned.append(text)
+    if not cleaned:
+        return ""
+    return "\n".join(f"- {item}" for item in cleaned)
+
+
+def _generate_company_story_warmup_story_map(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=0.2,
+        timeout_sec=240,
+    )
+    items = _build_company_story_warmup_input_items(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        llm_model=model,
+        output_language=output_language,
+    )
+    prompt = _build_company_story_warmup_prompt(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        output_language=output_language,
+        items=items,
+    )
+    payload: Dict[str, Any]
+    if len(json.dumps(items, ensure_ascii=False)) <= STORY_WARMUP_PROMPT_JSON_LIMIT:
+        raw_output = provider.generate_text(prompt=prompt)
+        payload = _parse_json_object(raw_output) or {}
+    else:
+        chunk_results: List[Dict[str, Any]] = []
+        for offset in range(0, len(items), STORY_WARMUP_CHUNK_SIZE):
+            chunk = items[offset : offset + STORY_WARMUP_CHUNK_SIZE]
+            chunk_prompt = _build_company_story_warmup_prompt(
+                company_name,
+                start_date=start_date,
+                end_date=end_date,
+                output_language=output_language,
+                items=chunk,
+            )
+            chunk_output = provider.generate_text(prompt=chunk_prompt)
+            chunk_results.append(_parse_json_object(chunk_output) or {})
+        merge_prompt = _build_company_story_warmup_consolidation_prompt(
+            company_name,
+            start_date=start_date,
+            end_date=end_date,
+            output_language=output_language,
+            chunk_results=chunk_results,
+        )
+        raw_output = provider.generate_text(prompt=merge_prompt)
+        payload = _parse_json_object(raw_output) or {}
+    grouped = _normalize_story_warmup_groups(payload)
+    combined = grouped["ongoing_stories"] + grouped["finished_stories"]
+    _persist_story_refresh(
+        company_name=company_name,
+        as_of_date=end_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={
+            "warmup_window_start": start_date.isoformat(),
+            "warmup_window_end": end_date.isoformat(),
+            "item_count": len(items),
+            "items": items,
+        },
+        raw_output=json.dumps(payload, ensure_ascii=False),
+        stories=combined,
+    )
+    return {
+        "ongoing_story_count": len(grouped["ongoing_stories"]),
+        "finished_story_count": len(grouped["finished_stories"]),
+        "raw_fetched_count": len(items),
+        "raw_stored_count": len(items),
+        "filtered_kept_count": len(items),
+    }
+
+
 def _build_company_story_update_prompt(
     company_name: str,
     *,
@@ -3273,6 +3924,391 @@ def _build_company_story_update_prompt(
     )
 
 
+# Build a compact daily delta payload so incremental story update works on today's
+# filtered raw news instead of rebuilding the whole story map from scratch.
+def _build_company_story_incremental_news_items(
+    company_name: str,
+    *,
+    target_date: date,
+    llm_model: str = DEFAULT_MODEL,
+    output_language: str = "zh-CN",
+) -> List[Dict[str, Any]]:
+    articles = get_company_news_for_range(
+        company_name,
+        start_date=target_date,
+        end_date=target_date,
+        llm_model=llm_model,
+        output_language=output_language,
+    )
+    items: List[Dict[str, Any]] = []
+    for article in sorted(articles, key=lambda item: (item.news_date_time, item.id or 0)):
+        if article.is_filtered:
+            continue
+        decoded = _decode_llm_content(article.llm_analyzed_content, article.original_content)
+        items.append(
+            {
+                "news_id": int(article.id or 0),
+                "news_date_time": article.news_date_time.isoformat(),
+                "news_title": article.news_title,
+                "news_source": article.news_source,
+                "news_source_link": article.news_source_link,
+                "summary": decoded.get("summary") or article.original_content or "",
+            }
+        )
+    return items
+
+
+def _build_story_routing_story_context(existing_stories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    compact: List[Dict[str, Any]] = []
+    for story in existing_stories:
+        compact.append(
+            {
+                "story_key": story.get("story_key"),
+                "story_title": story.get("story_title"),
+                "story_status": story.get("story_status"),
+                "importance_rank": story.get("importance_rank"),
+                "past": story.get("happened_text") or "",
+                "now": story.get("happening_text") or "",
+                "next": story.get("next_text") or "",
+            }
+        )
+    return compact
+
+
+def _build_company_story_routing_prompt(
+    company_name: str,
+    *,
+    as_of_date: date,
+    prompt_style: str,
+    output_language: str,
+    existing_stories: List[Dict[str, Any]],
+    news_items: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(
+        {
+            "existing_stories": _build_story_routing_story_context(existing_stories),
+            "daily_news": news_items,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        f"You are routing daily company news into the live story map for {company_name} as of {as_of_date.isoformat()}.\n"
+        "Goal:\n"
+        "- Assign each news item to exactly one outcome.\n"
+        "- Prefer an existing story if the item clearly belongs there.\n"
+        "- Create a new story only if the item introduces a distinct new storyline.\n"
+        "- Ignore only if the item is not related or duplicate.\n"
+        "Rules:\n"
+        "- One news item can belong to only one story bucket.\n"
+        "- Do not assign the same news item to multiple stories.\n"
+        "- If the match is ambiguous, choose the best-fit story and keep story boundaries clean.\n"
+        "- Return JSON only.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "decisions": [\n'
+        "    {\n"
+        '      "news_id": 123,\n'
+        '      "action": "existing_story|new_story|ignore",\n'
+        '      "story_key": "existing_story_key",\n'
+        '      "new_story_title": "title only when action=new_story",\n'
+        '      "reason": "not_related|duplicate|best_fit note"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        f"Inputs JSON:\n{payload_json}\n"
+    )
+
+
+def _normalize_story_routing_result(
+    *,
+    existing_stories: List[Dict[str, Any]],
+    news_items: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    existing_by_key = {
+        str(item.get("story_key") or "").strip(): item
+        for item in existing_stories
+        if str(item.get("story_key") or "").strip()
+    }
+    news_by_id = {
+        int(item.get("news_id") or 0): item
+        for item in news_items
+        if int(item.get("news_id") or 0) > 0
+    }
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list):
+        decisions = []
+    assigned_ids: set[int] = set()
+    existing_groups: Dict[str, List[Dict[str, Any]]] = {}
+    new_groups: Dict[str, Dict[str, Any]] = {}
+    ignored_items: List[Dict[str, Any]] = []
+    for item in decisions:
+        if not isinstance(item, dict):
+            continue
+        try:
+            news_id = int(item.get("news_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if news_id <= 0 or news_id in assigned_ids or news_id not in news_by_id:
+            continue
+        assigned_ids.add(news_id)
+        action = str(item.get("action") or "").strip().lower()
+        news = news_by_id[news_id]
+        if action == "existing_story":
+            story_key = str(item.get("story_key") or "").strip()
+            if story_key and story_key in existing_by_key:
+                existing_groups.setdefault(story_key, []).append(news)
+                continue
+        if action == "new_story":
+            new_title = _as_text(item.get("new_story_title")) or news.get("news_title") or f"Story {news_id}"
+            new_key = _normalize_story_key("", fallback_title=new_title, fallback_index=len(new_groups))
+            bucket = new_groups.setdefault(
+                new_key,
+                {"story_key": new_key, "story_title": new_title, "items": []},
+            )
+            bucket["items"].append(news)
+            continue
+        ignored_items.append(
+            {
+                "news_id": news_id,
+                "reason": _as_text(item.get("reason")) or "ignore",
+                "news_title": news.get("news_title") or "",
+            }
+        )
+    for news_id, news in news_by_id.items():
+        if news_id in assigned_ids:
+            continue
+        new_title = news.get("news_title") or f"Story {news_id}"
+        new_key = _normalize_story_key("", fallback_title=new_title, fallback_index=len(new_groups))
+        bucket = new_groups.setdefault(
+            new_key,
+            {"story_key": new_key, "story_title": new_title, "items": []},
+        )
+        bucket["items"].append(news)
+    return {
+        "existing_groups": existing_groups,
+        "new_groups": list(new_groups.values()),
+        "ignored_items": ignored_items,
+    }
+
+
+def _build_incremental_existing_story_prompt(
+    company_name: str,
+    *,
+    as_of_date: date,
+    output_language: str,
+    story: Dict[str, Any],
+    items: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(
+        {
+            "existing_story": _build_story_routing_story_context([story])[0],
+            "daily_news": items,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        f"Update one existing company story for {company_name} as of {as_of_date.isoformat()}.\n"
+        "Goal:\n"
+        "- Use the assigned daily news to update this single story only.\n"
+        "- Preserve continuity and keep the same story_key.\n"
+        "- Move points between Past, Now, and Next when state changes.\n"
+        "- In Next, each bullet should include scenario, impact, probability/confidence, and sentiment.\n"
+        "- Return JSON only.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "story": {\n'
+        '    "story_key": "same_existing_key",\n'
+        '    "story_title": "short title",\n'
+        '    "importance_rank": 1,\n'
+        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
+        '    "happened_text": "- ...",\n'
+        '    "happening_text": "- ...",\n'
+        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
+        '    "open_questions": ["..."],\n'
+        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
+        '    "change_log": ["..."]\n'
+        "  }\n"
+        "}\n"
+        f"Inputs JSON:\n{payload_json}\n"
+    )
+
+
+def _build_incremental_new_story_prompt(
+    company_name: str,
+    *,
+    as_of_date: date,
+    output_language: str,
+    story_key: str,
+    story_title: str,
+    items: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(
+        {
+            "new_story_key": story_key,
+            "new_story_title": story_title,
+            "daily_news": items,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        f"Create one new company story for {company_name} as of {as_of_date.isoformat()}.\n"
+        "Goal:\n"
+        "- Build exactly one distinct new story from the assigned daily news.\n"
+        "- Use Past, Now, and Next.\n"
+        "- In Next, each bullet should include scenario, impact, probability/confidence, and sentiment.\n"
+        "- Return JSON only.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "story": {\n'
+        '    "story_key": "provided_key",\n'
+        '    "story_title": "short title",\n'
+        '    "importance_rank": 1,\n'
+        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
+        '    "happened_text": "- ...",\n'
+        '    "happening_text": "- ...",\n'
+        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
+        '    "open_questions": ["..."],\n'
+        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
+        '    "change_log": ["..."]\n'
+        "  }\n"
+        "}\n"
+        f"Inputs JSON:\n{payload_json}\n"
+    )
+
+
+def _normalize_incremental_story_item(
+    payload: Dict[str, Any],
+    *,
+    fallback_story_key: str,
+    fallback_story_title: str,
+    fallback_rank: int,
+) -> Optional[Dict[str, Any]]:
+    story = payload.get("story")
+    if not isinstance(story, dict):
+        return None
+    normalized = _normalize_story_record(
+        {
+            **story,
+            "story_key": story.get("story_key") or fallback_story_key,
+            "story_title": story.get("story_title") or fallback_story_title,
+            "importance_rank": story.get("importance_rank") or fallback_rank,
+            "confidence": story.get("confidence", 0.5),
+        }
+    )
+    return normalized
+
+
+def _apply_incremental_story_updates(
+    *,
+    company_name: str,
+    as_of_date: date,
+    provider,
+    existing_stories: List[Dict[str, Any]],
+    routed: Dict[str, Any],
+    prompt_style: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    del prompt_style
+    existing_by_key = {
+        str(item.get("story_key") or "").strip(): item
+        for item in existing_stories
+        if str(item.get("story_key") or "").strip()
+    }
+    final_stories: List[Dict[str, Any]] = []
+    raw_outputs: List[Dict[str, Any]] = []
+    updated_story_keys: List[str] = []
+    new_story_keys: List[str] = []
+
+    for story_key, story in existing_by_key.items():
+        items = routed["existing_groups"].get(story_key) or []
+        if not items:
+            final_stories.append(story)
+            continue
+        prompt = _build_incremental_existing_story_prompt(
+            company_name,
+            as_of_date=as_of_date,
+            output_language=output_language,
+            story=story,
+            items=items,
+        )
+        raw_output = provider.generate_text(prompt=prompt)
+        payload = _parse_json_object(raw_output) or {}
+        normalized = _normalize_incremental_story_item(
+            payload,
+            fallback_story_key=story_key,
+            fallback_story_title=str(story.get("story_title") or story_key),
+            fallback_rank=int(story.get("importance_rank") or 999),
+        ) or story
+        final_stories.append(normalized)
+        updated_story_keys.append(story_key)
+        raw_outputs.append(
+            {
+                "type": "existing_story",
+                "story_key": story_key,
+                "prompt": prompt,
+                "raw_output": raw_output,
+                "news_ids": [int(item.get("news_id") or 0) for item in items],
+            }
+        )
+
+    for index, bucket in enumerate(routed["new_groups"]):
+        story_key = str(bucket.get("story_key") or "").strip()
+        story_title = str(bucket.get("story_title") or "").strip() or f"Story {index + 1}"
+        items = bucket.get("items") if isinstance(bucket.get("items"), list) else []
+        if not items:
+            continue
+        prompt = _build_incremental_new_story_prompt(
+            company_name,
+            as_of_date=as_of_date,
+            output_language=output_language,
+            story_key=story_key,
+            story_title=story_title,
+            items=items,
+        )
+        raw_output = provider.generate_text(prompt=prompt)
+        payload = _parse_json_object(raw_output) or {}
+        normalized = _normalize_incremental_story_item(
+            payload,
+            fallback_story_key=story_key,
+            fallback_story_title=story_title,
+            fallback_rank=len(final_stories) + 1,
+        )
+        if not normalized:
+            continue
+        final_stories.append(normalized)
+        new_story_keys.append(normalized["story_key"])
+        raw_outputs.append(
+            {
+                "type": "new_story",
+                "story_key": normalized["story_key"],
+                "prompt": prompt,
+                "raw_output": raw_output,
+                "news_ids": [int(item.get("news_id") or 0) for item in items],
+            }
+        )
+
+    final_stories = sorted(
+        [_normalize_story_record(item) for item in final_stories if isinstance(item, dict)],
+        key=lambda item: (int(item.get("importance_rank") or 999), str(item.get("story_title") or "")),
+    )
+    return {
+        "stories": final_stories,
+        "raw_outputs": raw_outputs,
+        "updated_story_keys": updated_story_keys,
+        "new_story_keys": new_story_keys,
+    }
+
+
 def _build_company_story_qa_prompt(
     *,
     company_name: str,
@@ -3294,6 +4330,53 @@ def _build_company_story_qa_prompt(
         "Use concise layered structure.\n"
         f"{language_line}"
         f"Question:\n{question}\n\n"
+        f"Context JSON:\n{payload_json}\n"
+    )
+
+
+def _build_company_story_qa_merge_prompt(
+    *,
+    company_name: str,
+    output_language: str,
+    story: Dict[str, Any],
+    recent_updates: List[Dict[str, Any]],
+    qa_row: Dict[str, Any],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    payload_json = json.dumps(
+        {
+            "story": story,
+            "recent_updates": recent_updates,
+            "qa": qa_row,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        f"You are merging a story deep-dive answer back into the live story state for {company_name}.\n"
+        "Use the existing story as the base.\n"
+        "Use the Q&A answer only if it adds material clarification, context, or updated understanding.\n"
+        "Do not drift away from the current storyline.\n"
+        "Keep the same story_key.\n"
+        "Past and Now should remain bullet-oriented.\n"
+        "Next should remain concise bullet lines including scenario, impact, probability/confidence, and sentiment.\n"
+        "Return JSON only with key story.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "story": {\n'
+        '    "story_key": "same_existing_key",\n'
+        '    "story_title": "short title",\n'
+        '    "importance_rank": 1,\n'
+        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
+        '    "happened_text": "- ...",\n'
+        '    "happening_text": "- ...",\n'
+        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
+        '    "open_questions": ["..."],\n'
+        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
+        '    "change_log": ["Merged clarification from story Q&A ..."]\n'
+        "  }\n"
+        "}\n"
         f"Context JSON:\n{payload_json}\n"
     )
 
@@ -3403,6 +4486,69 @@ def _row_to_story_state(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _row_to_story_warmup_state(row: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = row.get("started_at")
+    completed_at = row.get("completed_at")
+    updated_at = row.get("updated_at")
+    current_time = completed_at or updated_at or started_at
+    elapsed_sec = 0.0
+    if started_at and current_time:
+        elapsed_sec = max(
+            0.0,
+            round((current_time - started_at).total_seconds(), 2),
+        )
+    return {
+        "company_name": row["company_name"],
+        "provider": row["provider"],
+        "model": row["model"],
+        "prompt_style": row["prompt_style"],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "job_state": row["job_state"] or "not_started",
+        "current_stage": row["current_stage"] or "idle",
+        "window_days": int(row.get("window_days") or DEFAULT_STORY_WARMUP_DAYS),
+        "slice_days": int(row.get("slice_days") or DEFAULT_STORY_WARMUP_SLICE_DAYS),
+        "window_start_date": row["window_start_date"].isoformat() if row.get("window_start_date") else "",
+        "window_end_date": row["window_end_date"].isoformat() if row.get("window_end_date") else "",
+        "total_slices": int(row.get("total_slices") or 0),
+        "completed_slices": int(row.get("completed_slices") or 0),
+        "current_slice_start_date": row["current_slice_start_date"].isoformat() if row.get("current_slice_start_date") else "",
+        "current_slice_end_date": row["current_slice_end_date"].isoformat() if row.get("current_slice_end_date") else "",
+        "last_completed_slice_end_date": row["last_completed_slice_end_date"].isoformat() if row.get("last_completed_slice_end_date") else "",
+        "analysis_started": bool(row.get("analysis_started")),
+        "analysis_completed": bool(row.get("analysis_completed")),
+        "raw_fetched_count": int(row.get("raw_fetched_count") or 0),
+        "raw_stored_count": int(row.get("raw_stored_count") or 0),
+        "filtered_kept_count": int(row.get("filtered_kept_count") or 0),
+        "ongoing_story_count": int(row.get("ongoing_story_count") or 0),
+        "finished_story_count": int(row.get("finished_story_count") or 0),
+        "retry_count": int(row.get("retry_count") or 0),
+        "last_retry_at": row["last_retry_at"].strftime("%Y-%m-%d %H:%M:%S") if row.get("last_retry_at") else "",
+        "last_error": row.get("last_error") or "",
+        "failed_stage": row.get("failed_stage") or "",
+        "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "",
+        "updated_at": updated_at.strftime("%Y-%m-%d %H:%M:%S") if updated_at else "",
+        "completed_at": completed_at.strftime("%Y-%m-%d %H:%M:%S") if completed_at else "",
+        "elapsed_sec": elapsed_sec,
+    }
+
+
+def _group_story_states(
+    stories: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    ongoing: List[Dict[str, Any]] = []
+    finished: List[Dict[str, Any]] = []
+    for story in stories:
+        status = str(story.get("story_status") or "").strip().lower()
+        if status in {"resolved", "finished", "closed"}:
+            finished.append(story)
+        else:
+            ongoing.append(story)
+    return {
+        "ongoing_stories": ongoing,
+        "finished_stories": finished,
+    }
+
+
 def _normalize_company_name(name: str) -> str:
     normalized = " ".join(name.strip().split())
     if not normalized:
@@ -3417,6 +4563,79 @@ def _normalize_ticker(ticker: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _story_warmup_key(
+    company_name: str,
+    *,
+    provider_name: str,
+    prompt_style: str,
+    output_language: str,
+) -> str:
+    return "||".join(
+        [
+            _normalize_company_name(company_name),
+            str(provider_name or DEFAULT_PROVIDER).strip(),
+            str(prompt_style or "simple").strip(),
+            str(output_language or "zh-CN").strip(),
+        ]
+    )
+
+
+def _build_story_warmup_slices(
+    *,
+    end_date: date,
+    warmup_days: int,
+    slice_days: int,
+) -> List[tuple[date, date]]:
+    total_days = max(1, int(warmup_days))
+    step = max(1, int(slice_days))
+    start_date = end_date - timedelta(days=total_days - 1)
+    slices: List[tuple[date, date]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        slice_end = min(end_date, cursor + timedelta(days=step - 1))
+        slices.append((cursor, slice_end))
+        cursor = slice_end + timedelta(days=1)
+    return slices
+
+
+def _ensure_story_warmup_thread(
+    company_name: str,
+    *,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    warmup_days: int,
+    slice_days: int,
+) -> None:
+    key = _story_warmup_key(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    with _WARMUP_THREADS_LOCK:
+        existing = _WARMUP_THREADS.get(key)
+        if existing and existing.is_alive():
+            return
+        thread = threading.Thread(
+            target=_run_company_story_warmup_job,
+            kwargs={
+                "company_name": company_name,
+                "provider_name": provider_name,
+                "model": model,
+                "prompt_style": prompt_style,
+                "output_language": output_language,
+                "warmup_days": warmup_days,
+                "slice_days": slice_days,
+            },
+            daemon=True,
+            name=f"story-warmup-{company_name}",
+        )
+        _WARMUP_THREADS[key] = thread
+        thread.start()
+
+
 def _resolve_company_ticker(company_name: str) -> Optional[str]:
     profile = get_company_profile(company_name)
     if not profile:
@@ -3428,6 +4647,529 @@ def _resolve_company_ticker(company_name: str) -> Optional[str]:
         if value:
             return str(value).strip()
     return None
+
+
+def _upsert_story_warmup_state(
+    company_name: str,
+    *,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    defaults = {
+        "job_state": "not_started",
+        "current_stage": "idle",
+        "window_days": DEFAULT_STORY_WARMUP_DAYS,
+        "slice_days": DEFAULT_STORY_WARMUP_SLICE_DAYS,
+        "window_start_date": None,
+        "window_end_date": None,
+        "total_slices": 0,
+        "completed_slices": 0,
+        "current_slice_start_date": None,
+        "current_slice_end_date": None,
+        "last_completed_slice_end_date": None,
+        "analysis_started": False,
+        "analysis_completed": False,
+        "raw_fetched_count": 0,
+        "raw_stored_count": 0,
+        "filtered_kept_count": 0,
+        "ongoing_story_count": 0,
+        "finished_story_count": 0,
+        "retry_count": 0,
+        "last_retry_at": None,
+        "last_error": "",
+        "failed_stage": "",
+        "started_at": None,
+        "completed_at": None,
+    }
+    defaults.update(updates)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {TBL_COMPANY_STORY_WARMUP_STATE} (
+                    company_name,
+                    provider,
+                    model,
+                    prompt_style,
+                    {COL_OUTPUT_LANGUAGE},
+                    job_state,
+                    current_stage,
+                    window_days,
+                    slice_days,
+                    window_start_date,
+                    window_end_date,
+                    total_slices,
+                    completed_slices,
+                    current_slice_start_date,
+                    current_slice_end_date,
+                    last_completed_slice_end_date,
+                    analysis_started,
+                    analysis_completed,
+                    raw_fetched_count,
+                    raw_stored_count,
+                    filtered_kept_count,
+                    ongoing_story_count,
+                    finished_story_count,
+                    retry_count,
+                    last_retry_at,
+                    last_error,
+                    failed_stage,
+                    started_at,
+                    completed_at,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s, NOW()
+                )
+                ON CONFLICT (company_name, provider, prompt_style, {COL_OUTPUT_LANGUAGE})
+                DO UPDATE SET
+                    model = EXCLUDED.model,
+                    job_state = EXCLUDED.job_state,
+                    current_stage = EXCLUDED.current_stage,
+                    window_days = EXCLUDED.window_days,
+                    slice_days = EXCLUDED.slice_days,
+                    window_start_date = EXCLUDED.window_start_date,
+                    window_end_date = EXCLUDED.window_end_date,
+                    total_slices = EXCLUDED.total_slices,
+                    completed_slices = EXCLUDED.completed_slices,
+                    current_slice_start_date = EXCLUDED.current_slice_start_date,
+                    current_slice_end_date = EXCLUDED.current_slice_end_date,
+                    last_completed_slice_end_date = EXCLUDED.last_completed_slice_end_date,
+                    analysis_started = EXCLUDED.analysis_started,
+                    analysis_completed = EXCLUDED.analysis_completed,
+                    raw_fetched_count = EXCLUDED.raw_fetched_count,
+                    raw_stored_count = EXCLUDED.raw_stored_count,
+                    filtered_kept_count = EXCLUDED.filtered_kept_count,
+                    ongoing_story_count = EXCLUDED.ongoing_story_count,
+                    finished_story_count = EXCLUDED.finished_story_count,
+                    retry_count = EXCLUDED.retry_count,
+                    last_retry_at = EXCLUDED.last_retry_at,
+                    last_error = EXCLUDED.last_error,
+                    failed_stage = EXCLUDED.failed_stage,
+                    started_at = COALESCE({TBL_COMPANY_STORY_WARMUP_STATE}.started_at, EXCLUDED.started_at),
+                    completed_at = EXCLUDED.completed_at,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                (
+                    company_name,
+                    provider_name,
+                    model,
+                    prompt_style,
+                    output_language,
+                    defaults["job_state"],
+                    defaults["current_stage"],
+                    int(defaults["window_days"]),
+                    int(defaults["slice_days"]),
+                    defaults["window_start_date"],
+                    defaults["window_end_date"],
+                    int(defaults["total_slices"]),
+                    int(defaults["completed_slices"]),
+                    defaults["current_slice_start_date"],
+                    defaults["current_slice_end_date"],
+                    defaults["last_completed_slice_end_date"],
+                    bool(defaults["analysis_started"]),
+                    bool(defaults["analysis_completed"]),
+                    int(defaults["raw_fetched_count"]),
+                    int(defaults["raw_stored_count"]),
+                    int(defaults["filtered_kept_count"]),
+                    int(defaults["ongoing_story_count"]),
+                    int(defaults["finished_story_count"]),
+                    int(defaults["retry_count"]),
+                    defaults["last_retry_at"],
+                    defaults["last_error"],
+                    defaults["failed_stage"],
+                    defaults["started_at"],
+                    defaults["completed_at"],
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_story_warmup_state(row)
+
+
+def _run_company_story_warmup_job(
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    warmup_days: int,
+    slice_days: int,
+) -> None:
+    key = _story_warmup_key(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    try:
+        try:
+            _run_company_story_warmup_job_inner(
+                company_name=company_name,
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+                warmup_days=warmup_days,
+                slice_days=slice_days,
+            )
+        except Exception as exc:
+            logger.exception("Story warm-up job failed: company=%s", company_name)
+            _upsert_story_warmup_state(
+                _normalize_company_name(company_name),
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+                updates={
+                    "job_state": "failed",
+                    "current_stage": "fetching_raw",
+                    "window_days": warmup_days,
+                    "slice_days": slice_days,
+                    "last_error": str(exc),
+                    "failed_stage": "fetching_raw",
+                    "analysis_started": False,
+                    "analysis_completed": False,
+                },
+            )
+    finally:
+        with _WARMUP_THREADS_LOCK:
+            _WARMUP_THREADS.pop(key, None)
+
+
+def _run_company_story_warmup_job_inner(
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    warmup_days: int,
+    slice_days: int,
+) -> None:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    end_date = datetime.now(timezone.utc).date()
+    safe_warmup_days = max(1, int(warmup_days))
+    safe_slice_days = max(1, int(slice_days))
+    slices = _build_story_warmup_slices(
+        end_date=end_date,
+        warmup_days=safe_warmup_days,
+        slice_days=safe_slice_days,
+    )
+    start_date = slices[0][0]
+    state = get_company_story_warmup_state(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    _upsert_story_warmup_state(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        updates={
+            "job_state": "analyzing" if state.get("analysis_started") and not state.get("analysis_completed") else "running",
+            "current_stage": "analyzing_stories" if state.get("analysis_started") and not state.get("analysis_completed") else "fetching_raw",
+            "window_days": safe_warmup_days,
+            "slice_days": safe_slice_days,
+            "window_start_date": start_date,
+            "window_end_date": end_date,
+            "total_slices": len(slices),
+            "started_at": datetime.now(timezone.utc),
+            "retry_count": int(state.get("retry_count") or 0),
+            "raw_fetched_count": int(state.get("raw_fetched_count") or 0),
+            "raw_stored_count": int(state.get("raw_stored_count") or 0),
+            "filtered_kept_count": int(state.get("filtered_kept_count") or 0),
+            "ongoing_story_count": int(state.get("ongoing_story_count") or 0),
+            "finished_story_count": int(state.get("finished_story_count") or 0),
+            "analysis_started": bool(state.get("analysis_started")),
+            "analysis_completed": bool(state.get("analysis_completed")),
+            "completed_slices": int(state.get("completed_slices") or 0),
+            "last_completed_slice_end_date": _parse_iso_date(state.get("last_completed_slice_end_date")),
+            "last_error": "",
+            "failed_stage": "",
+            "completed_at": None,
+        },
+    )
+
+    if not state.get("analysis_completed"):
+        provider = get_news_provider(
+            provider_name,
+            model=model,
+            temperature=0.2,
+            timeout_sec=180,
+        )
+        last_completed_slice_end = _parse_iso_date(state.get("last_completed_slice_end_date"))
+        fetched_total = int(state.get("raw_fetched_count") or 0)
+        raw_stored_count = int(state.get("raw_stored_count") or 0)
+        filtered_kept_count = int(state.get("filtered_kept_count") or 0)
+        completed_slices = int(state.get("completed_slices") or 0)
+
+        if not state.get("analysis_started"):
+            finnhub_source = get_news_source("finnhub")
+            ticker = _resolve_company_ticker(company_name) or company_name
+            for slice_index, (slice_start, slice_end) in enumerate(slices, start=1):
+                if last_completed_slice_end and slice_end <= last_completed_slice_end:
+                    continue
+                retries = 0
+                while True:
+                    _upsert_story_warmup_state(
+                        company_name,
+                        provider_name=provider_name,
+                        model=model,
+                        prompt_style=prompt_style,
+                        output_language=output_language,
+                        updates={
+                            "job_state": "running",
+                            "current_stage": "fetching_raw",
+                            "window_days": safe_warmup_days,
+                            "slice_days": safe_slice_days,
+                            "window_start_date": start_date,
+                            "window_end_date": end_date,
+                            "total_slices": len(slices),
+                            "completed_slices": completed_slices,
+                            "current_slice_start_date": slice_start,
+                            "current_slice_end_date": slice_end,
+                            "last_completed_slice_end_date": last_completed_slice_end,
+                            "raw_fetched_count": fetched_total,
+                            "raw_stored_count": raw_stored_count,
+                            "filtered_kept_count": filtered_kept_count,
+                            "retry_count": retries,
+                            "last_error": "",
+                            "failed_stage": "",
+                            "analysis_started": False,
+                            "analysis_completed": False,
+                        },
+                    )
+                    logger.info(
+                        "Story warm-up fetch start: company=%s slice=%d/%d range=%s..%s",
+                        company_name,
+                        slice_index,
+                        len(slices),
+                        slice_start.isoformat(),
+                        slice_end.isoformat(),
+                    )
+                    try:
+                        raw_items = finnhub_source.fetch_news(
+                            company_name=ticker,
+                            start_date=slice_start.isoformat(),
+                            end_date=slice_end.isoformat(),
+                        )
+                        fetched_total += len(raw_items)
+                        raw_articles = _news_items_from_provider(
+                            company_name,
+                            _tag_source(raw_items, "finnhub"),
+                            end_date=slice_end,
+                            analyzed=False,
+                        )
+                        _store_articles(
+                            raw_articles,
+                            llm_model=model,
+                            output_language=output_language,
+                        )
+                        raw_stored_count += len(raw_articles)
+                        kept_count = _filter_company_news_range_raw(
+                            company_name=company_name,
+                            start_date=slice_start,
+                            end_date=slice_end,
+                            provider=provider,
+                            llm_model=model,
+                        )
+                        filtered_kept_count += kept_count
+                        completed_slices += 1
+                        last_completed_slice_end = slice_end
+                        _upsert_story_warmup_state(
+                            company_name,
+                            provider_name=provider_name,
+                            model=model,
+                            prompt_style=prompt_style,
+                            output_language=output_language,
+                            updates={
+                                "job_state": "running",
+                                "current_stage": "fetching_raw",
+                                "window_days": safe_warmup_days,
+                                "slice_days": safe_slice_days,
+                                "window_start_date": start_date,
+                                "window_end_date": end_date,
+                                "total_slices": len(slices),
+                                "completed_slices": completed_slices,
+                                "current_slice_start_date": None,
+                                "current_slice_end_date": None,
+                                "last_completed_slice_end_date": last_completed_slice_end,
+                                "raw_fetched_count": fetched_total,
+                                "raw_stored_count": raw_stored_count,
+                                "filtered_kept_count": filtered_kept_count,
+                                "retry_count": 0,
+                                "analysis_started": False,
+                                "analysis_completed": False,
+                            },
+                        )
+                        logger.info(
+                            "Story warm-up fetch end: company=%s slice=%d/%d fetched=%d kept=%d",
+                            company_name,
+                            slice_index,
+                            len(slices),
+                            len(raw_items),
+                            kept_count,
+                        )
+                        break
+                    except Exception as exc:
+                        retries += 1
+                        is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower()
+                        _upsert_story_warmup_state(
+                            company_name,
+                            provider_name=provider_name,
+                            model=model,
+                            prompt_style=prompt_style,
+                            output_language=output_language,
+                            updates={
+                                "job_state": "partial" if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES else "running",
+                                "current_stage": "fetching_raw",
+                                "window_days": safe_warmup_days,
+                                "slice_days": safe_slice_days,
+                                "window_start_date": start_date,
+                                "window_end_date": end_date,
+                                "total_slices": len(slices),
+                                "completed_slices": completed_slices,
+                                "current_slice_start_date": slice_start,
+                                "current_slice_end_date": slice_end,
+                                "last_completed_slice_end_date": last_completed_slice_end,
+                                "raw_fetched_count": fetched_total,
+                                "raw_stored_count": raw_stored_count,
+                                "filtered_kept_count": filtered_kept_count,
+                                "retry_count": retries,
+                                "last_retry_at": datetime.now(timezone.utc),
+                                "last_error": str(exc),
+                                "failed_stage": "fetching_raw",
+                                "analysis_started": False,
+                                "analysis_completed": False,
+                            },
+                        )
+                        logger.warning(
+                            "Story warm-up fetch error: company=%s slice=%d/%d retry=%d error=%s",
+                            company_name,
+                            slice_index,
+                            len(slices),
+                            retries,
+                            exc,
+                        )
+                        if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES:
+                            if is_rate_limit:
+                                return
+                            raise
+                        if is_rate_limit:
+                            pytime.sleep(DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC)
+                            continue
+                        raise
+
+        _upsert_story_warmup_state(
+            company_name,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+            updates={
+                "job_state": "analyzing",
+                "current_stage": "analyzing_stories",
+                "window_days": safe_warmup_days,
+                "slice_days": safe_slice_days,
+                "window_start_date": start_date,
+                "window_end_date": end_date,
+                "total_slices": len(slices),
+                "completed_slices": len(slices),
+                "last_completed_slice_end_date": end_date,
+                "analysis_started": True,
+                "analysis_completed": False,
+                "raw_fetched_count": fetched_total,
+                "raw_stored_count": raw_stored_count,
+                "filtered_kept_count": filtered_kept_count,
+                "retry_count": 0,
+                "last_error": "",
+                "failed_stage": "",
+            },
+        )
+        logger.info("Story warm-up analyze start: company=%s", company_name)
+        try:
+            analysis_result = _generate_company_story_warmup_story_map(
+                company_name,
+                start_date=start_date,
+                end_date=end_date,
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+            )
+        except Exception as exc:
+            _upsert_story_warmup_state(
+                company_name,
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+                updates={
+                    "job_state": "failed",
+                    "current_stage": "analyzing_stories",
+                    "window_days": safe_warmup_days,
+                    "slice_days": safe_slice_days,
+                    "window_start_date": start_date,
+                    "window_end_date": end_date,
+                    "total_slices": len(slices),
+                    "completed_slices": len(slices),
+                    "last_completed_slice_end_date": end_date,
+                    "analysis_started": True,
+                    "analysis_completed": False,
+                    "last_error": str(exc),
+                    "failed_stage": "analyzing_stories",
+                },
+            )
+            logger.exception("Story warm-up analyze failed: company=%s", company_name)
+            return
+        _upsert_story_warmup_state(
+            company_name,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+            updates={
+                "job_state": "completed",
+                "current_stage": "done",
+                "window_days": safe_warmup_days,
+                "slice_days": safe_slice_days,
+                "window_start_date": start_date,
+                "window_end_date": end_date,
+                "total_slices": len(slices),
+                "completed_slices": len(slices),
+                "current_slice_start_date": None,
+                "current_slice_end_date": None,
+                "last_completed_slice_end_date": end_date,
+                "analysis_started": True,
+                "analysis_completed": True,
+                "raw_fetched_count": int(analysis_result.get("raw_fetched_count", fetched_total)),
+                "raw_stored_count": int(analysis_result.get("raw_stored_count", raw_stored_count)),
+                "filtered_kept_count": int(analysis_result.get("filtered_kept_count", filtered_kept_count)),
+                "ongoing_story_count": int(analysis_result.get("ongoing_story_count", 0)),
+                "finished_story_count": int(analysis_result.get("finished_story_count", 0)),
+                "last_error": "",
+                "failed_stage": "",
+                "completed_at": datetime.now(timezone.utc),
+            },
+        )
+        logger.info(
+            "Story warm-up analyze end: company=%s ongoing=%d finished=%d",
+            company_name,
+            int(analysis_result.get("ongoing_story_count", 0)),
+            int(analysis_result.get("finished_story_count", 0)),
+        )
 
 
 def _extract_profile_extension(profile: Dict[str, Any]) -> Dict[str, Any]:
@@ -3453,258 +5195,7 @@ def _extract_profile_extension(profile: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _ensure_news_schema() -> None:
-    global _SCHEMA_READY
-    if _SCHEMA_READY:
-        return
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            # Runtime schema guard keeps local/dev DBs aligned without manual migrations.
-            cur.execute(
-                """
-                ALTER TABLE company_news_raw
-                ADD COLUMN IF NOT EXISTS is_analyzed BOOLEAN NOT NULL DEFAULT FALSE
-                """
-            )
-            cur.execute(
-                """
-                ALTER TABLE company_news_raw
-                ADD COLUMN IF NOT EXISTS is_filtered BOOLEAN NOT NULL DEFAULT FALSE
-                """
-            )
-            cur.execute(
-                f"""
-                ALTER TABLE {TBL_COMPANY_NEWS_ANALYZED}
-                ADD COLUMN IF NOT EXISTS {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'en'
-                """
-            )
-            cur.execute(
-                """
-                DROP INDEX IF EXISTS idx_company_news_analyzed_unique
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_news_analyzed_unique
-                ON {TBL_COMPANY_NEWS_ANALYZED} (
-                    company_name,
-                    news_title,
-                    news_date_time,
-                    llm_model,
-                    {COL_OUTPUT_LANGUAGE}
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS company_news_dropped (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    raw_news_id BIGINT,
-                    news_date_time TIMESTAMPTZ NOT NULL,
-                    news_title TEXT NOT NULL,
-                    raw_content TEXT,
-                    raw_source TEXT,
-                    raw_source_link TEXT,
-                    raw_is_analyzed BOOLEAN NOT NULL DEFAULT FALSE,
-                    analyzed_content TEXT,
-                    analyzed_source TEXT,
-                    analyzed_source_link TEXT,
-                    analyzed_llm_model TEXT,
-                    drop_reason TEXT,
-                    dropped_by TEXT,
-                    dropped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_company_news_dropped_company_name
-                    ON company_news_dropped (company_name, dropped_at DESC)
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS company_news_daily_report (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    report_date DATE NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    input_payload TEXT NOT NULL,
-                    output_text TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_company_news_daily_report_lookup
-                ON company_news_daily_report (
-                    company_name,
-                    report_date DESC,
-                    provider,
-                    prompt_style,
-                    created_at DESC
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS company_status_snapshot (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    as_of_date DATE NOT NULL,
-                    window_start_date DATE NOT NULL,
-                    window_end_date DATE NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    input_payload TEXT NOT NULL,
-                    output_text TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_company_status_snapshot_lookup
-                ON company_status_snapshot (
-                    company_name,
-                    provider,
-                    prompt_style,
-                    created_at DESC
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_STATE} (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    {COL_STORY_KEY} TEXT NOT NULL,
-                    story_title TEXT NOT NULL,
-                    importance_rank INTEGER NOT NULL DEFAULT 999,
-                    story_status TEXT NOT NULL DEFAULT 'stable',
-                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5,
-                    happened_text TEXT,
-                    happening_text TEXT,
-                    next_text TEXT,
-                    open_questions_json TEXT NOT NULL DEFAULT '[]',
-                    evidence_json TEXT NOT NULL DEFAULT '[]',
-                    change_log_json TEXT NOT NULL DEFAULT '[]',
-                    last_event_at TIMESTAMPTZ,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
-                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_story_state_unique
-                ON {TBL_COMPANY_STORY_STATE} (
-                    company_name,
-                    {COL_STORY_KEY},
-                    provider,
-                    prompt_style,
-                    {COL_OUTPUT_LANGUAGE}
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_company_story_state_lookup
-                ON {TBL_COMPANY_STORY_STATE} (
-                    company_name,
-                    provider,
-                    prompt_style,
-                    {COL_OUTPUT_LANGUAGE},
-                    is_active,
-                    importance_rank,
-                    updated_at DESC
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_UPDATE} (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    {COL_STORY_KEY} TEXT NOT NULL,
-                    as_of_date DATE NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
-                    input_payload TEXT NOT NULL,
-                    output_json TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_company_story_update_lookup
-                ON {TBL_COMPANY_STORY_UPDATE} (
-                    company_name,
-                    {COL_STORY_KEY},
-                    provider,
-                    prompt_style,
-                    {COL_OUTPUT_LANGUAGE},
-                    created_at DESC
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_STORY_QA} (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    {COL_STORY_KEY} TEXT NOT NULL,
-                    question TEXT NOT NULL,
-                    answer TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
-                    input_payload TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_company_story_qa_lookup
-                ON {TBL_COMPANY_STORY_QA} (
-                    company_name,
-                    {COL_STORY_KEY},
-                    provider,
-                    prompt_style,
-                    {COL_OUTPUT_LANGUAGE},
-                    created_at DESC
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                UPDATE company_news_raw AS r
-                SET is_analyzed = TRUE
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM {TBL_COMPANY_NEWS_ANALYZED} AS a
-                    WHERE a.company_name = r.company_name
-                      AND a.news_title = r.news_title
-                      AND a.news_date_time = r.news_date_time
-                )
-                """
-            )
-        conn.commit()
-    _SCHEMA_READY = True
+    ensure_database_schema()
 
 
 def _resolve_symbol_from_lookup(

@@ -15,11 +15,19 @@ dependencies = [
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.1",
     "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
     "psycopg2-binary>=2.9.9",
     "openai>=1.0.0"
 ]
+
+[project.scripts]
+marketagent-company-worker = "market_agent.jobs.company_updates:main"
+marketagent-company-warmup = "market_agent.jobs.company_warmup:main"
 
 [tool.pytest.ini_options]
 markers = [
     "integration: tests that call external APIs/services",
 ]
+
+[tool.setuptools.packages.find]
+include = ["market_agent*", "frontend*"]

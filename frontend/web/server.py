@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 
-from market_agent.analysis.company.news.db import get_connection
+from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
 from frontend.common import StockFrontendClient
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
@@ -26,6 +26,11 @@ from frontend.web.global_page import render_global_page
 from frontend.web.market_page import render_market_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
+from market_agent.app import (
+    get_company_story_overview,
+    run_company_daily_update,
+    start_company_story_warmup,
+)
 from market_agent.analysis.company.news import (
     add_company_to_watchlist,
     delete_company_news,
@@ -35,7 +40,6 @@ from market_agent.analysis.company.news import (
     get_company_news,
     get_company_story_state,
     list_company_story_qa,
-    list_company_story_states,
     list_company_story_updates,
     get_company_daily_report,
     get_company_profile,
@@ -50,7 +54,7 @@ from market_agent.analysis.company.news import (
     remove_company_from_watchlist,
     set_company_ticker,
     ask_company_story_question,
-    refresh_company_story_states,
+    merge_company_story_qa_answer,
     summarize_company_news_day,
     summarize_company_news_item,
 )
@@ -757,8 +761,15 @@ async def add_company(request: Request) -> Dict[str, Any]:
     company_name = str(payload.get("company_name", "")).strip()
     if not company_name:
         return {"error": "company_name is required"}
-    add_company_to_watchlist(company_name)
-    return {"ok": True}
+    warmup = start_company_story_warmup(
+        company_name,
+        subscribe=True,
+        provider_name="openai",
+        model="gpt-5.2",
+        prompt_style="simple",
+        output_language="zh-CN",
+    )
+    return {"ok": True, "warmup": warmup}
 
 
 @app.delete("/api/companies/{company_name}")
@@ -973,13 +984,14 @@ async def get_company_stories_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    stories = list_company_story_states(
+    overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
+        model="gpt-5.2",
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    return {"company": company_name, "stories": stories}
+    return overview
 
 
 @app.post("/api/company/{company_name}/stories/refresh")
@@ -992,21 +1004,25 @@ async def refresh_company_stories_api(
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    stats = refresh_company_story_states(
+    result = run_company_daily_update(
+        company_name,
+        target_date=datetime.now().date(),
+        source_name="finnhub",
+        provider_name=provider_name,
+        model=model or "gpt-5.2",
+        prompt_style=prompt_style,
+        output_language=output_language,
+        story_window_days=window_days,
+    )
+    overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
         model=model or "gpt-5.2",
         prompt_style=prompt_style,
         output_language=output_language,
-        window_days=window_days,
+        start_warmup_if_needed=False,
     )
-    stories = list_company_story_states(
-        company_name,
-        provider_name=provider_name,
-        prompt_style=prompt_style,
-        output_language=output_language,
-    )
-    return {"company": company_name, "stories": stories, **stats}
+    return {**overview, **result}
 
 
 @app.get("/api/company/{company_name}/stories/{story_key}")
@@ -1081,6 +1097,61 @@ async def ask_company_story_api(
         limit=10,
     )
     return {"company": company_name, "story_key": story_key, "qa": qa, "last_answer": row}
+
+
+@app.post("/api/company/{company_name}/stories/{story_key}/qa/{qa_id}/merge")
+async def merge_company_story_qa_api(
+    company_name: str,
+    story_key: str,
+    qa_id: int,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    provider_name = provider or "openai"
+    row = merge_company_story_qa_answer(
+        company_name,
+        story_key=story_key,
+        qa_id=qa_id,
+        provider_name=provider_name,
+        model=model or "gpt-5.2",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if not row:
+        return {"error": "story or Q&A row not found, or merge failed"}
+    story = get_company_story_state(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    updates = list_company_story_updates(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        limit=10,
+    )
+    qa = list_company_story_qa(
+        company_name,
+        story_key=story_key,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        limit=10,
+    )
+    return {
+        "company": company_name,
+        "story_key": story_key,
+        "story": story,
+        "updates": updates,
+        "qa": qa,
+        "merged_story": row,
+    }
 
 
 @app.get("/api/company/{company_name}/price/history")
@@ -1242,8 +1313,18 @@ async def get_company_stock_series_api(
             "points": [],
             "error": "no price series returned",
         }
-    points = _attach_pct_change(points)
-    enriched = _attach_moving_averages(points, windows=windows)
+    full_points = _list_company_price_daily_points_all(
+        company_name=company_name,
+        ticker=resolved_ticker,
+    )
+    ma_base_points = full_points or points
+    ma_enriched_full = _attach_moving_averages(ma_base_points, windows=windows)
+    enriched = _merge_trimmed_ma_points(
+        visible_points=points,
+        ma_points=ma_enriched_full,
+        windows=windows,
+    )
+    enriched = _attach_pct_change(enriched)
     return {
         "company": company_name,
         "ticker": resolved_ticker,
@@ -1612,6 +1693,13 @@ def _fetch_yahoo_index_rss_item(
     symbol: str,
     country_code: str,
 ) -> Dict[str, Any]:
+    # Prefer real quote sources first; RSS is only for headline metadata.
+    quote = _resolve_market_quote([symbol])
+    if str(quote.get("close_price") or "").strip() in {"", "-", "—"}:
+        yahoo_quote = _fetch_yahoo_symbol_quote(symbol)
+        if yahoo_quote:
+            quote = yahoo_quote
+
     url = (
         "https://feeds.finance.yahoo.com/rss/2.0/headline?"
         + urllib.parse.urlencode({"s": symbol, "region": "US", "lang": "en-US"})
@@ -1650,10 +1738,10 @@ def _fetch_yahoo_index_rss_item(
         dt_text = ""
 
     return {
-        "symbol": symbol,
-        "close_price": "—",
-        "price_change_pct": "RSS",
-        "quote_timestamp": None,
+        "symbol": str(quote.get("symbol") or symbol),
+        "close_price": str(quote.get("close_price") or "—"),
+        "price_change_pct": str(quote.get("price_change_pct") or "—"),
+        "quote_timestamp": quote.get("quote_timestamp"),
         "label": label,
         "country_code": country_code,
         "headline": headline,
@@ -1996,6 +2084,94 @@ def _fetch_direct_finnhub_quote(symbol: str, *, api_key: str) -> Optional[Dict[s
     }
 
 
+def _fetch_yahoo_symbol_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        + urllib.parse.quote(symbol)
+        + "?"
+        + urllib.parse.urlencode(
+            {
+                "interval": "1d",
+                "range": "5d",
+                "includeAdjustedClose": "false",
+            }
+        )
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    chart = payload.get("chart") if isinstance(payload, dict) else None
+    results = chart.get("result") if isinstance(chart, dict) else None
+    if not isinstance(results, list) or not results:
+        return None
+    result = results[0] or {}
+    meta = result.get("meta") if isinstance(result, dict) else {}
+    indicators = result.get("indicators") if isinstance(result, dict) else {}
+    quotes = indicators.get("quote") if isinstance(indicators, dict) else []
+    quote = quotes[0] if isinstance(quotes, list) and quotes else {}
+    closes = quote.get("close") if isinstance(quote, dict) else []
+    timestamps = result.get("timestamp") if isinstance(result, dict) else []
+    if not isinstance(closes, list):
+        closes = []
+    if not isinstance(timestamps, list):
+        timestamps = []
+
+    valid_closes: List[float] = []
+    for value in closes:
+        try:
+            if value is None:
+                continue
+            valid_closes.append(float(value))
+        except Exception:
+            continue
+    if not valid_closes:
+        return None
+
+    latest = valid_closes[-1]
+    previous = valid_closes[-2] if len(valid_closes) >= 2 else None
+    if previous in (None, 0):
+        prev_close_meta = meta.get("previousClose") if isinstance(meta, dict) else None
+        try:
+            previous = float(prev_close_meta) if prev_close_meta not in (None, 0, "") else None
+        except Exception:
+            previous = None
+
+    pct_text = "—"
+    if previous not in (None, 0):
+        try:
+            pct = ((latest - float(previous)) / float(previous)) * 100.0
+            pct_text = f"{pct:+.2f}%"
+        except Exception:
+            pct_text = "—"
+
+    quote_ts = None
+    if timestamps:
+        try:
+            quote_ts = int(timestamps[-1])
+        except Exception:
+            quote_ts = None
+
+    return {
+        "symbol": str(meta.get("symbol") or symbol),
+        "close_price": f"{latest:.2f}",
+        "price_change_pct": pct_text,
+        "quote_timestamp": quote_ts,
+    }
+
+
 def _parse_ma_windows(raw: str) -> List[int]:
     values: List[int] = []
     for part in str(raw or "").split(","):
@@ -2163,7 +2339,9 @@ def _attach_moving_averages(
 
     enriched: List[Dict[str, Any]] = []
     for point in points:
-        close_val_raw = point.get("adj_close", point.get("close"))
+        close_val_raw = point.get("adj_close")
+        if not isinstance(close_val_raw, (int, float)):
+            close_val_raw = point.get("close")
         close_val = float(close_val_raw) if isinstance(close_val_raw, (int, float)) else None
         closes.append(close_val)
         out = dict(point)
@@ -2485,6 +2663,78 @@ def _list_company_price_daily_points(
     return points
 
 
+def _list_company_price_daily_points_all(
+    *,
+    company_name: str,
+    ticker: str,
+) -> List[Dict[str, Any]]:
+    _ensure_company_price_daily_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    {COL_TRADE_DATE},
+                    open,
+                    high,
+                    low,
+                    close,
+                    adj_close,
+                    volume
+                FROM {TBL_COMPANY_PRICE_DAILY}
+                WHERE company_name = %s
+                  AND {COL_TICKER} = %s
+                ORDER BY {COL_TRADE_DATE} ASC
+                """,
+                (company_name, ticker),
+            )
+            rows = cur.fetchall()
+    points: List[Dict[str, Any]] = []
+    for row in rows:
+        d = row[COL_TRADE_DATE]
+        if not d:
+            continue
+        dt = datetime.combine(d, datetime.min.time(), tzinfo=ZoneInfo("UTC"))
+        points.append(
+            {
+                "date": d.isoformat(),
+                "date_time": dt.isoformat(),
+                "open": _round_num(row.get("open")),
+                "high": _round_num(row.get("high")),
+                "low": _round_num(row.get("low")),
+                "close": _round_num(row.get("close")),
+                "adj_close": _round_num(row.get("adj_close")),
+                "volume": _int_or_none(row.get("volume")),
+                "is_intraday": False,
+            }
+        )
+    return points
+
+
+def _merge_trimmed_ma_points(
+    *,
+    visible_points: List[Dict[str, Any]],
+    ma_points: List[Dict[str, Any]],
+    windows: List[int],
+) -> List[Dict[str, Any]]:
+    if not visible_points:
+        return []
+    ma_by_date: Dict[str, Dict[str, Any]] = {
+        str(point.get("date") or ""): point
+        for point in ma_points
+        if str(point.get("date") or "")
+    }
+    merged: List[Dict[str, Any]] = []
+    for point in visible_points:
+        row = dict(point)
+        source = ma_by_date.get(str(point.get("date") or ""), {})
+        for window in windows:
+            key = f"ma_{window}"
+            row[key] = source.get(key)
+        merged.append(row)
+    return merged
+
+
 def _get_company_price_daily_latest_date(*, company_name: str, ticker: str) -> Optional[date]:
     _ensure_company_price_daily_schema()
     with get_connection() as conn:
@@ -2759,86 +3009,11 @@ def _build_company_price_move_prompt(
 
 
 def _ensure_company_price_daily_schema() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_PRICE_DAILY} (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    {COL_TICKER} TEXT NOT NULL,
-                    {COL_TRADE_DATE} DATE NOT NULL,
-                    open DOUBLE PRECISION,
-                    high DOUBLE PRECISION,
-                    low DOUBLE PRECISION,
-                    close DOUBLE PRECISION,
-                    adj_close DOUBLE PRECISION,
-                    volume BIGINT,
-                    source TEXT NOT NULL DEFAULT 'unknown',
-                    source_symbol TEXT,
-                    currency TEXT,
-                    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_price_daily_unique
-                ON {TBL_COMPANY_PRICE_DAILY} (company_name, {COL_TICKER}, {COL_TRADE_DATE})
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_company_price_daily_lookup
-                ON {TBL_COMPANY_PRICE_DAILY} (company_name, {COL_TICKER}, {COL_TRADE_DATE} DESC)
-                """
-            )
-        conn.commit()
+    ensure_database_schema()
 
 
 def _ensure_company_price_move_analysis_schema() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_COMPANY_PRICE_MOVE_ANALYSIS} (
-                    id BIGSERIAL PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    ticker TEXT NOT NULL,
-                    {COL_RANGE_KEY} TEXT NOT NULL,
-                    {COL_POINT_DATE_TIME} TIMESTAMPTZ NOT NULL,
-                    point_label TEXT NOT NULL,
-                    close_price DOUBLE PRECISION,
-                    pct_change DOUBLE PRECISION,
-                    volume BIGINT,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
-                    input_payload TEXT NOT NULL,
-                    output_text TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_price_move_analysis_unique
-                ON {TBL_COMPANY_PRICE_MOVE_ANALYSIS} (
-                    company_name,
-                    ticker,
-                    {COL_RANGE_KEY},
-                    {COL_POINT_DATE_TIME},
-                    provider,
-                    prompt_style,
-                    {COL_OUTPUT_LANGUAGE}
-                )
-                """
-            )
-        conn.commit()
+    ensure_database_schema()
 
 
 def _get_company_price_move_analysis(
@@ -3011,26 +3186,7 @@ def _int_or_none(value: Any) -> Optional[int]:
 
 
 def _ensure_market_price_snapshot_schema() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_MARKET_PRICE_DAILY_SNAPSHOT} (
-                    id BIGSERIAL PRIMARY KEY,
-                    {COL_SNAPSHOT_DATE} DATE NOT NULL UNIQUE,
-                    {COL_PAYLOAD} TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_market_price_daily_snapshot_date
-                    ON {TBL_MARKET_PRICE_DAILY_SNAPSHOT} ({COL_SNAPSHOT_DATE} DESC, updated_at DESC)
-                """
-            )
-        conn.commit()
+    ensure_database_schema()
 
 
 def _get_market_price_snapshot(snapshot_date: date) -> Optional[Dict[str, Any]]:
@@ -3083,85 +3239,11 @@ def _upsert_market_price_snapshot(snapshot_date: date, payload: Dict[str, Any]) 
 
 
 def _ensure_market_daily_summary_schema() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_MARKET_NEWS_DAILY_SUMMARY} (
-                    id BIGSERIAL PRIMARY KEY,
-                    summary_date DATE NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    prompt_style TEXT NOT NULL,
-                    {COL_NEWS_SOURCES} TEXT,
-                    input_payload TEXT NOT NULL,
-                    output_text TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                ALTER TABLE {TBL_MARKET_NEWS_DAILY_SUMMARY}
-                ADD COLUMN IF NOT EXISTS {COL_NEWS_SOURCES} TEXT
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_market_news_daily_summary_date
-                    ON {TBL_MARKET_NEWS_DAILY_SUMMARY} (summary_date, created_at DESC)
-                """
-            )
-        conn.commit()
+    ensure_database_schema()
 
 
 def _ensure_market_news_item_analysis_schema() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {TBL_MARKET_NEWS_ITEM_ANALYSIS} (
-                    id BIGSERIAL PRIMARY KEY,
-                    {COL_NEWS_DATE} DATE NOT NULL,
-                    {COL_NEWS_URL} TEXT NOT NULL,
-                    {COL_HEADLINE} TEXT NOT NULL,
-                    {COL_SOURCE} TEXT,
-                    {COL_SOURCE_TAG} TEXT,
-                    {COL_PROVIDER} TEXT NOT NULL,
-                    {COL_MODEL} TEXT NOT NULL,
-                    {COL_OUTPUT_LANGUAGE} TEXT NOT NULL DEFAULT 'zh-CN',
-                    {COL_PROMPT_STYLE} TEXT NOT NULL DEFAULT 'simple',
-                    {COL_INPUT_PAYLOAD} TEXT NOT NULL,
-                    {COL_OUTPUT_TEXT} TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_market_news_item_analysis_unique
-                ON {TBL_MARKET_NEWS_ITEM_ANALYSIS} (
-                    {COL_NEWS_DATE},
-                    {COL_NEWS_URL},
-                    {COL_MODEL},
-                    {COL_OUTPUT_LANGUAGE},
-                    {COL_PROMPT_STYLE}
-                )
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_market_news_item_analysis_lookup
-                ON {TBL_MARKET_NEWS_ITEM_ANALYSIS} (
-                    {COL_NEWS_DATE} DESC,
-                    {COL_MODEL},
-                    {COL_OUTPUT_LANGUAGE},
-                    updated_at DESC
-                )
-                """
-            )
-        conn.commit()
+    ensure_database_schema()
 
 
 def _upsert_market_daily_summary(
