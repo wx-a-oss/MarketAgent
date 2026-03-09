@@ -1,0 +1,38 @@
+name: Deploy EC2 Staging
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Syntax checks
+        run: python -m py_compile frontend/web/server.py market_agent/analysis/company/news/service.py market_agent/jobs/company_updates.py
+
+      - name: Install SSH key
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+
+      - name: Deploy on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+            "cd /home/ec2-user/MarketAgent && bash deploy/ec2/deploy.sh"

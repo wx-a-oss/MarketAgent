@@ -1,0 +1,10 @@
+[Unit]
+Description=Run MarketAgent company update worker daily
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+Unit=marketagent-worker.service
+
+[Install]
+WantedBy=timers.target

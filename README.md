@@ -100,3 +100,32 @@ See [documents/roadmap.md](./documents/roadmap.md) for roadmap and future work.
 ## 6) Implemented Features
 
 See [documents/implemented_features.md](./documents/implemented_features.md) for user-facing features that are already shipped.
+
+## 7) EC2 Staging Deployment
+
+Operational assets added for the EC2 staging workflow:
+
+- `deploy/ec2/setup_ec2.sh`: first-time EC2 bootstrap
+- `deploy/ec2/deploy.sh`: repeatable code update + service restart
+- `deploy/systemd/marketagent-web.service`: web app service
+- `deploy/systemd/marketagent-worker.service`: one-shot company update worker
+- `deploy/systemd/marketagent-worker.timer`: daily worker schedule
+- `.github/workflows/deploy-ec2.yml`: deploy-on-push workflow for `main`
+
+Expected runtime layout on EC2:
+
+- repo path: `/home/ec2-user/MarketAgent`
+- conda env: `market_agent_env`
+- env file: `/etc/marketagent/marketagent.env`
+- web app port: `8000`
+
+Required GitHub Actions secrets:
+
+- `EC2_HOST`
+- `EC2_USER`
+- `EC2_SSH_PRIVATE_KEY`
+
+Notes:
+
+- The EC2 app can be healthy locally on the instance while still being unreachable publicly if the EC2 security group does not allow inbound TCP `8000`.
+- For the first staging version, Postgres runs on EC2 via the existing Docker Compose setup, while the Python web app and worker run in Conda under `systemd`.
