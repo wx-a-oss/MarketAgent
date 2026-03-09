@@ -27,5 +27,14 @@ bash postgres/init_db.sh
 sudo systemctl restart marketagent-web.service
 sudo systemctl restart marketagent-worker.timer
 
-curl -fsS http://127.0.0.1:8000/ >/dev/null
-echo "Deploy completed for ${BRANCH}."
+for _ in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
+    echo "Deploy completed for ${BRANCH}."
+    exit 0
+  fi
+  sleep 2
+done
+
+sudo systemctl status marketagent-web.service --no-pager -l || true
+echo "Web health check failed after restart." >&2
+exit 1
