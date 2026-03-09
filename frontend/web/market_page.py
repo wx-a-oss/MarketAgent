@@ -342,10 +342,6 @@ def render_market_page(
                                 <option value="simple" selected>simple</option>
                                 <option value="structured">structured</option>
                             </select>
-                            <select id="summary-language">
-                                <option value="zh-CN" selected>简体中文</option>
-                                <option value="en">English</option>
-                            </select>
                             <button id="analyze-news" class="analyze-btn" type="button">Analyze All</button>
                             <span id="summary-status" class="summary-status"></span>
                         </div>
@@ -362,7 +358,7 @@ def render_market_page(
                     const statusEl = document.getElementById("market-status");
                     const marketSectionsEl = document.getElementById("market-sections");
                     const summaryPrompt = document.getElementById("summary-prompt");
-                    const summaryLanguage = document.getElementById("summary-language");
+                    const summaryLanguage = document.getElementById("global-language-select");
                     const analyzeBtn = document.getElementById("analyze-news");
                     const summaryStatus = document.getElementById("summary-status");
                     const summariesEl = document.getElementById("news-summaries");

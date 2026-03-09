@@ -83,7 +83,7 @@ def render_company_page() -> str:
                         <h1>Company</h1>
                         <form id="company-form">
                             <input type="text" id="company-input" placeholder="Add company (e.g. Apple Inc.)" />
-                            <button type="submit">Query</button>
+                            <button type="submit">Subscribe</button>
                         </form>
                         <div id="company-list" class="list"></div>
                     </section>

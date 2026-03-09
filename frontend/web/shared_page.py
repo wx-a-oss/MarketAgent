@@ -21,8 +21,20 @@ BASE_PAGE_STYLES = """
         margin: 0 auto 1.5rem;
         font-family: inherit;
     }
+    .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .nav-links {
+        display: inline-flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
     nav a {
-        margin-right: 1rem;
         text-decoration: none;
         color: #1f2937;
         font-weight: 600;
@@ -30,6 +42,33 @@ BASE_PAGE_STYLES = """
         letter-spacing: 0.01em;
     }
     nav a.active { color: #2563eb; }
+    .nav-language {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        color: #64748b;
+        font-size: 0.8rem;
+        margin-left: auto;
+    }
+    .nav-language-icon {
+        font-size: 0.82rem;
+        line-height: 1;
+    }
+    .nav-language-select {
+        height: 28px;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        padding: 0.1rem 1.25rem 0.1rem 0.45rem;
+        font-size: 0.74rem;
+        background: #fff;
+        color: #475569;
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        cursor: pointer;
+        width: 48px;
+        min-width: 48px;
+    }
     .container { max-width: 960px; margin: 0 auto; padding: 0 1rem; display: grid; gap: 1.5rem; }
     .card { background: white; border-radius: 0.75rem; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
     h1, h2 { margin-top: 0; }
@@ -77,7 +116,34 @@ def render_nav(active: str) -> str:
         f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
         for key, href, label in items
     )
-    return f"<nav>{links}</nav>"
+    return (
+        '<nav>'
+        '<div class="nav-inner">'
+        f'<div class="nav-links">{links}</div>'
+        '<label class="nav-language" title="Output language">'
+        '<span class="nav-language-icon">文</span>'
+        '<select id="global-language-select" class="nav-language-select" aria-label="Output language">'
+        '<option value="zh-CN">中文</option>'
+        '<option value="en">EN</option>'
+        '</select>'
+        '</label>'
+        '</div>'
+        '</nav>'
+        '<script>'
+        '(function(){'
+        'const key="preferred_output_language";'
+        'const select=document.getElementById("global-language-select");'
+        'if(!select){return;}'
+        'const saved=localStorage.getItem(key);'
+        'select.value=saved==="en"?"en":"zh-CN";'
+        'select.addEventListener("change",function(){'
+        'const next=select.value==="en"?"en":"zh-CN";'
+        'localStorage.setItem(key,next);'
+        'window.dispatchEvent(new CustomEvent("marketagent-language-change",{detail:{language:next}}));'
+        '});'
+        '})();'
+        '</script>'
+    )
 
 
 def render_simple_query_page(title: str, placeholder: str, active: str) -> str:

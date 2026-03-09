@@ -430,11 +430,17 @@ def render_company_detail_page(
                         flex-wrap: wrap;
                         margin-bottom: 0.65rem;
                     }}
+                    .status-header-main {{
+                        flex: 1 1 320px;
+                        min-width: 0;
+                    }}
                     .status-controls {{
                         display: inline-flex;
                         align-items: center;
                         gap: 0.45rem;
                         flex-wrap: wrap;
+                        justify-content: flex-end;
+                        margin-left: auto;
                     }}
                     .status-select {{
                         height: 30px;
@@ -545,6 +551,15 @@ def render_company_detail_page(
                         font-size: 0.76rem;
                         color: #64748b;
                     }}
+                    .story-group-heading {{
+                        font-size: 0.75rem;
+                        font-weight: 700;
+                        letter-spacing: 0.06em;
+                        text-transform: uppercase;
+                        color: #64748b;
+                        margin: 0.25rem 0 0.15rem;
+                        padding: 0 0.15rem;
+                    }}
                     .stories-main {{
                         border: 1px solid #dbeafe;
                         border-radius: 0.9rem;
@@ -570,6 +585,21 @@ def render_company_detail_page(
                         margin-top: 0.75rem;
                         display: grid;
                         gap: 0.45rem;
+                    }}
+                    .story-ask-controls {{
+                        display: flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        flex-wrap: wrap;
+                    }}
+                    .story-ask-model {{
+                        min-width: 180px;
+                        height: 30px;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.5rem;
+                        padding: 0.2rem 0.45rem;
+                        font-size: 0.8rem;
+                        background: #fff;
                     }}
                     .story-ask-input {{
                         width: 100%;
@@ -606,6 +636,26 @@ def render_company_detail_page(
                         font-size: 0.74rem;
                         color: #64748b;
                         margin-bottom: 0.2rem;
+                    }}
+                    .story-ask-actions {{
+                        display: flex;
+                        align-items: center;
+                        gap: 0.4rem;
+                        margin-top: 0.35rem;
+                    }}
+                    .story-merge-btn {{
+                        width: fit-content;
+                        border: 1px solid #2563eb;
+                        background: #eff6ff;
+                        color: #1d4ed8;
+                        border-radius: 999px;
+                        padding: 0.28rem 0.65rem;
+                        font-size: 0.76rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .story-merge-btn:hover {{
+                        background: #dbeafe;
                     }}
                     @media (max-width: 980px) {{
                         .stories-wrap {{
@@ -745,10 +795,6 @@ def render_company_detail_page(
                         <div class="header-row">
                             <h1>{display_company}</h1>
                             <div class="header-actions">
-                                <select class="week-input" id="output-language" title="Report language">
-                                    <option value="zh-CN" selected>简体中文</option>
-                                    <option value="en">English</option>
-                                </select>
                                 <select class="week-input" id="news-source">
                                     <option value="finnhub" selected>finnhub</option>
                                     <option value="openai">openai</option>
@@ -789,7 +835,7 @@ def render_company_detail_page(
                     const refreshBtn = document.getElementById("refresh-btn");
                     const refreshStatus = document.getElementById("refresh-status");
                     const rangeInput = document.getElementById("range-date");
-                    const outputLanguageSelect = document.getElementById("output-language");
+                    const outputLanguageSelect = document.getElementById("global-language-select");
                     const sourceSelect = document.getElementById("news-source");
                     const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
@@ -850,6 +896,7 @@ def render_company_detail_page(
                     const statusCache = {{}};
                     const storyCache = {{}};
                     let stockChart = null;
+                    let storyPollTimer = null;
 
                     function getOutputLanguage() {{
                         const selected = outputLanguageSelect && outputLanguageSelect.value
@@ -1054,6 +1101,10 @@ def render_company_detail_page(
                     }}
 
                     function setViewMode(mode) {{
+                        if (storyPollTimer) {{
+                            clearTimeout(storyPollTimer);
+                            storyPollTimer = null;
+                        }}
                         currentViewMode = normalizeViewMode(mode);
                         updateUrlState({{
                             viewMode: currentViewMode,
@@ -1148,7 +1199,7 @@ def render_company_detail_page(
                         contentEl.innerHTML = `
                             <div class="status-panel">
                                 <div class="status-panel-header">
-                                    <div>
+                                    <div class="status-header-main">
                                         <h2 style="margin:0;">Company Status</h2>
                                         <div class="status-meta" id="status-meta">Loading status...</div>
                                     </div>
@@ -1303,10 +1354,10 @@ def render_company_detail_page(
                         }}
                     }}
 
-                    async function fetchStoryList(style, forceRefresh = false) {{
+                    async function fetchStoryList(style, forceRefresh = false, bypassCache = false) {{
                         const outputLanguage = getOutputLanguage();
                         const cacheKey = `${{style}}|${{outputLanguage}}`;
-                        if (!forceRefresh && storyCache[cacheKey]) {{
+                        if (!forceRefresh && !bypassCache && storyCache[cacheKey]) {{
                             return storyCache[cacheKey];
                         }}
                         const url = forceRefresh
@@ -1317,9 +1368,14 @@ def render_company_detail_page(
                             {{ method: forceRefresh ? "POST" : "GET" }},
                             forceRefresh ? 180000 : 30000,
                         );
-                        const stories = Array.isArray(payload.stories) ? payload.stories : [];
-                        storyCache[cacheKey] = stories;
-                        return stories;
+                        const normalized = {{
+                            stories: Array.isArray(payload.stories) ? payload.stories : [],
+                            ongoing_stories: Array.isArray(payload.ongoing_stories) ? payload.ongoing_stories : [],
+                            finished_stories: Array.isArray(payload.finished_stories) ? payload.finished_stories : [],
+                            warmup: payload.warmup || null,
+                        }};
+                        storyCache[cacheKey] = normalized;
+                        return normalized;
                     }}
 
                     async function fetchStoryDetail(storyKey, style) {{
@@ -1335,6 +1391,14 @@ def render_company_detail_page(
                         if (!story) {{
                             return '<p class="placeholder">Select a story to see details.</p>';
                         }}
+                        const askModelOptions = Array.isArray(stockModelChoices)
+                            ? stockModelChoices.map((item) => {{
+                                const provider = String(item.provider || "openai");
+                                const model = String(item.model || "");
+                                const selected = provider === "openai" && model === "gpt-5.2" ? "selected" : "";
+                                return `<option value="${{escapeHtml(model)}}" data-provider="${{escapeHtml(provider)}}" ${{selected}}>${{escapeHtml(`${{provider}} · ${{model}}`)}}</option>`;
+                              }}).join("")
+                            : '<option value="gpt-5.2" data-provider="openai" selected>openai · gpt-5.2</option>';
                         const updatesRows = Array.isArray(updates) && updates.length
                             ? updates
                                 .slice(0, 6)
@@ -1347,13 +1411,16 @@ def render_company_detail_page(
                                     <div class="story-ask-meta">${{row.created_at}} · ${{row.provider}} · ${{row.model}}</div>
                                     <div><strong>Q:</strong> ${{escapeHtml(row.question || "")}}</div>
                                     <div><strong>A:</strong> ${{renderMarkdown(row.answer || "")}}</div>
+                                    <div class="story-ask-actions">
+                                        <button class="story-merge-btn" type="button" data-qa-id="${{row.id}}">Merge into Story</button>
+                                    </div>
                                 </div>
                               `).join("")
                             : '<p class="placeholder">No Q&A yet.</p>';
                         return `
                             <div class="story-detail-section">
                                 <h3>${{escapeHtml(story.story_title || "")}}</h3>
-                                <div class="story-item-meta">status=${{story.story_status}} · confidence=${{Number(story.confidence || 0).toFixed(2)}} · updated=${{story.updated_at || ""}}</div>
+                                <div class="story-item-meta">status=${{story.story_status}} · updated=${{story.updated_at || ""}}</div>
                             </div>
                             <div class="story-detail-section">
                                 <h3>Past</h3>
@@ -1385,6 +1452,9 @@ def render_company_detail_page(
                             </div>
                             <div class="story-ask-wrap">
                                 <h3 style="margin:0;">Deep Dive Question</h3>
+                                <div class="story-ask-controls">
+                                    <select class="story-ask-model" id="story-ask-model">${{askModelOptions}}</select>
+                                </div>
                                 <textarea class="story-ask-input" id="story-ask-input" placeholder="Ask a question for this story..."></textarea>
                                 <button class="story-ask-btn" id="story-ask-btn" type="button">Ask</button>
                             </div>
@@ -1396,7 +1466,7 @@ def render_company_detail_page(
                         contentEl.innerHTML = `
                             <div class="status-panel">
                                 <div class="status-panel-header">
-                                    <div>
+                                    <div class="status-header-main">
                                         <h2 style="margin:0;">Company Stories</h2>
                                         <div class="status-meta" id="stories-meta">Loading stories...</div>
                                     </div>
@@ -1420,6 +1490,89 @@ def render_company_detail_page(
                         const listEl = document.getElementById("story-list");
                         const detailEl = document.getElementById("story-detail");
                         let activeStoryKey = "";
+                        let latestWarmup = null;
+
+                        function scheduleStoryPoll(style) {{
+                            if (storyPollTimer) {{
+                                clearTimeout(storyPollTimer);
+                                storyPollTimer = null;
+                            }}
+                            if (currentViewMode !== "stories") {{
+                                return;
+                            }}
+                            const state = String((latestWarmup && latestWarmup.job_state) || "");
+                            if (!["running", "analyzing", "partial"].includes(state)) {{
+                                return;
+                            }}
+                            storyPollTimer = window.setTimeout(() => {{
+                                loadStories(false, true, style, true);
+                            }}, 4000);
+                        }}
+
+                        function renderWarmupMeta(payload) {{
+                            const warmup = payload && payload.warmup ? payload.warmup : null;
+                            latestWarmup = warmup;
+                            const ongoingStories = Array.isArray(payload && payload.ongoing_stories) ? payload.ongoing_stories : [];
+                            const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
+                            const summaryParts = [];
+                            const detailParts = [];
+                            if (warmup) {{
+                                const state = String(warmup.job_state || "not_started");
+                                const stage = String(warmup.current_stage || "idle");
+                                const elapsedValue = Number(warmup.elapsed_sec || 0);
+                                const elapsed = Number.isFinite(elapsedValue) ? elapsedValue.toFixed(1) : "0.0";
+                                const stateLabelMap = {{
+                                    not_started: "Warm-up not started",
+                                    running: "Warm-up running",
+                                    analyzing: "Warm-up analyzing stories",
+                                    completed: "Warm-up completed",
+                                    partial: "Warm-up paused",
+                                    failed: "Warm-up failed",
+                                }};
+                                const stageLabelMap = {{
+                                    fetching_raw: "Fetching raw news",
+                                    analyzing_stories: "Building stories",
+                                    done: "Done",
+                                    idle: "",
+                                }};
+                                summaryParts.push(stateLabelMap[state] || "Warm-up in progress");
+                                const stageLabel = stageLabelMap[stage] || "";
+                                if (stageLabel && state !== "completed") {{
+                                    summaryParts.push(stageLabel);
+                                }}
+                                if (warmup.total_slices) {{
+                                    detailParts.push(`Slices ${{warmup.completed_slices || 0}}/${{warmup.total_slices}}`);
+                                }}
+                                if (warmup.raw_stored_count || warmup.filtered_kept_count) {{
+                                    detailParts.push(`${{warmup.raw_stored_count || 0}} raw news stored`);
+                                    detailParts.push(`${{warmup.filtered_kept_count || 0}} kept after filter`);
+                                }}
+                                detailParts.push(`Elapsed ${{elapsed}}s`);
+                                if (warmup.last_error) {{
+                                    detailParts.push(`Issue: ${{warmup.last_error}}`);
+                                }}
+                            }}
+                            detailParts.push(`${{ongoingStories.length}} ongoing stories`);
+                            detailParts.push(`${{finishedStories.length}} finished stories`);
+                            const summary = summaryParts.join(" · ");
+                            const details = detailParts.join(" · ");
+                            return [summary, details].filter(Boolean).join("\\n");
+                        }}
+
+                        function renderStoryGroup(title, stories) {{
+                            if (!Array.isArray(stories) || !stories.length) {{
+                                return "";
+                            }}
+                            return `
+                                <div class="story-group-heading">${{escapeHtml(title)}}</div>
+                                ${{stories.map((story) => `
+                                    <div class="story-item ${{story.story_key === activeStoryKey ? "active" : ""}}" data-story-key="${{story.story_key}}">
+                                        <div class="story-item-title">${{escapeHtml(story.story_title || "")}}</div>
+                                        <div class="story-item-meta">#${{story.importance_rank}} · ${{story.story_status}}</div>
+                                    </div>
+                                `).join("")}}
+                            `;
+                        }}
 
                         async function renderDetail(storyKey, style) {{
                             if (!storyKey || !detailEl) return;
@@ -1442,15 +1595,27 @@ def render_company_detail_page(
                             }}
                             const askBtn = document.getElementById("story-ask-btn");
                             const askInput = document.getElementById("story-ask-input");
+                            const askModelSelect = document.getElementById("story-ask-model");
+                            function getStoryAskSelection() {{
+                                if (!askModelSelect) {{
+                                    return {{ provider: "openai", model: "gpt-5.2" }};
+                                }}
+                                const selected = askModelSelect.selectedOptions && askModelSelect.selectedOptions[0];
+                                return {{
+                                    provider: selected ? String(selected.dataset.provider || "openai") : "openai",
+                                    model: askModelSelect.value ? String(askModelSelect.value) : "gpt-5.2",
+                                }};
+                            }}
                             if (askBtn && askInput) {{
                                 askBtn.addEventListener("click", async () => {{
                                     const question = String(askInput.value || "").trim();
                                     if (!question) return;
+                                    const selectedModel = getStoryAskSelection();
                                     askBtn.disabled = true;
                                     askBtn.textContent = "Asking...";
                                     try {{
                                         const response = await fetch(
-                                            `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/ask?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                            `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/ask?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedModel.provider)}}&model=${{encodeURIComponent(selectedModel.model)}}`,
                                             {{
                                                 method: "POST",
                                                 headers: {{ "Content-Type": "application/json" }},
@@ -1468,16 +1633,41 @@ def render_company_detail_page(
                                     }}
                                 }});
                             }}
+                            detailEl.querySelectorAll(".story-merge-btn").forEach((button) => {{
+                                button.addEventListener("click", async () => {{
+                                    const qaId = String(button.dataset.qaId || "").trim();
+                                    if (!qaId) return;
+                                    const selectedModel = getStoryAskSelection();
+                                    button.disabled = true;
+                                    button.textContent = "Merging...";
+                                    try {{
+                                        const response = await fetch(
+                                            `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/qa/${{encodeURIComponent(qaId)}}/merge?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedModel.provider)}}&model=${{encodeURIComponent(selectedModel.model)}}`,
+                                            {{ method: "POST" }}
+                                        );
+                                        const mergePayload = await response.json();
+                                        if (mergePayload && !mergePayload.error) {{
+                                            const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                            delete storyCache[cacheKey];
+                                            await loadStories(false, true, style, true);
+                                            await renderDetail(storyKey, style);
+                                        }}
+                                    }} finally {{
+                                        button.disabled = false;
+                                        button.textContent = "Merge into Story";
+                                    }}
+                                }});
+                            }});
                         }}
 
-                        async function loadStories(forceRefresh = false) {{
-                            const style = promptSelect ? promptSelect.value : "simple";
+                        async function loadStories(forceRefresh = false, keepSelection = false, explicitStyle = null, bypassCache = false) {{
+                            const style = explicitStyle || (promptSelect ? promptSelect.value : "simple");
                             if (metaEl) {{
                                 metaEl.textContent = forceRefresh ? "Refreshing stories..." : "Loading stories...";
                             }}
-                            let stories = [];
+                            let payload = null;
                             try {{
-                                stories = await fetchStoryList(style, forceRefresh);
+                                payload = await fetchStoryList(style, forceRefresh, bypassCache);
                             }} catch (err) {{
                                 const msg = err && err.message ? err.message : "Failed to load stories.";
                                 if (metaEl) {{
@@ -1491,26 +1681,25 @@ def render_company_detail_page(
                                 }}
                                 return;
                             }}
+                            const ongoingStories = Array.isArray(payload && payload.ongoing_stories) ? payload.ongoing_stories : [];
+                            const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
+                            const stories = [...ongoingStories, ...finishedStories];
                             if (metaEl) {{
-                                metaEl.textContent = `${{stories.length}} stor${{stories.length === 1 ? "y" : "ies"}}`;
+                                metaEl.textContent = renderWarmupMeta(payload);
                             }}
+                            scheduleStoryPoll(style);
                             if (!listEl) return;
                             if (!stories.length) {{
-                                listEl.innerHTML = '<p class="placeholder">No stories yet. Click Refresh Stories.</p>';
+                                listEl.innerHTML = '<p class="placeholder">No stories yet. Warm-up is running in the background.</p>';
                                 if (detailEl) {{
                                     detailEl.innerHTML = '<p class="placeholder">No story detail available.</p>';
                                 }}
                                 return;
                             }}
-                            if (!activeStoryKey) {{
+                            if (!keepSelection || !stories.some((story) => story.story_key === activeStoryKey)) {{
                                 activeStoryKey = stories[0].story_key;
                             }}
-                            listEl.innerHTML = stories.map((story) => `
-                                <div class="story-item ${{story.story_key === activeStoryKey ? "active" : ""}}" data-story-key="${{story.story_key}}">
-                                    <div class="story-item-title">${{escapeHtml(story.story_title || "")}}</div>
-                                    <div class="story-item-meta">#${{story.importance_rank}} · ${{story.story_status}} · conf=${{Number(story.confidence || 0).toFixed(2)}}</div>
-                                </div>
-                            `).join("");
+                            listEl.innerHTML = `${{renderStoryGroup("Ongoing Stories", ongoingStories)}}${{renderStoryGroup("Finished Stories", finishedStories)}}`;
                             listEl.querySelectorAll(".story-item").forEach((node) => {{
                                 node.addEventListener("click", async () => {{
                                     activeStoryKey = node.dataset.storyKey || "";
@@ -1559,7 +1748,7 @@ def render_company_detail_page(
                         contentEl.innerHTML = `
                             <div class="stock-panel">
                                 <div class="status-panel-header">
-                                    <div>
+                                    <div class="status-header-main">
                                         <h2 style="margin:0;">Company Stock</h2>
                                         <div class="stock-status" id="stock-status">Loading price series...</div>
                                     </div>
@@ -1825,7 +2014,7 @@ def render_company_detail_page(
                         contentEl.innerHTML = `
                             <div class="status-panel">
                                 <div class="status-panel-header">
-                                    <div>
+                                    <div class="status-header-main">
                                         <h2 style="margin:0;">Indicators</h2>
                                         <div class="status-meta" id="indicators-meta">Loading indicators...</div>
                                     </div>

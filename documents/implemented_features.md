@@ -24,8 +24,12 @@ This document tracks features that are already available in the app from a user 
 - Read daily raw company news cards with source and link.
 - Generate daily company report for a selected day.
 - Generate weekly company report.
-- View company stories and refresh story updates.
-- Ask follow-up questions for a specific story.
+- Start company story warm-up automatically after subscribing a company.
+- Reuse fetched company raw news in both Stories warm-up and Daily News views.
+- View company stories split into ongoing and finished sections.
+- Refresh company stories with incremental story updates.
+- Ask follow-up questions for a specific story with selectable LLM models.
+- Merge a story Q&A answer back into the current story when the answer adds useful context.
 
 ## Company Stock
 - View company stock chart with multiple time ranges.
@@ -39,7 +43,7 @@ This document tracks features that are already available in the app from a user 
 - Generate AI-based indicator interpretation.
 
 ## Language and Presentation
-- Choose analysis output language for report-style content.
+- Choose analysis output language from a compact global navigation switch.
 - View Chinese output for large analysis content when selected.
 - Use unified navigation across Market, Company, and Person top tabs.
 - Use shared UI styling with CJK-capable font fallback.
