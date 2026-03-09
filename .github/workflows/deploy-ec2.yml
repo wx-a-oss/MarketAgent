@@ -1,6 +1,7 @@
 name: Deploy EC2 Staging
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -34,5 +35,4 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
-          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "cd /home/ec2-user/MarketAgent && bash deploy/ec2/deploy.sh"
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" "cd /home/ec2-user/MarketAgent && bash deploy/ec2/deploy.sh"
