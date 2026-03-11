@@ -177,31 +177,36 @@ def render_company_detail_page(
                         margin-bottom: 0.35rem;
                     }}
                     .daily-report-card .daily-report-output {{
-                        line-height: 1.35;
+                        line-height: 1.28;
                         font-size: 0.92rem;
                         white-space: pre-wrap;
                         overflow-wrap: anywhere;
                     }}
                     .daily-report-card .daily-report-output p {{
-                        margin: 0 0 0.45rem;
+                        margin: 0 0 0.2rem;
                     }}
-                    .daily-report-card .daily-report-output h1,
+                    .daily-report-card .daily-report-output h1 {{
+                        margin: 0.55rem 0 0.2rem;
+                        line-height: 1.18;
+                        font-size: 1.18rem;
+                    }}
                     .daily-report-card .daily-report-output h2,
                     .daily-report-card .daily-report-output h3,
                     .daily-report-card .daily-report-output h4 {{
-                        margin: 0.7rem 0 0.35rem;
-                        line-height: 1.25;
+                        margin: 0.35rem 0 0.12rem;
+                        line-height: 1.15;
+                        font-size: 0.98rem;
                     }}
                     .daily-report-card .daily-report-output ul,
                     .daily-report-card .daily-report-output ol {{
-                        margin: 0.2rem 0 0.45rem;
+                        margin: 0.05rem 0 0.2rem;
                         padding-left: 1.15rem;
                     }}
                     .daily-report-card .daily-report-output li {{
-                        margin-bottom: 0.22rem;
+                        margin-bottom: 0.12rem;
                     }}
                     .daily-report-card .daily-report-output hr {{
-                        margin: 0.75rem 0;
+                        margin: 0.45rem 0;
                     }}
                     .day-analyze-input {{
                         width: 64px;
