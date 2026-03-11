@@ -1050,7 +1050,7 @@ def render_company_detail_page(
                         let html = renderMarkdown(value);
                         const headingReplacements = [
                             {{
-                                pattern: /<h[2-4][^>]*>\\s*发生了什么\\s*<\\/h[2-4]>/gi,
+                                pattern: /<h[2-4][^>]*>\\s*发生了什么(?:（[^）]*）|\\([^)]*\\))?\\s*<\\/h[2-4]>/gi,
                                 replacement: '<p><strong>事件</strong></p>',
                             }},
                             {{
@@ -1058,7 +1058,7 @@ def render_company_detail_page(
                                 replacement: '<p><strong>影响</strong></p>',
                             }},
                             {{
-                                pattern: /<h[2-4][^>]*>\\s*需要继续跟踪的点\\s*<\\/h[2-4]>/gi,
+                                pattern: /<h[2-4][^>]*>\\s*(?:需要继续跟踪的点|投资者应关注的信号|需要警惕的点)\\s*<\\/h[2-4]>/gi,
                                 replacement: '<p><strong>跟踪</strong></p>',
                             }},
                         ];
