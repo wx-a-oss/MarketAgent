@@ -177,10 +177,31 @@ def render_company_detail_page(
                         margin-bottom: 0.35rem;
                     }}
                     .daily-report-card .daily-report-output {{
-                        line-height: 1.65;
+                        line-height: 1.35;
                         font-size: 0.92rem;
                         white-space: pre-wrap;
                         overflow-wrap: anywhere;
+                    }}
+                    .daily-report-card .daily-report-output p {{
+                        margin: 0 0 0.45rem;
+                    }}
+                    .daily-report-card .daily-report-output h1,
+                    .daily-report-card .daily-report-output h2,
+                    .daily-report-card .daily-report-output h3,
+                    .daily-report-card .daily-report-output h4 {{
+                        margin: 0.7rem 0 0.35rem;
+                        line-height: 1.25;
+                    }}
+                    .daily-report-card .daily-report-output ul,
+                    .daily-report-card .daily-report-output ol {{
+                        margin: 0.2rem 0 0.45rem;
+                        padding-left: 1.15rem;
+                    }}
+                    .daily-report-card .daily-report-output li {{
+                        margin-bottom: 0.22rem;
+                    }}
+                    .daily-report-card .daily-report-output hr {{
+                        margin: 0.75rem 0;
                     }}
                     .day-analyze-input {{
                         width: 64px;
@@ -809,10 +830,10 @@ def render_company_detail_page(
                         </div>
                         <div class="view-tabs" id="view-tabs">
                             <button class="view-tab active" type="button" data-view-mode="stories">Stories</button>
-                            <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
-                            <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
                             <button class="view-tab" type="button" data-view-mode="daily">Daily News</button>
                             <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
+                            <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
+                            <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
                         </div>
                         <div class="layout" id="company-layout">
                             <div class="timeline" id="timeline"></div>
