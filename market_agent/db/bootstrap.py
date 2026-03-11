@@ -1,4 +1,4 @@
-"""Central database bootstrap that reuses the SQL schema files."""
+"""Central database bootstrap that applies runtime migrations."""
 
 from __future__ import annotations
 
@@ -33,16 +33,26 @@ def get_connection():
     return psycopg2.connect(_build_dsn(), cursor_factory=DictCursor)
 
 
-def _schema_files() -> Iterable[Path]:
+def _migration_files() -> Iterable[Path]:
     repo_root = Path(__file__).resolve().parents[2]
-    postgres_dir = repo_root / "postgres"
-    yield postgres_dir / "init.sql"
-    migrations_dir = postgres_dir / "migrations"
+    migrations_dir = repo_root / "postgres" / "migrations"
     if migrations_dir.is_dir():
         for path in sorted(migrations_dir.glob("*.sql")):
             if path.name.startswith("._"):
                 continue
             yield path
+
+
+def _include_base_schema() -> bool:
+    return str(os.getenv("BOOTSTRAP_BASE_SCHEMA", "0")).strip() == "1"
+
+
+def _schema_files() -> Iterable[Path]:
+    repo_root = Path(__file__).resolve().parents[2]
+    postgres_dir = repo_root / "postgres"
+    if _include_base_schema():
+        yield postgres_dir / "init.sql"
+    yield from _migration_files()
 
 
 def ensure_database_schema() -> None:

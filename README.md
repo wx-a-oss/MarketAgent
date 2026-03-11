@@ -47,8 +47,11 @@ bash postgres/init_db.sh
 ```
 
 Schema notes:
-- `postgres/init.sql` defines base schema for local setup.
-- `postgres/migrations/*.sql` contains incremental migrations (also applied by `postgres/init_db.sh`).
+- On a fresh Postgres container, `postgres/init.sql` is applied once by the Postgres image during first initialization.
+- `bash postgres/init_db.sh` now applies only incremental migration files by default.
+- If you ever need to manually bootstrap a non-initialized database with the base schema, run:
+  - `BOOTSTRAP_BASE_SCHEMA=1 bash postgres/init_db.sh`
+- `postgres/migrations/*.sql` contains incremental schema updates for normal startup/deploy.
 - `market_agent/schema_fields.py` is the central registry for newly added DB field/table names used in Python code.
 
 Current tables in use:
