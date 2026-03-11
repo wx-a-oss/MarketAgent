@@ -1046,6 +1046,28 @@ def render_company_detail_page(
                         return `<pre>${{escapeHtml(content)}}</pre>`;
                     }}
 
+                    function renderDailyReportMarkdown(value) {{
+                        let html = renderMarkdown(value);
+                        const headingReplacements = [
+                            {{
+                                pattern: /<h[2-4][^>]*>\\s*发生了什么\\s*<\\/h[2-4]>/gi,
+                                replacement: '<p><strong>事件</strong></p>',
+                            }},
+                            {{
+                                pattern: /<h[2-4][^>]*>\\s*为什么重要(?:（[^）]*）|\\([^)]*\\))?\\s*<\\/h[2-4]>/gi,
+                                replacement: '<p><strong>影响</strong></p>',
+                            }},
+                            {{
+                                pattern: /<h[2-4][^>]*>\\s*需要继续跟踪的点\\s*<\\/h[2-4]>/gi,
+                                replacement: '<p><strong>跟踪</strong></p>',
+                            }},
+                        ];
+                        headingReplacements.forEach((entry) => {{
+                            html = html.replace(entry.pattern, entry.replacement);
+                        }});
+                        return html;
+                    }}
+
                     function toReadableBullets(raw) {{
                         const text = String(raw || "").trim();
                         if (!text) return "—";
@@ -2175,7 +2197,7 @@ def render_company_detail_page(
                             ? (dailyReport
                                 ? `<div class="daily-report-card">
                                     <div class="daily-report-meta">Daily report · ${{dailyReport.created_at || ""}} · provider=${{dailyReport.provider}} · model=${{dailyReport.model}} · prompt=${{dailyReport.prompt_style}}</div>
-                                    <div class="daily-report-output">${{renderMarkdown(dailyReport.output_text || "")}}</div>
+                                    <div class="daily-report-output">${{renderDailyReportMarkdown(dailyReport.output_text || "")}}</div>
                                    </div>`
                                 : `<div class="daily-report-card">
                                     <div class="daily-report-meta">No daily report yet for this day.</div>
