@@ -7,12 +7,14 @@ This document tracks features that are already available in the app from a user 
 - See major market sections in one place: indexes, rates, commodities, and crypto.
 - Refresh market data for a selected day.
 - Auto-refresh market data during U.S. market hours.
+- Open a dedicated top-nav Calendar page for macro releases.
 - On weekends, price snapshots use the latest trading day while news remains on the selected calendar date.
 - Switch inside the Market page between Overview, Daily News, and Stories views.
 - Read market news aggregated from multiple sources.
 - See source tags on market news cards.
 - Open original market news links in a new tab.
 - Generate and reopen daily market report analysis for a selected day.
+- Auto-initialize Daily News or Stories only when the selected day has no stored data; otherwise reuse database state without unnecessary fetch/analyze calls.
 - Analyze a single market news item and save the result.
 - Reopen prior day summaries from stored history.
 - Build daily market news clusters from raw market news.
@@ -24,6 +26,7 @@ This document tracks features that are already available in the app from a user 
 - Create a new market story from a market news item.
 - Attach a market news item back into an existing market story.
 - View a market macro calendar with recent and upcoming macro/government releases.
+- Extend the macro calendar manually by one month at a time.
 
 ## Company
 - Add and remove companies in a watchlist.
@@ -67,6 +70,11 @@ This document tracks features that are already available in the app from a user 
 - Run automated tests for market news, RSS ingestion, and price snapshot flows.
 - Run automated tests for company stock history and stock move analysis APIs.
 - Run integration-style comparison tests for LLM link-access summarization.
+
+## Cloud
+- Deploy the app to EC2 from GitHub Actions on push to `main`.
+- Run a scheduled cloud worker for market daily news/stories and subscribed company daily updates.
+- Keep macro/calendar refresh out of the scheduled worker so it stays manual-only.
 
 ## Maintenance Rule
 - Add newly shipped user-facing features to this file when implementation is complete.

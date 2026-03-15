@@ -12,6 +12,10 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
   - keep ongoing and finished market stories visible in the Market page,
   - support manual close/reopen, priority changes, and manual news-to-story fitting,
   - run the same market update flow from both UI/manual refresh and the scheduled worker.
+- `[todo]` Add incremental update gating for repeated daily runs:
+  - allow multiple market/company runs per day without repeated LLM work when inputs did not change,
+  - rerun raw fetch for today only, then skip daily report / clustering / story refresh if no new rows arrived,
+  - define the safe duplicate policy before adding midday or pre-market worker runs.
 
 ### 2) Earnings Report Module
 - `[partial]` Build an earnings module:
@@ -23,6 +27,7 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 - `[partial]` Add a macro/government module:
   - ingest key releases such as CPI, PPI, payrolls, unemployment, GDP, Fed/FOMC decisions, and policy statements,
   - show recent and upcoming releases in a market calendar view,
+  - keep macro/calendar refresh manual-only for now,
   - connect major releases to market relevance and later to market stories.
 
 ### 4) Company Status and Price Intelligence
@@ -74,20 +79,21 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 
 ## Cloud Migration (Separate Track)
 
-### Core Migration TODO
-1. `[todo]` Scheduled jobs for subscribed companies:
-   - daily raw fetch + filter,
-   - daily report generation,
-   - weekly report generation,
-   - story refresh.
-2. `[todo]` Warm-up automation on first company subscription:
-   - fetch at least last 60 days of company news,
-   - discover initial active-story map,
-   - persist initial story timeline/events before incremental mode.
-3. `[todo]` Story lifecycle automation policy:
-   - prioritize active stories,
-   - archive closed stories,
-   - allow new story creation and existing story extension during updates.
+### Current Cloud State
+1. `[done]` GitHub Actions deploy to EC2 is live.
+2. `[done]` Scheduled worker is live for:
+   - market daily raw fetch + daily report + clusters + stories,
+   - subscribed company daily fetch/report/story updates.
+3. `[done]` Macro/calendar updates are manual-only and are not part of the scheduled worker.
+
+### Remaining Cloud Follow-Up
+1. `[todo]` Add stronger operational visibility:
+   - worker result history,
+   - easier cloud-side inspection of what updated on each run.
+2. `[todo]` Add safer repeated-run policy:
+   - explicit “no new input, skip expensive LLM stages” gates,
+   - then consider midday or pre-market extra runs.
+3. `[todo]` Update GitHub Actions workflow dependencies before Node 20 deprecation becomes blocking.
 
 ## Detailed Plans
 
