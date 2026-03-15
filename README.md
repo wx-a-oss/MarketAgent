@@ -64,9 +64,16 @@ Current tables in use:
 - `company_profile`: company metadata (ticker/profile fields).
 - `news_report`: weekly company news report payloads.
 - `market_news_daily_summary`: Market tab daily summary history (LLM input/output + provider/model/prompt style).
+- `market_news_raw`: stored raw market news used by market stories and later market analysis flows.
 - `market_news_item_analysis`: per-market-news single-item analysis cache (by date/url/model/language).
+- `market_story_state`: current market story map (ongoing + finished stories).
+- `market_story_update`: market story refresh history.
+- `market_story_warmup_state`: market story warm-up / lifecycle state.
+- `market_story_event`: dated market story timeline evidence.
 - `market_price_daily_snapshot`: end-of-day market price snapshots (sectioned JSON for indexes/bonds/commodities/crypto and future extensions).
 - `company_price_daily`: cached daily OHLCV price history per company/ticker for stock chart ranges (with catch-up backfill on access).
+- `company_earnings_event`: cached company earnings events with price reaction and analysis.
+- `market_macro_event`: cached macro/government releases with market-impact analysis.
 
 ## 3) Run Web App (Dev)
 

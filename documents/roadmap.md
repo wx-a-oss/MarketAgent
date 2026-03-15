@@ -4,27 +4,34 @@
 
 Completed items are tracked in [implemented_features.md](./implemented_features.md). This backlog focuses on remaining work.
 
-### 1) Company Stories Warm-Up and Lifecycle
-- `[partial]` Refine story deep-dive Q&A workflow so users can ask questions, get an LLM response, and explicitly decide whether to merge that question and answer into the current story; it should never be merged automatically by the LLM.
+### 1) Market Stories Warm-Up and Lifecycle
+- `[partial]` Build a global market story system:
+  - warm up recent market stories from daily market-news clusters instead of brute-force raw-article windows,
+  - store story summary, ordered timeline, future/impact scenarios, and priority,
+  - route daily market clusters into existing stories or new stories,
+  - keep ongoing and finished market stories visible in the Market page,
+  - support manual close/reopen, priority changes, and manual news-to-story fitting,
+  - run the same market update flow from both UI/manual refresh and the scheduled worker.
 
+### 2) Earnings Report Module
+- `[partial]` Build an earnings module:
+  - show the last four earnings events for a subscribed company,
+  - capture actual vs estimate, guidance/outlook where available, and short earnings impact analysis,
+  - make earnings and post-earnings price reaction easy to review on a timeline.
 
-### 3) Earnings Report Module
-- `[todo]` Add earnings report module:
-  - pull earnings data/transcripts/estimates (where available),
-  - generate company-level earnings summary and impact analysis.
+### 3) Government Document and Macro Report Module
+- `[partial]` Add a macro/government module:
+  - ingest key releases such as CPI, PPI, payrolls, unemployment, GDP, Fed/FOMC decisions, and policy statements,
+  - show recent and upcoming releases in a market calendar view,
+  - connect major releases to market relevance and later to market stories.
 
-### 4) Government Document and Report Module
-- `[todo]` Add government document/report module:
-  - ingest government releases relevant to companies/markets (policy, regulation, macro reports),
-  - map documents to impacted companies/themes.
-
-### 5) Company Status and Price Intelligence
-- `[todo]` Build company status v2:
+### 4) Company Status and Price Intelligence
+- `[partial]` Build company status v2:
   - combine narrative stories with multi-year price context and moving averages.
 - `[partial]` Improve “explain price move” intelligence:
   - link critical price points to company news + macro market context.
 
-### 6) Trade System (Later Stage)
+### 5) Trade System (Later Stage)
 - `[todo]` Build a new **Trade** tab (major feature):
   - subscribe to a portfolio of company tickers for decision support,
   - evaluate current price position versus historical ranges and moving averages,
@@ -39,9 +46,10 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 - `[todo]` Solve real-time high-value news ingestion:
   - ingest valuable breaking news and viewpoints from X/Twitter and other fast-moving sources,
   - distinguish high-signal items from noise in real time,
-  - make this feed reliable enough to support future fast-decision and trading workflows.
+  - make this feed reliable enough to support future fast-decision and trading workflows,
+  - use story priority/manual story controls to decide what narratives deserve close tracking.
 
-### 7) Strategy & Plan Board (User Workspace)
+### 6) Strategy & Plan Board (User Workspace)
 - `[todo]` Add a top-level **Plan Board** tab for users to write and track their own trading plans.
 - `[todo]` Support flexible plan formats:
   - vague/idea-stage plans,

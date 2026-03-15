@@ -9,9 +9,11 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from frontend.web.server import (  # noqa: E402
+    US_MARKET_TZ,
     _resolve_market_price_sections,
     app,
 )
+from datetime import datetime
 
 
 def test_resolve_market_price_sections_uses_snapshot_for_historical(monkeypatch) -> None:
@@ -32,7 +34,7 @@ def test_resolve_market_price_sections_uses_snapshot_for_historical(monkeypatch)
 
 
 def test_resolve_market_price_sections_persists_after_close(monkeypatch) -> None:
-    target = date.today()
+    target = datetime.now(US_MARKET_TZ).date()
     live_sections = [{"key": "indexes", "label": "Indexes", "items": [{"label": "S&P 500", "close_price": "5010"}]}]
     persisted: dict[str, object] = {}
     monkeypatch.setattr("frontend.web.server._get_market_price_snapshot", lambda day: None)

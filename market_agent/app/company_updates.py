@@ -21,6 +21,7 @@ from market_agent.analysis.company.news import (
     refresh_company_news_for_range,
     refresh_company_story_states,
 )
+from .market_updates import run_market_daily_update
 
 
 def start_company_story_warmup(
@@ -180,6 +181,23 @@ def run_daily_updates_for_watchlist(
 ) -> List[Dict[str, Any]]:
     names = companies or list_watchlist_companies()
     results: List[Dict[str, Any]] = []
+    try:
+        market_result = run_market_daily_update(
+            target_date=target_date,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+        market_result["ok"] = True
+    except Exception as exc:  # pragma: no cover
+        market_result = {
+            "scope": "market",
+            "target_date": (target_date or datetime.now(timezone.utc).date()).isoformat(),
+            "ok": False,
+            "error": str(exc),
+        }
+    results.append({"scope": "market", **market_result})
     for company_name in names:
         try:
             result = run_company_daily_update(

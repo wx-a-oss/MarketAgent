@@ -9,8 +9,10 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Union
 
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
+
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_MODEL = DEFAULT_OPENAI_MODEL
 DEFAULT_TIMEOUT_SEC = 30
 
 

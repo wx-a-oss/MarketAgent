@@ -32,6 +32,14 @@ class FinnhubClient:
         data = self._safe_call(lambda: self._client.earnings(symbol), default=[])
         return {"data": data}
 
+    def earnings_calendar(self, **kwargs: Any) -> Dict[str, Any]:
+        data = self._safe_call(lambda: self._client.earnings_calendar(**kwargs), default={})
+        return data if isinstance(data, dict) else {"earningsCalendar": []}
+
+    def calendar_economic(self) -> Dict[str, Any]:
+        data = self._safe_call(lambda: self._client.calendar_economic(), default={})
+        return data if isinstance(data, dict) else {"economicCalendar": []}
+
     def company_news(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         return self._safe_call(
             lambda: self._client.company_news(symbol, _from=start_date, to=end_date),

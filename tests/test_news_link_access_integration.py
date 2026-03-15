@@ -15,7 +15,7 @@ from openai import OpenAI
 
 from market_agent.analysis.company.news.db import get_connection
 
-OPENAI_DEFAULT_MODEL = "gpt-5.2"
+OPENAI_DEFAULT_MODEL = "gpt-5-mini"
 PERPLEXITY_DEFAULT_MODEL = "sonar-pro"
 GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"

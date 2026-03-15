@@ -6,6 +6,7 @@ import json
 from typing import Dict, List
 
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
 
 
 def render_market_page(
@@ -18,6 +19,7 @@ def render_market_page(
         for model in models:
             model_choices.append({"provider": provider, "model": model})
     model_choices_json = json.dumps(model_choices, ensure_ascii=False)
+    default_openai_model_json = json.dumps(DEFAULT_OPENAI_MODEL, ensure_ascii=False)
     return f"""
         <html>
             <head>
@@ -188,6 +190,123 @@ def render_market_page(
                         border-radius: 0.45rem;
                         padding: 0.55rem;
                     }}
+                    .macro-calendar-wrap {{
+                        display: grid;
+                        gap: 1rem;
+                    }}
+                    .macro-calendar-note {{
+                        font-size: 0.82rem;
+                        color: #64748b;
+                    }}
+                    .macro-month-grid {{
+                        display: grid;
+                        grid-template-columns: repeat(7, minmax(0, 1fr));
+                        gap: 0.4rem;
+                    }}
+                    .macro-month-title {{
+                        margin: 0 0 0.45rem;
+                        font-size: 1rem;
+                        font-weight: 700;
+                        color: #0f172a;
+                    }}
+                    .macro-weekday {{
+                        font-size: 0.72rem;
+                        color: #64748b;
+                        text-transform: uppercase;
+                        letter-spacing: 0.04em;
+                        padding: 0.12rem 0.2rem;
+                    }}
+                    .macro-day-cell {{
+                        min-height: 102px;
+                        border: 1px solid #e5e7eb;
+                        border-radius: 0.65rem;
+                        padding: 0.45rem;
+                        background: #fff;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 0.28rem;
+                        cursor: pointer;
+                    }}
+                    .macro-day-cell.empty {{
+                        background: transparent;
+                        border-style: dashed;
+                        border-color: #f1f5f9;
+                        cursor: default;
+                    }}
+                    .macro-day-cell.has-events {{
+                        border-color: #cbd5e1;
+                        background: #f8fbff;
+                    }}
+                    .macro-day-cell.selected {{
+                        border-color: #0f766e;
+                        box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.14);
+                    }}
+                    .macro-day-num {{
+                        font-size: 0.82rem;
+                        font-weight: 700;
+                        color: #0f172a;
+                    }}
+                    .macro-day-events {{
+                        display: grid;
+                        gap: 0.18rem;
+                    }}
+                    .macro-pill {{
+                        font-size: 0.68rem;
+                        line-height: 1.2;
+                        padding: 0.14rem 0.32rem;
+                        border-radius: 999px;
+                        background: #e2e8f0;
+                        color: #334155;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }}
+                    .macro-overflow {{
+                        font-size: 0.68rem;
+                        color: #64748b;
+                    }}
+                    .macro-detail-card {{
+                        border: 1px solid #dbeafe;
+                        background: #f8fbff;
+                        border-radius: 0.8rem;
+                        padding: 0.8rem 0.9rem;
+                    }}
+                    .macro-detail-date {{
+                        font-size: 0.88rem;
+                        color: #475569;
+                        margin-bottom: 0.55rem;
+                    }}
+                    .macro-detail-item {{
+                        border-top: 1px solid #e2e8f0;
+                        padding: 0.55rem 0 0;
+                        margin-top: 0.55rem;
+                    }}
+                    .macro-detail-item:first-child {{
+                        border-top: none;
+                        margin-top: 0;
+                        padding-top: 0;
+                    }}
+                    .macro-detail-item h3 {{
+                        margin: 0 0 0.22rem;
+                        font-size: 0.95rem;
+                        color: #0f172a;
+                    }}
+                    .macro-detail-meta {{
+                        color: #64748b;
+                        font-size: 0.78rem;
+                        margin-bottom: 0.2rem;
+                    }}
+                    .macro-detail-values {{
+                        display: grid;
+                        gap: 0.14rem;
+                        font-size: 0.82rem;
+                        color: #334155;
+                    }}
+                    .macro-detail-link a {{
+                        color: #475569;
+                        text-decoration: underline;
+                        font-size: 0.78rem;
+                    }}
                     .news-item {{
                         border: 1px solid #e5e7eb;
                         border-radius: 0.6rem;
@@ -313,6 +432,84 @@ def render_market_page(
                     .refresh-btn:hover {{
                         background: #15803d;
                     }}
+                    .subtabs {{
+                        display: flex;
+                        gap: 0.5rem;
+                        margin-bottom: 0.85rem;
+                        flex-wrap: wrap;
+                    }}
+                    .subtab-btn {{
+                        border: 1px solid #cbd5e1;
+                        background: #ffffff;
+                        color: #334155;
+                        border-radius: 999px;
+                        padding: 0.38rem 0.8rem;
+                        font-size: 0.85rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .subtab-btn.active {{
+                        background: #0f172a;
+                        color: #ffffff;
+                        border-color: #0f172a;
+                    }}
+                    .market-subview {{
+                        display: none;
+                    }}
+                    .market-subview.active {{
+                        display: block;
+                    }}
+                    .story-group {{
+                        display: grid;
+                        gap: 0.7rem;
+                        margin-top: 0.8rem;
+                    }}
+                    .story-card {{
+                        border: 1px solid #dbe4ee;
+                        border-radius: 0.75rem;
+                        padding: 0.85rem;
+                        background: #f8fafc;
+                    }}
+                    .story-card h3 {{
+                        margin: 0 0 0.45rem;
+                        font-size: 1rem;
+                    }}
+                    .story-section-label {{
+                        display: block;
+                        font-size: 0.78rem;
+                        color: #64748b;
+                        font-weight: 700;
+                        margin: 0.55rem 0 0.2rem;
+                        text-transform: uppercase;
+                        letter-spacing: 0.04em;
+                    }}
+                    .story-warmup {{
+                        color: #64748b;
+                        font-size: 0.84rem;
+                        margin-bottom: 0.7rem;
+                    }}
+                    .macro-events {{
+                        display: grid;
+                        gap: 0.7rem;
+                    }}
+                    .macro-card {{
+                        border: 1px solid #e5e7eb;
+                        border-radius: 0.65rem;
+                        padding: 0.8rem;
+                        background: #fafafa;
+                    }}
+                    .macro-card h3 {{
+                        margin: 0 0 0.2rem;
+                        font-size: 0.98rem;
+                    }}
+                    .attach-story-inline {{
+                        display: none;
+                        align-items: center;
+                        gap: 0.35rem;
+                    }}
+                    .attach-story-inline.active {{
+                        display: inline-flex;
+                    }}
                 </style>
             </head>
             <body class="report">
@@ -330,23 +527,47 @@ def render_market_page(
                         <p class="status">Pick a date to view that day's market news and summaries. Auto refresh runs during U.S. market hours.</p>
                     </section>
 
-                    <div id="market-sections"></div>
+                    <div class="subtabs" id="market-view-tabs">
+                        <button class="subtab-btn active" type="button" data-market-view="overview">Overview</button>
+                        <button class="subtab-btn" type="button" data-market-view="daily-news">Daily News</button>
+                        <button class="subtab-btn" type="button" data-market-view="stories">Stories</button>
+                    </div>
 
-                    <section class="card">
+                    <div id="market-overview-view" class="market-subview active">
+                        <div id="market-sections"></div>
+                    </div>
+
+                    <div id="market-daily-news-view" class="market-subview">
+                        <section class="card">
+                            <div class="section-title">
+                                <h2 style="margin:0;">Daily Market News</h2>
+                                <span id="market-news-count" class="status"></span>
+                            </div>
+                            <div class="summary-controls">
+                                <select id="summary-prompt">
+                                    <option value="simple" selected>simple</option>
+                                    <option value="structured">structured</option>
+                                </select>
+                                <button id="refresh-market-daily-news" class="analyze-btn" type="button">Refresh Daily News</button>
+                                <span id="summary-status" class="summary-status"></span>
+                            </div>
+                            <div id="market-daily-clusters"></div>
+                            <div id="news-summaries"></div>
+                            <div id="market-news" class="news-list"></div>
+                        </section>
+                    </div>
+
+                    <section id="market-stories-view" class="card market-subview">
                         <div class="section-title">
-                            <h2 style="margin:0;">Top Market News (Today)</h2>
-                            <span id="market-news-count" class="status"></span>
+                            <h2 style="margin:0;">Market Stories</h2>
+                            <div class="summary-controls" style="margin:0;">
+                                <button id="refresh-market-stories" class="analyze-btn" type="button">Refresh Stories</button>
+                                <span id="market-stories-status" class="summary-status"></span>
+                            </div>
                         </div>
-                        <div class="summary-controls">
-                            <select id="summary-prompt">
-                                <option value="simple" selected>simple</option>
-                                <option value="structured">structured</option>
-                            </select>
-                            <button id="analyze-news" class="analyze-btn" type="button">Analyze All</button>
-                            <span id="summary-status" class="summary-status"></span>
-                        </div>
-                        <div id="news-summaries"></div>
-                        <div id="market-news" class="news-list"></div>
+                        <div id="market-story-warmup" class="story-warmup"></div>
+                        <div id="market-ongoing-stories"></div>
+                        <div id="market-finished-stories"></div>
                     </section>
                 </div>
                 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
@@ -359,11 +580,21 @@ def render_market_page(
                     const marketSectionsEl = document.getElementById("market-sections");
                     const summaryPrompt = document.getElementById("summary-prompt");
                     const summaryLanguage = document.getElementById("global-language-select");
-                    const analyzeBtn = document.getElementById("analyze-news");
+                    const refreshDailyNewsBtn = document.getElementById("refresh-market-daily-news");
                     const summaryStatus = document.getElementById("summary-status");
                     const summariesEl = document.getElementById("news-summaries");
+                    const marketDailyClustersEl = document.getElementById("market-daily-clusters");
                     const marketNewsCountEl = document.getElementById("market-news-count");
+                    const marketViewTabs = document.getElementById("market-view-tabs");
+                    const marketStoriesStatus = document.getElementById("market-stories-status");
+                    const marketStoryWarmup = document.getElementById("market-story-warmup");
+                    const marketOngoingStoriesEl = document.getElementById("market-ongoing-stories");
+                    const marketFinishedStoriesEl = document.getElementById("market-finished-stories");
                     let latestNews = [];
+                    let latestStoryOptions = [];
+                    let currentMarketView = "overview";
+                    let dailyNewsAutoInitializedKey = "";
+                    let marketStoriesAutoInitializedKey = "";
                     function readUrlState() {{
                         const params = new URLSearchParams(window.location.search || "");
                         const prompt = String(params.get("prompt") || "").trim().toLowerCase();
@@ -407,7 +638,7 @@ def render_market_page(
                     function renderRichText(value) {{
                         const content = String(value || "").trim();
                         if (!content) return "<p>—</p>";
-                        if (/^(\s*[-*+]\s+|\s*\d+[.)]\s+)/m.test(content)) {{
+                        if (/^(\\s*[-*+]\\s+|\\s*\\d+[.)]\\s+)/m.test(content)) {{
                             return (window.marked && typeof window.marked.parse === "function")
                                 ? window.marked.parse(content)
                                 : `<pre>${{content}}</pre>`;
@@ -521,7 +752,7 @@ def render_market_page(
                             container.innerHTML = '<p class="status">No market news available.</p>';
                             return;
                         }}
-                        const defaultModel = "gpt-5.2";
+                        const defaultModel = {default_openai_model_json};
                         const deriveTag = (item) => {{
                             const explicit = String(item.source_tag || "").trim().toLowerCase();
                             if (explicit.includes("yahoo")) return "yahoo";
@@ -550,6 +781,15 @@ def render_market_page(
                                         ${{modelOptionsHtml(defaultModel)}}
                                     </select>
                                     <button class="news-analyze-btn" type="button">Analyze</button>
+                                    <button class="news-create-story-btn" type="button">New Story</button>
+                                    <button class="news-attach-story-btn" type="button">Attach</button>
+                                    <span class="attach-story-inline">
+                                        <select class="attach-story-select">
+                                            <option value="">Pick story</option>
+                                            ${{latestStoryOptions.map((story) => `<option value="${{story.story_key}}">${{story.story_title}}</option>`).join("")}}
+                                        </select>
+                                        <button class="news-attach-confirm-btn" type="button">Attach</button>
+                                    </span>
                                 </div>
                                 <div class="news-analysis">
                                     <div class="news-analysis-meta"></div>
@@ -611,6 +851,58 @@ def render_market_page(
                                     button.disabled = false;
                                     button.textContent = "Analyze";
                                 }}
+                            }});
+                        }});
+
+                        container.querySelectorAll(".news-create-story-btn").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const card = button.closest(".news-item");
+                                if (!card) return;
+                                const url = card.getAttribute("data-news-url") || "";
+                                const item = (items || []).find((row) => String(row.url || "") === String(url));
+                                if (!item) return;
+                                const storyTitle = window.prompt("Story title", item.headline || "");
+                                if (!storyTitle) return;
+                                await fetch(`/api/market/stories/create-from-news?prompt_style=${{encodeURIComponent(summaryPrompt ? summaryPrompt.value || "simple" : "simple")}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
+                                    method: "POST",
+                                    headers: {{ "Content-Type": "application/json" }},
+                                    body: JSON.stringify({{ date: selectedDate, story_title: storyTitle, item }}),
+                                }});
+                                await loadMarketStories(false);
+                            }});
+                        }});
+
+                        container.querySelectorAll(".news-attach-story-btn").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const card = button.closest(".news-item");
+                                if (!card) return;
+                                const inline = card.querySelector(".attach-story-inline");
+                                if (!inline) return;
+                                inline.classList.toggle("active");
+                            }});
+                        }});
+
+                        container.querySelectorAll(".news-attach-confirm-btn").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const card = button.closest(".news-item");
+                                if (!card) return;
+                                const picker = card.querySelector(".attach-story-select");
+                                const storyKey = picker && picker.value ? String(picker.value) : "";
+                                if (!storyKey) return;
+                                const url = card.getAttribute("data-news-url") || "";
+                                const item = (items || []).find((row) => String(row.url || "") === String(url));
+                                if (!item) return;
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/attach-news?prompt_style=${{encodeURIComponent(summaryPrompt ? summaryPrompt.value || "simple" : "simple")}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
+                                    method: "POST",
+                                    headers: {{ "Content-Type": "application/json" }},
+                                    body: JSON.stringify({{ date: selectedDate, item }}),
+                                }});
+                                const inline = card.querySelector(".attach-story-inline");
+                                if (inline) inline.classList.remove("active");
+                                await loadMarketStories(false);
                             }});
                         }});
 
@@ -698,6 +990,27 @@ def render_market_page(
                         `).join("");
                     }}
 
+                    function renderDailyClusters(items) {{
+                        if (!marketDailyClustersEl) return;
+                        if (!items || !items.length) {{
+                            marketDailyClustersEl.innerHTML = '<p class="status">No daily clusters yet for this date.</p>';
+                            return;
+                        }}
+                        marketDailyClustersEl.innerHTML = `
+                            <section class="card" style="padding:1rem; margin-bottom:0.85rem;">
+                                <h3 style="margin:0 0 0.55rem;">Daily Clusters</h3>
+                                <div class="story-group">
+                                    ${{items.map((item) => `
+                                        <div class="story-card">
+                                            <h3>${{item.cluster_title || "Cluster"}}</h3>
+                                            <div>${{renderRichText(item.cluster_summary || "")}}</div>
+                                        </div>
+                                    `).join("")}}
+                                </div>
+                            </section>
+                        `;
+                    }}
+
                     async function loadSummaryHistory() {{
                         try {{
                             const response = await fetch(`/api/market/news/summaries?date=${{encodeURIComponent(selectedDate)}}`);
@@ -711,44 +1024,68 @@ def render_market_page(
                         }}
                     }}
 
-                    async function analyzeMarketNews(auto = false) {{
-                        if (!analyzeBtn || !summaryPrompt) return;
-                        if (!latestNews.length) {{
-                            if (summaryStatus) summaryStatus.textContent = "No market news available to summarize.";
-                            return;
+                    async function loadDailyNews(refresh = false) {{
+                        if (!summaryPrompt) return;
+                        if (refreshDailyNewsBtn) {{
+                            refreshDailyNewsBtn.disabled = true;
+                            refreshDailyNewsBtn.textContent = refresh ? "Refreshing..." : "Refresh Daily News";
                         }}
-                        analyzeBtn.disabled = true;
-                        analyzeBtn.textContent = auto ? "Auto analyzing..." : "Analyzing all...";
                         if (summaryStatus) {{
-                            summaryStatus.textContent = auto ? "Generating 3-model summary..." : "Running OpenAI / Perplexity / Gemini...";
+                            summaryStatus.textContent = refresh ? "Refreshing daily news..." : "Loading...";
                         }}
                         try {{
                             const promptStyle = summaryPrompt.value || "simple";
                             const params = new URLSearchParams({{
-                                prompt_style: promptStyle,
                                 date: selectedDate,
+                                prompt_style: promptStyle,
                                 output_language: getOutputLanguage(),
                             }});
-                            const response = await fetch(`/api/market/news/summarize?${{params.toString()}}`, {{
-                                method: "POST",
-                            }});
+                            const endpoint = refresh ? `/api/market/daily-news/refresh?${{params.toString()}}` : `/api/market/daily-news?${{params.toString()}}`;
+                            const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
                             const payload = await response.json();
                             if (!response.ok || payload.error) {{
                                 if (summaryStatus) summaryStatus.textContent = payload.error || "Analyze failed";
                                 return;
                             }}
+                            latestNews = payload.raw_news || [];
+                            renderNews(latestNews);
                             renderSummaryHistory(payload.summaries || []);
+                            renderDailyClusters(payload.clusters || []);
                             await loadSummaryDates();
-                            const runResults = payload.run_results || [];
-                            const okCount = runResults.filter((r) => r && r.ok).length;
-                            if (summaryStatus) summaryStatus.textContent = `${{okCount}}/3 models updated`;
+                            if (marketNewsCountEl) {{
+                                const count = Number((payload.raw_news || []).length || 0);
+                                marketNewsCountEl.textContent = `${{count}} item${{count === 1 ? "" : "s"}}`;
+                            }}
+                            if (summaryStatus) summaryStatus.textContent = refresh ? "Updated" : "";
                         }} catch (error) {{
-                            if (summaryStatus) summaryStatus.textContent = "Analyze failed";
+                            if (summaryStatus) summaryStatus.textContent = "Refresh failed";
                             console.error(error);
                         }} finally {{
-                            analyzeBtn.disabled = false;
-                            analyzeBtn.textContent = "Analyze All";
+                            if (refreshDailyNewsBtn) {{
+                                refreshDailyNewsBtn.disabled = false;
+                                refreshDailyNewsBtn.textContent = "Refresh Daily News";
+                            }}
                         }}
+                    }}
+
+                    async function ensureDailyNewsLoaded() {{
+                        if (!summaryPrompt) return;
+                        const promptStyle = summaryPrompt.value || "simple";
+                        const lang = getOutputLanguage();
+                        const key = `${{selectedDate}}|${{promptStyle}}|${{lang}}`;
+                        await loadDailyNews(false);
+                        const hasStoredDailyNews = Array.isArray(latestNews) && latestNews.length > 0;
+                        const hasStoredSummaries = summariesEl && summariesEl.querySelector(".summary-card");
+                        const hasStoredClusters = marketDailyClustersEl && marketDailyClustersEl.querySelector(".story-card");
+                        if (hasStoredDailyNews || hasStoredSummaries || hasStoredClusters) {{
+                            dailyNewsAutoInitializedKey = key;
+                            return;
+                        }}
+                        if (dailyNewsAutoInitializedKey === key) {{
+                            return;
+                        }}
+                        dailyNewsAutoInitializedKey = key;
+                        await loadDailyNews(true);
                     }}
 
                     async function refreshMarket() {{
@@ -763,12 +1100,6 @@ def render_market_page(
                                 return;
                             }}
                             renderMarketSections(payload.sections || []);
-                            latestNews = payload.news || [];
-                            renderNews(latestNews);
-                            if (marketNewsCountEl) {{
-                                const count = Number(payload.news_count || latestNews.length || 0);
-                                marketNewsCountEl.textContent = `${{count}} item${{count === 1 ? "" : "s"}}`;
-                            }}
                             const elapsedSec = ((Date.now() - started) / 1000).toFixed(1);
                             const priceSource = payload.price_data_source ? ` · prices=${{payload.price_data_source}}` : "";
                             const priceDateText = payload.price_date && payload.price_date !== (payload.date || selectedDate)
@@ -782,6 +1113,110 @@ def render_market_page(
                             refreshBtn.disabled = false;
                             refreshBtn.textContent = "Refresh";
                         }}
+                    }}
+
+                    function setMarketView(mode) {{
+                        currentMarketView = ["overview", "daily-news", "stories"].includes(mode) ? mode : "overview";
+                        document.querySelectorAll(".market-subview").forEach((el) => {{
+                            el.classList.toggle("active", el.id === `market-${{currentMarketView}}-view`);
+                        }});
+                        if (marketViewTabs) {{
+                            marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
+                                btn.classList.toggle("active", btn.dataset.marketView === currentMarketView);
+                            }});
+                        }}
+                    }}
+
+                    function renderStoryCards(title, stories) {{
+                        if (!stories || !stories.length) {{
+                            return `<section><h3>${{title}}</h3><p class="status">No stories in this section.</p></section>`;
+                        }}
+                        return `
+                            <section>
+                                <h3>${{title}}</h3>
+                                <div class="story-group">
+                                    ${{stories.map((story) => `
+                                        <div class="story-card">
+                                            <h3>${{story.story_title}}</h3>
+                                            <div class="news-meta">status=${{story.story_status || "ongoing"}} · priority=${{story.priority || "normal"}}</div>
+                                            <div>${{renderRichText(story.story_summary || "")}}</div>
+                                            <span class="story-section-label">Timeline</span>
+                                            <div>${{renderRichText((story.timeline_items || []).map((item) => `- ${{item.date || ""}}: ${{item.label || ""}}${{item.summary ? ` — ${{item.summary}}` : ""}}`).join("\\n"))}}</div>
+                                            <span class="story-section-label">Future and Impact</span>
+                                            <div>${{renderRichText((story.future_and_impact || []).map((item) => `- Scenario: ${{item.scenario || ""}} | Probability: ${{item.probability || ""}} | Impact: ${{item.impact || ""}}`).join("\\n"))}}</div>
+                                            <div class="summary-controls" style="margin-top:0.75rem;">
+                                                <button class="story-close-btn" type="button" data-story-key="${{story.story_key}}">${{["finished","resolved","closed"].includes(String(story.story_status || "").toLowerCase()) ? "Reopen" : "Close"}}</button>
+                                                <button class="story-priority-btn" type="button" data-story-key="${{story.story_key}}" data-priority="${{story.priority === 'high' ? 'normal' : 'high'}}">${{story.priority === 'high' ? 'Set Normal' : 'Set High'}}</button>
+                                            </div>
+                                        </div>
+                                    `).join("")}}
+                                </div>
+                            </section>
+                        `;
+                    }}
+
+                    async function loadMarketStories(refresh = false) {{
+                        if (marketStoriesStatus) {{
+                            marketStoriesStatus.textContent = refresh ? "Refreshing..." : "Loading...";
+                        }}
+                        const prompt = summaryPrompt ? String(summaryPrompt.value || "simple") : "simple";
+                        const lang = getOutputLanguage();
+                        const endpoint = refresh
+                            ? `/api/market/stories/refresh?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}&date=${{encodeURIComponent(selectedDate)}}`
+                            : `/api/market/stories?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`;
+                        const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
+                        const payload = await response.json();
+                        const warmup = payload.warmup || {{}};
+                        const parts = [];
+                        if (warmup.job_state) parts.push(`state=${{warmup.job_state}}`);
+                        if (warmup.current_stage) parts.push(`stage=${{warmup.current_stage}}`);
+                        if (Number(warmup.raw_stored_count || 0)) parts.push(`${{warmup.raw_stored_count}} raw news`);
+                        if (Number(warmup.ongoing_story_count || 0) || Number(warmup.finished_story_count || 0)) {{
+                            parts.push(`${{warmup.ongoing_story_count || 0}} ongoing`);
+                            parts.push(`${{warmup.finished_story_count || 0}} finished`);
+                        }}
+                        if (marketStoryWarmup) marketStoryWarmup.textContent = parts.join(" · ");
+                        if (marketOngoingStoriesEl) {{
+                            marketOngoingStoriesEl.innerHTML = renderStoryCards("Ongoing Stories", payload.ongoing_stories || []);
+                        }}
+                        if (marketFinishedStoriesEl) {{
+                            marketFinishedStoriesEl.innerHTML = renderStoryCards("Finished Stories", payload.finished_stories || []);
+                        }}
+                        latestStoryOptions = [...(payload.ongoing_stories || []), ...(payload.finished_stories || [])];
+                        document.querySelectorAll(".story-close-btn").forEach((button) => {{
+                            button.addEventListener("click", async () => {{
+                                const storyKey = button.getAttribute("data-story-key") || "";
+                                const nextAction = String(button.textContent || "").toLowerCase().includes("reopen") ? "reopen" : "close";
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/${{nextAction}}?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
+                                await loadMarketStories(false);
+                            }});
+                        }});
+                        document.querySelectorAll(".story-priority-btn").forEach((button) => {{
+                            button.addEventListener("click", async () => {{
+                                const storyKey = button.getAttribute("data-story-key") || "";
+                                const priority = button.getAttribute("data-priority") || "high";
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(priority)}}&prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
+                                await loadMarketStories(false);
+                            }});
+                        }});
+                        if (marketStoriesStatus) marketStoriesStatus.textContent = refresh ? "Updated" : "";
+                    }}
+
+                    async function ensureMarketStoriesLoaded() {{
+                        const prompt = summaryPrompt ? String(summaryPrompt.value || "simple") : "simple";
+                        const lang = getOutputLanguage();
+                        const key = `${{selectedDate}}|${{prompt}}|${{lang}}`;
+                        await loadMarketStories(false);
+                        const hasStories = latestStoryOptions && latestStoryOptions.length > 0;
+                        if (hasStories) {{
+                            marketStoriesAutoInitializedKey = key;
+                            return;
+                        }}
+                        if (marketStoriesAutoInitializedKey === key) {{
+                            return;
+                        }}
+                        marketStoriesAutoInitializedKey = key;
+                        await loadMarketStories(true);
                     }}
 
                     function isUsMarketHoursNow() {{
@@ -833,14 +1268,34 @@ def render_market_page(
                         selectedDate = String(nextDate || selectedDate);
                         updateUrlState();
                         await refreshMarket();
-                        const existing = await loadSummaryHistory();
-                        if (!existing.length && isToday(selectedDate)) {{
-                            analyzeMarketNews(true);
+                        if (currentMarketView === "daily-news") {{
+                            await ensureDailyNewsLoaded();
+                        }} else if (currentMarketView === "stories") {{
+                            await ensureMarketStoriesLoaded();
                         }}
                     }}
 
-                    if (analyzeBtn) {{
-                        analyzeBtn.addEventListener("click", () => analyzeMarketNews(false));
+                    if (refreshDailyNewsBtn) {{
+                        refreshDailyNewsBtn.addEventListener("click", () => loadDailyNews(true));
+                    }}
+                    if (marketViewTabs) {{
+                        marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
+                            btn.addEventListener("click", async () => {{
+                                const next = btn.dataset.marketView || "overview";
+                                setMarketView(next);
+                                if (next === "daily-news") {{
+                                    await ensureDailyNewsLoaded();
+                                }} else if (next === "stories") {{
+                                    await ensureMarketStoriesLoaded();
+                                }}
+                            }});
+                        }});
+                    }}
+                    const refreshStoriesBtn = document.getElementById("refresh-market-stories");
+                    if (refreshStoriesBtn) {{
+                        refreshStoriesBtn.addEventListener("click", async () => {{
+                            await loadMarketStories(true);
+                        }});
                     }}
                     initOutputLanguage();
                     refreshBtn.addEventListener("click", refreshMarket);
@@ -864,11 +1319,8 @@ def render_market_page(
                     }}
                     Promise.all([loadSummaryDates(), refreshMarket()]).then(async () => {{
                         updateUrlState();
-                        const existing = await loadSummaryHistory();
-                        if (!existing.length && isToday(selectedDate)) {{
-                            analyzeMarketNews(true);
-                        }}
                     }});
+                    setMarketView("overview");
                     setInterval(() => {{
                         if (!isUsMarketHoursNow()) {{
                             return;

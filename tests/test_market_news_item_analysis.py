@@ -33,7 +33,7 @@ def test_market_item_analyses_endpoint_returns_rows(monkeypatch) -> None:
     client = TestClient(app)
     response = client.get(
         "/api/market/news/item-analyses",
-        params={"date": "2026-02-28", "model": "gpt-5.2", "output_language": "zh-CN"},
+        params={"date": "2026-02-28", "model": "gpt-5-mini", "output_language": "zh-CN"},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -67,7 +67,7 @@ def test_market_item_analyze_endpoint_persists_analysis(monkeypatch) -> None:
     client = TestClient(app)
     response = client.post(
         "/api/market/news/item-analyze",
-        params={"model": "gpt-5.2", "output_language": "zh-CN"},
+        params={"model": "gpt-5-mini", "output_language": "zh-CN"},
         json={
             "date": "2026-02-28",
             "item": {

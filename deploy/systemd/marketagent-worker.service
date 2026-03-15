@@ -8,7 +8,7 @@ Type=oneshot
 User=ec2-user
 WorkingDirectory=/home/ec2-user/MarketAgent
 EnvironmentFile=/etc/marketagent/marketagent.env
-ExecStart=/home/ec2-user/miniconda3/bin/conda run --no-capture-output -n market_agent_env marketagent-company-worker --source finnhub --provider openai --model gpt-5.2 --prompt-style simple --output-language zh-CN --timezone America/Los_Angeles
+ExecStart=/home/ec2-user/miniconda3/bin/conda run --no-capture-output -n market_agent_env marketagent-company-worker --source finnhub --provider openai --model gpt-5-mini --prompt-style simple --output-language zh-CN --timezone America/Los_Angeles
 
 [Install]
 WantedBy=multi-user.target

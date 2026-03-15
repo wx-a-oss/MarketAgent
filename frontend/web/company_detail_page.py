@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.news_sources import list_news_sources
 
 
@@ -29,6 +30,7 @@ def render_company_detail_page(
             flat_models.append({"provider": str(provider), "model": str(model)})
     model_choices_json = json.dumps(flat_models, ensure_ascii=False)
     indicator_models_json = json.dumps(indicator_models or [], ensure_ascii=False)
+    default_openai_model_json = json.dumps(DEFAULT_OPENAI_MODEL, ensure_ascii=False)
     return f"""
         <html>
             <head>
@@ -837,6 +839,7 @@ def render_company_detail_page(
                             <button class="view-tab active" type="button" data-view-mode="stories">Stories</button>
                             <button class="view-tab" type="button" data-view-mode="daily">Daily News</button>
                             <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
+                            <button class="view-tab" type="button" data-view-mode="earnings">Earnings</button>
                             <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
                             <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
                         </div>
@@ -865,7 +868,7 @@ def render_company_detail_page(
                     const sourceSelect = document.getElementById("news-source");
                     const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
-                    const VIEW_MODES = new Set(["stories", "stock", "indicators", "daily", "weekly"]);
+                    const VIEW_MODES = new Set(["stories", "stock", "indicators", "daily", "weekly", "earnings"]);
                     const RANGE_KEYS = new Set(["1D", "5D", "1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"]);
                     function normalizeViewMode(raw) {{
                         const token = String(raw || "").trim().toLowerCase();
@@ -1046,28 +1049,6 @@ def render_company_detail_page(
                         return `<pre>${{escapeHtml(content)}}</pre>`;
                     }}
 
-                    function renderDailyReportMarkdown(value) {{
-                        let html = renderMarkdown(value);
-                        const headingReplacements = [
-                            {{
-                                pattern: /<h[2-4][^>]*>\\s*发生了什么(?:（[^）]*）|\\([^)]*\\))?\\s*<\\/h[2-4]>/gi,
-                                replacement: '<p><strong>事件</strong></p>',
-                            }},
-                            {{
-                                pattern: /<h[2-4][^>]*>\\s*为什么重要(?:（[^）]*）|\\([^)]*\\))?\\s*<\\/h[2-4]>/gi,
-                                replacement: '<p><strong>影响</strong></p>',
-                            }},
-                            {{
-                                pattern: /<h[2-4][^>]*>\\s*(?:需要继续跟踪的点|投资者应关注的信号|需要警惕的点)\\s*<\\/h[2-4]>/gi,
-                                replacement: '<p><strong>跟踪</strong></p>',
-                            }},
-                        ];
-                        headingReplacements.forEach((entry) => {{
-                            html = html.replace(entry.pattern, entry.replacement);
-                        }});
-                        return html;
-                    }}
-
                     function toReadableBullets(raw) {{
                         const text = String(raw || "").trim();
                         if (!text) return "—";
@@ -1196,6 +1177,14 @@ def render_company_detail_page(
                                 layoutEl.style.gridTemplateColumns = "1fr";
                             }}
                             renderStockView();
+                            return;
+                        }}
+                        if (currentViewMode === "earnings") {{
+                            timelineEl.style.display = "none";
+                            if (layoutEl) {{
+                                layoutEl.style.gridTemplateColumns = "1fr";
+                            }}
+                            renderEarningsView();
                             return;
                         }}
                         if (currentViewMode === "indicators") {{
@@ -1443,10 +1432,10 @@ def render_company_detail_page(
                             ? stockModelChoices.map((item) => {{
                                 const provider = String(item.provider || "openai");
                                 const model = String(item.model || "");
-                                const selected = provider === "openai" && model === "gpt-5.2" ? "selected" : "";
+                                const selected = provider === "openai" && model === {default_openai_model_json} ? "selected" : "";
                                 return `<option value="${{escapeHtml(model)}}" data-provider="${{escapeHtml(provider)}}" ${{selected}}>${{escapeHtml(`${{provider}} · ${{model}}`)}}</option>`;
                               }}).join("")
-                            : '<option value="gpt-5.2" data-provider="openai" selected>openai · gpt-5.2</option>';
+                            : `<option value="${{escapeHtml(String({default_openai_model_json}))}}" data-provider="openai" selected>openai · ${{escapeHtml(String({default_openai_model_json}))}}</option>`;
                         const updatesRows = Array.isArray(updates) && updates.length
                             ? updates
                                 .slice(0, 6)
@@ -1646,12 +1635,12 @@ def render_company_detail_page(
                             const askModelSelect = document.getElementById("story-ask-model");
                             function getStoryAskSelection() {{
                                 if (!askModelSelect) {{
-                                    return {{ provider: "openai", model: "gpt-5.2" }};
+                                    return {{ provider: "openai", model: {default_openai_model_json} }};
                                 }}
                                 const selected = askModelSelect.selectedOptions && askModelSelect.selectedOptions[0];
                                 return {{
                                     provider: selected ? String(selected.dataset.provider || "openai") : "openai",
-                                    model: askModelSelect.value ? String(askModelSelect.value) : "gpt-5.2",
+                                    model: askModelSelect.value ? String(askModelSelect.value) : {default_openai_model_json},
                                 }};
                             }}
                             if (askBtn && askInput) {{
@@ -1782,9 +1771,83 @@ def render_company_detail_page(
                         loadStories(false);
                     }}
 
+                    function renderEarningsView() {{
+                        contentEl.innerHTML = `
+                            <div class="status-panel">
+                                <div class="status-panel-header">
+                                    <div class="status-header-main">
+                                        <h2 style="margin:0;">Earnings Timeline</h2>
+                                        <div class="status-meta" id="earnings-meta">Loading earnings...</div>
+                                    </div>
+                                    <div class="status-controls">
+                                        <button class="status-btn" id="earnings-refresh-btn" type="button">Refresh Earnings</button>
+                                    </div>
+                                </div>
+                                <div id="earnings-list"></div>
+                            </div>
+                        `;
+                        const metaEl = document.getElementById("earnings-meta");
+                        const listEl = document.getElementById("earnings-list");
+                        const refreshBtn = document.getElementById("earnings-refresh-btn");
+
+                        function renderEarnings(events) {{
+                            if (!listEl) return;
+                            if (!Array.isArray(events) || !events.length) {{
+                                listEl.innerHTML = '<p class="placeholder">No earnings events available.</p>';
+                                return;
+                            }}
+                            listEl.innerHTML = events.map((item) => {{
+                                const reaction = item.price_reaction && Array.isArray(item.price_reaction.points)
+                                    ? `${{item.price_reaction.points.length}} price points · ${{item.price_reaction.window_change_pct ?? "—"}}%`
+                                    : "No price reaction yet";
+                                return `
+                                    <div class="story-card">
+                                        <h3>${{item.earnings_date}}${{item.fiscal_period ? ` · ${{item.fiscal_period}}` : ""}}</h3>
+                                        <div class="news-meta">EPS actual=${{item.actual_eps ?? "—"}} · estimate=${{item.estimate_eps ?? "—"}} · surprise=${{item.surprise_percent ?? "—"}}</div>
+                                        <div class="news-meta">Revenue actual=${{item.actual_revenue ?? "—"}} · estimate=${{item.estimate_revenue ?? "—"}}</div>
+                                        <span class="story-section-label">Price Reaction</span>
+                                        <div>${{reaction}}</div>
+                                        <span class="story-section-label">Analysis</span>
+                                        <div>${{renderMarkdown(item.analysis_text || "")}}</div>
+                                    </div>
+                                `;
+                            }}).join("");
+                        }}
+
+                        async function loadEarnings(refresh = false) {{
+                            if (metaEl) {{
+                                metaEl.textContent = refresh ? "Refreshing earnings..." : "Loading earnings...";
+                            }}
+                            const endpoint = refresh
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/earnings/refresh?output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                                : `/api/company/${{encodeURIComponent(companyName)}}/earnings`;
+                            const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
+                            const payload = await response.json();
+                            renderEarnings(payload.events || []);
+                            if (metaEl) {{
+                                metaEl.textContent = `${{(payload.events || []).length}} earnings events`;
+                            }}
+                        }}
+
+                        if (refreshBtn) {{
+                            refreshBtn.addEventListener("click", async () => {{
+                                refreshBtn.disabled = true;
+                                refreshBtn.textContent = "Refreshing...";
+                                try {{
+                                    await loadEarnings(true);
+                                }} finally {{
+                                    refreshBtn.disabled = false;
+                                    refreshBtn.textContent = "Refresh Earnings";
+                                }}
+                            }});
+                        }}
+
+                        loadEarnings(false);
+                    }}
+
                     function renderStockView() {{
                         const defaultRange = normalizeRangeKey(currentStockRange || "1Y");
-                        const defaultModel = "gpt-5.2";
+                        const defaultModel = {default_openai_model_json};
                         const modelOptions = Array.isArray(stockModelChoices)
                             ? stockModelChoices.map((item) => {{
                                 const provider = String(item.provider || "");
@@ -1818,6 +1881,22 @@ def render_company_detail_page(
                                 <div class="stock-chart-wrap">
                                     <canvas id="stock-chart" height="120"></canvas>
                                 </div>
+                                <div class="status-panel" style="margin-top:0.9rem;">
+                                    <div class="status-panel-header">
+                                        <div class="status-header-main">
+                                            <h2 style="margin:0;">Price Intelligence</h2>
+                                            <div class="status-meta" id="price-intelligence-meta">Loading price intelligence...</div>
+                                        </div>
+                                        <div class="status-controls">
+                                            <select class="status-select" id="price-intelligence-style">
+                                                <option value="simple" selected>simple</option>
+                                                <option value="structured">structured</option>
+                                            </select>
+                                            <button class="status-btn" id="price-intelligence-refresh" type="button">Analyze Position</button>
+                                        </div>
+                                    </div>
+                                    <div class="status-output" id="price-intelligence-output"></div>
+                                </div>
                                 <div class="stock-analysis-list" id="stock-analysis-list"></div>
                             </div>
                         `;
@@ -1826,6 +1905,10 @@ def render_company_detail_page(
                         const analysisListEl = document.getElementById("stock-analysis-list");
                         const analyzeBtn = document.getElementById("stock-analyze-btn");
                         const modelSelect = document.getElementById("stock-analysis-model");
+                        const intelligenceOutput = document.getElementById("price-intelligence-output");
+                        const intelligenceMeta = document.getElementById("price-intelligence-meta");
+                        const intelligenceRefresh = document.getElementById("price-intelligence-refresh");
+                        const intelligenceStyle = document.getElementById("price-intelligence-style");
                         const rangeButtons = Array.from(contentEl.querySelectorAll(".stock-range-btn"));
                         let activeRange = defaultRange;
                         let latestSeries = [];
@@ -2006,6 +2089,28 @@ def render_company_detail_page(
                             }}
                         }}
 
+                        async function loadPriceIntelligence(forceGenerate = false) {{
+                            const style = intelligenceStyle && intelligenceStyle.value ? String(intelligenceStyle.value) : "simple";
+                            const endpoint = forceGenerate
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                                : `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence?prompt_style=${{encodeURIComponent(style)}}`;
+                            if (intelligenceMeta) {{
+                                intelligenceMeta.textContent = forceGenerate ? "Generating..." : "Loading...";
+                            }}
+                            const response = await fetch(endpoint, {{ method: forceGenerate ? "POST" : "GET" }});
+                            const payload = await response.json();
+                            const status = payload.status || null;
+                            if (!status) {{
+                                if (intelligenceOutput) intelligenceOutput.innerHTML = "<p>—</p>";
+                                if (intelligenceMeta) intelligenceMeta.textContent = "No price intelligence available yet.";
+                                return;
+                            }}
+                            if (intelligenceOutput) intelligenceOutput.innerHTML = renderMarkdown(status.output_text || "");
+                            if (intelligenceMeta) {{
+                                intelligenceMeta.textContent = `window=${{status.window_start_date}} → ${{status.window_end_date}} · provider=${{status.provider}} · model=${{status.model}}`;
+                            }}
+                        }}
+
                         rangeButtons.forEach((btn) => {{
                             const isActive = String(btn.dataset.range || "").toUpperCase() === activeRange;
                             btn.classList.toggle("active", isActive);
@@ -2024,7 +2129,25 @@ def render_company_detail_page(
                         if (analyzeBtn) {{
                             analyzeBtn.addEventListener("click", analyzeMoves);
                         }}
+                        if (intelligenceRefresh) {{
+                            intelligenceRefresh.addEventListener("click", async () => {{
+                                intelligenceRefresh.disabled = true;
+                                intelligenceRefresh.textContent = "Analyzing...";
+                                try {{
+                                    await loadPriceIntelligence(true);
+                                }} finally {{
+                                    intelligenceRefresh.disabled = false;
+                                    intelligenceRefresh.textContent = "Analyze Position";
+                                }}
+                            }});
+                        }}
+                        if (intelligenceStyle) {{
+                            intelligenceStyle.addEventListener("change", async () => {{
+                                await loadPriceIntelligence(false);
+                            }});
+                        }}
                         loadSeries();
+                        loadPriceIntelligence(false);
                     }}
 
                     function renderIndicatorRows(rows) {{
@@ -2197,7 +2320,7 @@ def render_company_detail_page(
                             ? (dailyReport
                                 ? `<div class="daily-report-card">
                                     <div class="daily-report-meta">Daily report · ${{dailyReport.created_at || ""}} · provider=${{dailyReport.provider}} · model=${{dailyReport.model}} · prompt=${{dailyReport.prompt_style}}</div>
-                                    <div class="daily-report-output">${{renderDailyReportMarkdown(dailyReport.output_text || "")}}</div>
+                                    <div class="daily-report-output">${{renderMarkdown(dailyReport.output_text || "")}}</div>
                                    </div>`
                                 : `<div class="daily-report-card">
                                     <div class="daily-report-meta">No daily report yet for this day.</div>

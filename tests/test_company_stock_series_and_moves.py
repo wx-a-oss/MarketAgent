@@ -20,12 +20,16 @@ def test_company_stock_series_endpoint(monkeypatch) -> None:
         lambda company_name: {"ticker": "GOOGL"},
     )
     monkeypatch.setattr(
-        "frontend.web.server._fetch_price_points_for_range",
-        lambda symbol, range_key: [
+        "frontend.web.server._get_or_refresh_company_price_series",
+        lambda **kwargs: [
             {"date": "2026-02-01", "date_time": "2026-02-01T00:00:00+00:00", "close": 100.0, "volume": 1000, "pct_change": None},
             {"date": "2026-02-02", "date_time": "2026-02-02T00:00:00+00:00", "close": 102.0, "volume": 1100, "pct_change": 2.0},
             {"date": "2026-02-03", "date_time": "2026-02-03T00:00:00+00:00", "close": 101.0, "volume": 1200, "pct_change": -0.98},
         ],
+    )
+    monkeypatch.setattr(
+        "frontend.web.server._list_company_price_daily_points_all",
+        lambda **kwargs: [],
     )
 
     client = TestClient(app)
@@ -48,8 +52,8 @@ def test_company_stock_move_analysis_endpoint(monkeypatch) -> None:
         lambda company_name: {"ticker": "GOOGL"},
     )
     monkeypatch.setattr(
-        "frontend.web.server._fetch_price_points_for_range",
-        lambda symbol, range_key: [
+        "frontend.web.server._get_or_refresh_company_price_series",
+        lambda **kwargs: [
             {"date": "2026-02-01", "date_time": "2026-02-01T00:00:00+00:00", "close": 100.0, "volume": 1000, "pct_change": None},
             {"date": "2026-02-02", "date_time": "2026-02-02T00:00:00+00:00", "close": 110.0, "volume": 2100, "pct_change": 10.0},
         ],
@@ -93,7 +97,7 @@ def test_company_stock_move_analysis_endpoint(monkeypatch) -> None:
     client = TestClient(app)
     response = client.post(
         "/api/company/Google/stock/moves/analyze",
-        params={"range_key": "1Y", "top_n": 5, "provider": "openai", "model": "gpt-5.2"},
+        params={"range_key": "1Y", "top_n": 5, "provider": "openai", "model": "gpt-5-mini"},
     )
     assert response.status_code == 200
     payload = response.json()

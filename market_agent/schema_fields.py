@@ -17,6 +17,8 @@ COL_NEWS_SOURCES = "news_sources"
 
 # Market single news analysis storage
 TBL_MARKET_NEWS_ITEM_ANALYSIS = "market_news_item_analysis"
+TBL_MARKET_NEWS_RAW = "market_news_raw"
+TBL_MARKET_NEWS_DAILY_CLUSTER = "market_news_daily_cluster"
 COL_NEWS_DATE = "news_date"
 COL_NEWS_URL = "news_url"
 COL_HEADLINE = "headline"
@@ -32,6 +34,20 @@ COL_OUTPUT_TEXT = "output_text"
 TBL_MARKET_PRICE_DAILY_SNAPSHOT = "market_price_daily_snapshot"
 COL_SNAPSHOT_DATE = "snapshot_date"
 COL_PAYLOAD = "payload"
+
+# Market story storage
+TBL_MARKET_STORY_STATE = "market_story_state"
+TBL_MARKET_STORY_UPDATE = "market_story_update"
+TBL_MARKET_STORY_WARMUP_STATE = "market_story_warmup_state"
+TBL_MARKET_STORY_EVENT = "market_story_event"
+
+# Company earnings storage
+TBL_COMPANY_EARNINGS_EVENT = "company_earnings_event"
+COL_EARNINGS_DATE = "earnings_date"
+
+# Macro/government release storage
+TBL_MARKET_MACRO_EVENT = "market_macro_event"
+COL_EVENT_DATE_TIME = "event_date_time"
 
 # Company story storage
 TBL_COMPANY_STORY_STATE = "company_story_state"

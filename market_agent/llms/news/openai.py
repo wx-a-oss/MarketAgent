@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.llms.news.interfaces import NewsProvider
 from market_agent.llms.news.prompts import (
     build_fetch_news_analysis_prompt,
@@ -23,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     OpenAI = None
 
-DEFAULT_NEWS_MODEL = "gpt-5.2"
+DEFAULT_NEWS_MODEL = DEFAULT_OPENAI_MODEL
 WEB_SEARCH_ENV_FLAG = "OPENAI_USE_WEB_SEARCH"
 ANALYSIS_LOG_PREVIEW_MAX_CHARS = 4000
 logger = logging.getLogger("uvicorn.error")
@@ -416,6 +417,24 @@ def _run_web_search_once(
     )
     output_text = getattr(response, "output_text", "")
     return _normalize_news_items(_safe_json(output_text))
+
+
+def generate_text_with_web_search(
+    *,
+    api_key: str,
+    model: str,
+    prompt: str,
+    timeout_sec: int = 120,
+) -> str:
+    if OpenAI is None:
+        raise RuntimeError("openai package is required for web_search tool usage.")
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    response = client.responses.create(
+        model=model,
+        input=prompt,
+        tools=[{"type": "web_search"}],
+    )
+    return getattr(response, "output_text", "") or ""
 
 
 def _fetch_news_with_web_search(

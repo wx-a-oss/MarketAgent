@@ -8,13 +8,14 @@ import logging
 from typing import Optional
 
 from market_agent.app import start_company_story_warmup
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start or resume company story warm-up.")
     parser.add_argument("company_name")
     parser.add_argument("--provider", default="openai")
-    parser.add_argument("--model", default="gpt-5.2")
+    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--prompt-style", default="simple")
     parser.add_argument("--output-language", default="zh-CN")
     parser.add_argument("--warmup-days", type=int, default=10)

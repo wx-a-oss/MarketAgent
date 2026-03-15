@@ -11,6 +11,7 @@ import time as pytime
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.llms.news import get_news_provider
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
 from market_agent.analysis.company.news.datamodels import NewsArticle
@@ -27,7 +28,7 @@ from market_agent.schema_fields import (
     TBL_COMPANY_STORY_WARMUP_STATE,
 )
 
-DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODEL = DEFAULT_OPENAI_MODEL
 DEFAULT_PROVIDER = "openai"
 DEFAULT_SOURCE = "openai"
 FINNHUB_AUTO_ANALYZE_LIMIT = 10
@@ -3404,6 +3405,8 @@ def _build_company_daily_report_prompt(
             "- Rank information by importance to this company.\n"
             "- Try to open links first for more context; if inaccessible, use available content/web search.\n"
             "- Use layered structure with clear sections and bullet points.\n"
+            "- For each important story, use exactly these subsection labels: 事件, 影响, 跟踪.\n"
+            "- Keep those subsection labels short and compact; do not expand them into longer phrases.\n"
             f"{language_line}"
             "Sections:\n"
             "1. Top Summary\n2. Important News & Insights\n3. What Changed Today\n4. What To Watch Next\n"
@@ -3419,6 +3422,8 @@ def _build_company_daily_report_prompt(
         "- Rank information by importance to this company (most important first).\n"
         "- Try to open links first for fuller context. If inaccessible, use available content and best available information.\n"
         "- Use layered structure for output which is easy for reading.\n"
+        "- For each important story, use exactly these subsection labels: 事件, 影响, 跟踪.\n"
+        "- Keep those subsection labels short and compact; do not expand them into longer phrases.\n"
         f"{language_line}"
         f"News items JSON:\n{items_json}\n"
     )
@@ -3554,11 +3559,92 @@ def _build_company_status_input(
                 }
             )
 
+    price_context = _build_company_status_price_context(company_name, start_date=start_date, end_date=end_date)
+    market_stories = _build_company_status_market_story_context(limit=5)
+
     return {
         "daily_reports": daily_reports,
         "weekly_reports": weekly_reports,
         "raw_news": raw_news,
+        "price_context": price_context,
+        "market_stories": market_stories,
     }
+
+
+def _build_company_status_price_context(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+) -> Dict[str, Any]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ticker, trade_date, close_price, volume
+                FROM company_price_daily
+                WHERE company_name = %s
+                  AND trade_date >= %s
+                  AND trade_date <= %s
+                ORDER BY trade_date ASC
+                """,
+                (company_name, start_date, end_date),
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return {}
+    closes = [float(row["close_price"]) for row in rows if row["close_price"] is not None]
+    latest = rows[-1]
+    first_close = closes[0] if closes else None
+    last_close = closes[-1] if closes else None
+    pct_change = None
+    if first_close not in (None, 0) and last_close is not None:
+        pct_change = ((last_close - first_close) / first_close) * 100.0
+    return {
+        "ticker": rows[-1]["ticker"],
+        "point_count": len(rows),
+        "window_start": rows[0]["trade_date"].isoformat(),
+        "window_end": rows[-1]["trade_date"].isoformat(),
+        "latest_close": last_close,
+        "window_high": max(closes) if closes else None,
+        "window_low": min(closes) if closes else None,
+        "window_change_pct": round(pct_change, 2) if pct_change is not None else None,
+        "recent_points": [
+            {
+                "trade_date": row["trade_date"].isoformat(),
+                "close_price": float(row["close_price"]) if row["close_price"] is not None else None,
+                "volume": int(row["volume"]) if row["volume"] is not None else None,
+            }
+            for row in rows[-10:]
+        ],
+    }
+
+
+def _build_company_status_market_story_context(*, limit: int = 5) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT story_title, happened_text, happening_text, next_text, importance_rank, updated_at
+                FROM market_story_state
+                WHERE is_active = TRUE
+                ORDER BY importance_rank ASC, updated_at DESC
+                LIMIT %s
+                """,
+                (max(1, int(limit)),),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "story_title": row["story_title"],
+            "past": row["happened_text"] or "",
+            "now": row["happening_text"] or "",
+            "next": row["next_text"] or "",
+            "importance_rank": int(row["importance_rank"] or 999),
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+        for row in rows
+    ]
 
 
 def _build_company_status_prompt(
@@ -3576,28 +3662,34 @@ def _build_company_status_prompt(
         return (
             f"You are building a rolling company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
             "Use the provided daily reports and weekly reports as the primary source, and raw news only as fallback context.\n"
+            "Also use the price context and broader market stories to judge positioning and plausible future paths.\n"
             "Goals:\n"
             "- Help me quickly catch up on what happened, what is happening now, and what may happen next.\n"
+            "- Explain where the current price seems to sit in context: stretched, compressed, stable, volatile, risky, or relatively steady.\n"
+            "- Identify plausible next paths, what may trigger them, and how likely they look.\n"
             "- Merge duplicates and repeated coverage.\n"
             "- Preserve all material company-related developments.\n"
             "- Rank storylines by importance to this company.\n"
             "- Use layered structure and clear bullet points.\n"
             f"{language_line}"
             "Sections:\n"
-            "1. Company Status (current state)\n"
-            "2. Active Storylines (ranked)\n"
-            "3. What Changed Recently\n"
-            "4. What To Watch Next\n"
-            "5. Uncertainties / Open Questions\n"
+            "1. Price Position\n"
+            "2. Company Status (current state)\n"
+            "3. Active Storylines (ranked)\n"
+            "4. What Changed Recently\n"
+            "5. What To Watch Next\n"
+            "6. Trigger Map and Uncertainties\n"
             f"Inputs JSON:\n{payload_json}\n"
         )
     return (
         f"Please build a company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Goal: help me quickly catch up on what happened to the company, what is happening now, and what may happen next.\n"
+        "Goal: help me quickly catch up on what happened to the company, what is happening now, what may happen next, and where the current stock price seems to sit in context.\n"
         "Requirements:\n"
         "- Use daily reports and weekly reports as primary sources; use raw news only as fallback context.\n"
+        "- Use price context and broader market stories when judging whether the stock looks stretched, compressed, stable, volatile, risky, or relatively steady.\n"
         "- Ignore duplicate or near-duplicate information.\n"
         "- Keep all material company-related points and do not omit important developments.\n"
+        "- Include plausible next paths, the triggers for those paths, and your probability/confidence view.\n"
         "- Rank information by importance to this company.\n"
         "- Use layered structure for output which is easy for reading.\n"
         f"{language_line}"

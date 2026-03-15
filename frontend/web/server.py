@@ -18,7 +18,10 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
+from market_agent.config.models import DEFAULT_OPENAI_MODEL, DEFAULT_PROVIDER_MODELS, get_default_model
 from frontend.common import StockFrontendClient
+from market_agent.app import market_updates as market_updates_module
+from frontend.web.calendar_page import render_calendar_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -27,6 +30,21 @@ from frontend.web.market_page import render_market_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
 from market_agent.app import (
+    attach_news_to_market_story,
+    create_market_story_from_news,
+    generate_market_daily_report,
+    get_market_daily_news_overview,
+    get_market_story_overview,
+    list_market_daily_clusters,
+    list_company_earnings,
+    list_market_macro_events,
+    refresh_company_earnings,
+    refresh_market_daily_clusters,
+    refresh_market_macro_events,
+    run_market_daily_update,
+    start_market_story_warmup,
+    update_market_story_priority,
+    update_market_story_status,
     get_company_story_overview,
     run_company_daily_update,
     start_company_story_warmup,
@@ -64,6 +82,7 @@ from market_agent.llms.openai import chat_completion
 from market_agent.llms.registry import get_provider, list_models
 from market_agent.schema_fields import (
     COL_HEADLINE,
+    COL_EVENT_DATE_TIME,
     COL_INPUT_PAYLOAD,
     COL_MODEL,
     COL_NEWS_SOURCES,
@@ -84,6 +103,13 @@ from market_agent.schema_fields import (
     TBL_MARKET_NEWS_DAILY_SUMMARY,
     TBL_MARKET_NEWS_ITEM_ANALYSIS,
     TBL_MARKET_PRICE_DAILY_SNAPSHOT,
+    TBL_MARKET_NEWS_RAW,
+    TBL_MARKET_STORY_STATE,
+    TBL_MARKET_STORY_UPDATE,
+    TBL_MARKET_STORY_WARMUP_STATE,
+    TBL_MARKET_STORY_EVENT,
+    TBL_COMPANY_EARNINGS_EVENT,
+    TBL_MARKET_MACRO_EVENT,
     TBL_COMPANY_PRICE_MOVE_ANALYSIS,
     TBL_COMPANY_PRICE_DAILY,
 )
@@ -127,11 +153,7 @@ MARKET_CRYPTO_CONFIG: List[Tuple[str, List[str]]] = [
     ("Ethereum", ["BINANCE:ETHUSDT", "COINBASE:ETH-USD", "ETHUSD", "ETHA"]),
 ]
 
-MARKET_SUMMARY_DEFAULT_MODEL = {
-    "openai": "gpt-5.2",
-    "perplexity": "sonar-pro",
-    "gemini": "gemini-2.5-flash",
-}
+MARKET_SUMMARY_DEFAULT_MODEL = dict(DEFAULT_PROVIDER_MODELS)
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
 
@@ -487,6 +509,11 @@ async def market_page() -> str:
     )
 
 
+@app.get("/calendar", response_class=HTMLResponse)
+async def calendar_page() -> str:
+    return render_calendar_page()
+
+
 @app.get("/person", response_class=HTMLResponse)
 async def person() -> str:
     return render_person_page()
@@ -588,6 +615,80 @@ async def market_news_summaries(
     return {"date": target_date.isoformat(), "summaries": summaries}
 
 
+@app.get("/api/market/daily-news")
+async def market_daily_news(
+    date: Optional[str] = Query(None),
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    return get_market_daily_news_overview(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+
+
+@app.post("/api/market/daily-news/refresh")
+async def refresh_market_daily_news(
+    date: Optional[str] = Query(None),
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+    force_fetch: bool = Query(False),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    today = datetime.now().date()
+    current = get_market_daily_news_overview(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    has_existing_raw = bool(current.get("raw_news"))
+    if target_date < today and has_existing_raw:
+        refresh_stats = {
+            "mode": "reuse_existing_raw_past_date",
+            "fetched_total": 0,
+            "stored_total": 0,
+            "skipped_existing_days": 1,
+        }
+    elif force_fetch or not has_existing_raw:
+        refresh_stats = market_updates_module.refresh_market_news_for_range(start_date=target_date, end_date=target_date)
+    else:
+        refresh_stats = {"mode": "reuse_existing_raw", "fetched_total": 0, "stored_total": 0, "skipped_existing_days": 0}
+    daily_report_stats = generate_market_daily_report(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    cluster_stats = refresh_market_daily_clusters(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    overview = get_market_daily_news_overview(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {**overview, "refresh_stats": refresh_stats, "daily_report_stats": daily_report_stats, "cluster_stats": cluster_stats}
+
+
 @app.get("/api/market/news/summary-dates")
 async def market_news_summary_dates(
     lookback_days: int = Query(365, ge=1, le=3650),
@@ -634,7 +735,7 @@ async def summarize_market_news(
     run_results: List[Dict[str, Any]] = []
     providers_to_run = ["openai", "perplexity", "gemini"]
     for idx, provider_name in enumerate(providers_to_run):
-        selected_model = MARKET_SUMMARY_DEFAULT_MODEL.get(provider_name, "gpt-5.2")
+        selected_model = MARKET_SUMMARY_DEFAULT_MODEL.get(provider_name, DEFAULT_OPENAI_MODEL)
         started = pytime.perf_counter()
         try:
             summary_text = _run_market_news_summary(
@@ -683,7 +784,7 @@ async def summarize_market_news(
 @app.get("/api/market/news/item-analyses")
 async def market_news_item_analyses(
     date: str = Query(...),
-    model: str = Query("gpt-5.2"),
+    model: str = Query(DEFAULT_OPENAI_MODEL),
     output_language: str = Query("zh-CN"),
 ) -> Dict[str, Any]:
     try:
@@ -701,7 +802,7 @@ async def market_news_item_analyses(
 @app.post("/api/market/news/item-analyze")
 async def analyze_market_news_item(
     request: Request,
-    model: str = Query("gpt-5.2"),
+    model: str = Query(DEFAULT_OPENAI_MODEL),
     output_language: str = Query("zh-CN"),
 ) -> Dict[str, Any]:
     payload = await request.json()
@@ -755,6 +856,208 @@ async def analyze_market_news_item(
     return {"ok": True, "analysis": row}
 
 
+@app.get("/api/market/stories")
+async def market_stories(
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    return get_market_story_overview(
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+
+
+@app.post("/api/market/stories/refresh")
+async def refresh_market_stories(
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    result = run_market_daily_update(
+        target_date=target_date,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    overview = get_market_story_overview(
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {**overview, **result}
+
+
+@app.post("/api/market/stories/warmup")
+async def warmup_market_stories(
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    warmup = start_market_story_warmup(
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    overview = get_market_story_overview(
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {**overview, "warmup": warmup}
+
+
+@app.post("/api/market/stories/{story_key}/close")
+async def close_market_story(
+    story_key: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_market_story_status(
+        story_key=story_key,
+        story_status="closed",
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed}
+
+
+@app.post("/api/market/stories/{story_key}/reopen")
+async def reopen_market_story(
+    story_key: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_market_story_status(
+        story_key=story_key,
+        story_status="ongoing",
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed}
+
+
+@app.post("/api/market/stories/{story_key}/priority")
+async def set_market_story_priority_api(
+    story_key: str,
+    priority: str = Query("high"),
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_market_story_priority(
+        story_key=story_key,
+        priority=priority,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed}
+
+
+@app.post("/api/market/stories/create-from-news")
+async def create_market_story_from_news_api(
+    request: Request,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    payload = await request.json()
+    date_text = str(payload.get("date") or "").strip()
+    story_title = str(payload.get("story_title") or "").strip()
+    news_item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    try:
+        target_date = datetime.fromisoformat(date_text).date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    story = create_market_story_from_news(
+        target_date=target_date,
+        story_title=story_title,
+        news_item=news_item,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"story": story}
+
+
+@app.post("/api/market/stories/{story_key}/attach-news")
+async def attach_market_news_to_story_api(
+    story_key: str,
+    request: Request,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    payload = await request.json()
+    date_text = str(payload.get("date") or "").strip()
+    news_item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    try:
+        target_date = datetime.fromisoformat(date_text).date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    ok = attach_news_to_market_story(
+        target_date=target_date,
+        story_key=story_key,
+        news_item=news_item,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": ok}
+
+
+@app.get("/api/market/macro")
+async def get_market_macro_api(
+    lookback_days: int = Query(0, ge=0, le=365),
+    lookahead_days: int = Query(30, ge=0, le=365),
+) -> Dict[str, Any]:
+    today = datetime.now().date()
+    start_date = today - timedelta(days=max(0, int(lookback_days)))
+    end_date = today + timedelta(days=max(0, int(lookahead_days)))
+    rows = list_market_macro_events(start_date=start_date, end_date=end_date, limit=80)
+    return {"events": rows, "start_date": start_date.isoformat(), "end_date": end_date.isoformat()}
+
+
+@app.post("/api/market/macro/refresh")
+async def refresh_market_macro_api(
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    stats = refresh_market_macro_events(
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        output_language=output_language,
+        extend_window=True,
+    )
+    today = datetime.now().date()
+    rows = list_market_macro_events(start_date=today, end_date=today + timedelta(days=90), limit=240)
+    return {
+        "events": rows,
+        "description": "Extend calendar by 1 more month.",
+        **stats,
+    }
+
+
 @app.post("/api/companies")
 async def add_company(request: Request) -> Dict[str, Any]:
     payload = await request.json()
@@ -765,7 +1068,7 @@ async def add_company(request: Request) -> Dict[str, Any]:
         company_name,
         subscribe=True,
         provider_name="openai",
-        model="gpt-5.2",
+        model=DEFAULT_OPENAI_MODEL,
         prompt_style="simple",
         output_language="zh-CN",
     )
@@ -834,7 +1137,7 @@ async def refresh_company_news(
             end_date=end,
             source_name=selected_source,
             provider_name=provider or "openai",
-            model=model or "gpt-5.2",
+            model=model or DEFAULT_OPENAI_MODEL,
         )
         articles = get_company_news(company_name, output_language=output_language)
         groups = _group_news_items(company_name, articles)
@@ -869,7 +1172,7 @@ async def refresh_company_news(
         end_date=week_end,
         source_name=selected_source,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -904,7 +1207,7 @@ async def generate_company_report(
         end_date=week_end,
         output_language=output_language,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -928,7 +1231,7 @@ async def generate_company_daily_report_api(
         company_name,
         target_date=target_date,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style or "simple",
         output_language=output_language,
     )
@@ -939,6 +1242,20 @@ async def generate_company_daily_report_api(
 
 @app.get("/api/company/{company_name}/status")
 async def get_company_status_api(
+    company_name: str,
+    prompt_style: str = Query("simple"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    snapshot = get_company_status_snapshot(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style or "simple",
+    )
+    return {"company": company_name, "status": snapshot}
+
+
+@app.get("/api/company/{company_name}/price-intelligence")
+async def get_company_price_intelligence_api(
     company_name: str,
     prompt_style: str = Query("simple"),
     provider: Optional[str] = Query(None),
@@ -963,7 +1280,7 @@ async def generate_company_status_api(
     stats = generate_company_status_snapshot(
         company_name,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style or "simple",
         output_language=output_language,
         window_days=window_days,
@@ -974,6 +1291,57 @@ async def generate_company_status_api(
         prompt_style=prompt_style or "simple",
     )
     return {"company": company_name, "status": snapshot, **stats}
+
+
+@app.post("/api/company/{company_name}/price-intelligence/generate")
+async def generate_company_price_intelligence_api(
+    company_name: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+    window_days: int = Query(90),
+) -> Dict[str, Any]:
+    stats = generate_company_status_snapshot(
+        company_name,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style or "simple",
+        output_language=output_language,
+        window_days=window_days,
+    )
+    snapshot = get_company_status_snapshot(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style or "simple",
+    )
+    return {"company": company_name, "status": snapshot, **stats}
+
+
+@app.get("/api/company/{company_name}/earnings")
+async def get_company_earnings_api(
+    company_name: str,
+    refresh: bool = Query(False),
+) -> Dict[str, Any]:
+    if refresh:
+        refresh_company_earnings(company_name)
+    return {"company": company_name, "events": list_company_earnings(company_name)}
+
+
+@app.post("/api/company/{company_name}/earnings/refresh")
+async def refresh_company_earnings_api(
+    company_name: str,
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    stats = refresh_company_earnings(
+        company_name,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        output_language=output_language,
+    )
+    return {"company": company_name, **stats}
 
 
 @app.get("/api/company/{company_name}/stories")
@@ -987,7 +1355,7 @@ async def get_company_stories_api(
     overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
-        model="gpt-5.2",
+        model=DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -1009,7 +1377,7 @@ async def refresh_company_stories_api(
         target_date=datetime.now().date(),
         source_name="finnhub",
         provider_name=provider_name,
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
         output_language=output_language,
         story_window_days=window_days,
@@ -1017,7 +1385,7 @@ async def refresh_company_stories_api(
     overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
         output_language=output_language,
         start_warmup_if_needed=False,
@@ -1082,7 +1450,7 @@ async def ask_company_story_api(
         story_key=story_key,
         question=question,
         provider_name=provider_name,
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -1115,7 +1483,7 @@ async def merge_company_story_qa_api(
         story_key=story_key,
         qa_id=qa_id,
         provider_name=provider_name,
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -1370,7 +1738,7 @@ async def analyze_company_stock_moves_api(
     if not candidates:
         return {"analyses": [], "count": 0}
     provider_name = provider or "openai"
-    model_name = model or "gpt-5.2"
+    model_name = model or DEFAULT_OPENAI_MODEL
     results: List[Dict[str, Any]] = []
     for idx, point in enumerate(candidates):
         point_time = str(point.get("date_time") or "").strip()
@@ -1453,7 +1821,7 @@ async def summarize_company_news(
         company_name,
         news_id=news_id,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         analysis_prompt=(analysis_prompt or "simple"),
         output_language=output_language,
     )
@@ -1474,7 +1842,7 @@ async def filter_company_news(
         company_name,
         news_id=news_id,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -1500,7 +1868,7 @@ async def filter_company_news_for_day(
         target_date=target_date,
         limit=limit,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -1533,7 +1901,7 @@ async def summarize_company_news_for_day(
         company_name,
         target_date=target_date,
         provider_name=provider or "openai",
-        model=model or "gpt-5.2",
+        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=(analysis_prompt or "simple"),
         output_language=output_language,
     )
