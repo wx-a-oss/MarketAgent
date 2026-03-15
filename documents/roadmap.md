@@ -79,13 +79,6 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 
 ## Cloud Migration (Separate Track)
 
-### Current Cloud State
-1. `[done]` GitHub Actions deploy to EC2 is live.
-2. `[done]` Scheduled worker is live for:
-   - market daily raw fetch + daily report + clusters + stories,
-   - subscribed company daily fetch/report/story updates.
-3. `[done]` Macro/calendar updates are manual-only and are not part of the scheduled worker.
-
 ### Remaining Cloud Follow-Up
 1. `[todo]` Add stronger operational visibility:
    - worker result history,
