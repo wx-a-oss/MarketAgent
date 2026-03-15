@@ -358,11 +358,6 @@ def run_market_daily_update(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    macro_stats = refresh_market_macro_events(
-        provider_name=provider_name,
-        model=model,
-        output_language=output_language,
-    )
     story_stats = refresh_market_story_states(
         as_of_date=target,
         provider_name=provider_name,
@@ -371,13 +366,12 @@ def run_market_daily_update(
         output_language=output_language,
     )
     logger.info(
-        "Market daily update completed: target_date=%s fetched=%s stored=%s daily_reports=%s clusters=%s macro_events=%s routed_clusters=%s ongoing=%s finished=%s",
+        "Market daily update completed: target_date=%s fetched=%s stored=%s daily_reports=%s clusters=%s routed_clusters=%s ongoing=%s finished=%s",
         target.isoformat(),
         int(refresh_stats.get("fetched_total", 0)),
         int(refresh_stats.get("stored_total", 0)),
         int(daily_report_stats.get("report_count", 0)),
         int(cluster_stats.get("cluster_count", 0)),
-        int(macro_stats.get("event_count", 0)),
         int(story_stats.get("routed_cluster_count", 0)),
         int(story_stats.get("ongoing_story_count", 0)),
         int(story_stats.get("finished_story_count", 0)),
@@ -388,7 +382,6 @@ def run_market_daily_update(
         "refresh_stats": refresh_stats,
         "daily_report_stats": daily_report_stats,
         "cluster_stats": cluster_stats,
-        "macro_stats": macro_stats,
         "story_stats": story_stats,
     }
 
