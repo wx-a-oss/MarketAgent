@@ -1564,12 +1564,12 @@ def render_company_detail_page(
                                 const elapsedValue = Number(warmup.elapsed_sec || 0);
                                 const elapsed = Number.isFinite(elapsedValue) ? elapsedValue.toFixed(1) : "0.0";
                                 const stateLabelMap = {{
-                                    not_started: "Warm-up not started",
-                                    running: "Warm-up running",
-                                    analyzing: "Warm-up analyzing stories",
-                                    completed: "Warm-up completed",
-                                    partial: "Warm-up paused",
-                                    failed: "Warm-up failed",
+                                    not_started: "Story update not started",
+                                    running: "Story update running",
+                                    analyzing: "Story update analyzing stories",
+                                    completed: "Story update completed",
+                                    partial: "Story update paused",
+                                    failed: "Story update failed",
                                 }};
                                 const stageLabelMap = {{
                                     fetching_raw: "Fetching raw news",

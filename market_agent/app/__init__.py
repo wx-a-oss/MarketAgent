@@ -5,6 +5,7 @@ from .company_updates import (
     get_company_story_overview,
     run_company_daily_update,
     run_daily_updates_for_watchlist,
+    start_company_daily_update,
     start_company_story_warmup,
 )
 from .market_updates import (
@@ -37,6 +38,7 @@ __all__ = [
     "run_market_daily_update",
     "run_company_daily_update",
     "run_daily_updates_for_watchlist",
+    "start_company_daily_update",
     "start_market_story_warmup",
     "start_company_story_warmup",
     "update_market_story_status",

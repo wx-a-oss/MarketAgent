@@ -47,6 +47,7 @@ from market_agent.app import (
     update_market_story_status,
     get_company_story_overview,
     run_company_daily_update,
+    start_company_daily_update,
     start_company_story_warmup,
 )
 from market_agent.analysis.company.news import (
@@ -1382,7 +1383,7 @@ async def refresh_company_stories_api(
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    result = run_company_daily_update(
+    result = start_company_daily_update(
         company_name,
         target_date=datetime.now().date(),
         source_name="finnhub",
