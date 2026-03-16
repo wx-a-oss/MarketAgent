@@ -4,37 +4,31 @@
 
 Completed items are tracked in [implemented_features.md](./implemented_features.md). This backlog focuses on remaining work.
 
-### 1) Market Stories Warm-Up and Lifecycle
-- `[partial]` Build a global market story system:
-  - warm up recent market stories from daily market-news clusters instead of brute-force raw-article windows,
-  - store story summary, ordered timeline, future/impact scenarios, and priority,
-  - route daily market clusters into existing stories or new stories,
-  - keep ongoing and finished market stories visible in the Market page,
-  - support manual close/reopen, priority changes, and manual news-to-story fitting,
-  - run the same market update flow from both UI/manual refresh and the scheduled worker.
+### 1) Price Intelligence
+- `[partial]` Make Price Intelligence the primary downstream intelligence layer:
+  - ensure subscribed companies automatically accumulate enough daily reports and weekly reports for strong inputs,
+  - improve the price-intelligence prompt/output so it consistently explains price position, company state, active narratives, and what to watch next,
+  - tighten the dependency flow from raw news -> daily report -> weekly report -> price intelligence,
+  - verify output quality on cloud over multiple scheduled runs before expanding scope.
+
+### 2) Repeated Daily Run Gating
 - `[todo]` Add incremental update gating for repeated daily runs:
   - allow multiple market/company runs per day without repeated LLM work when inputs did not change,
   - rerun raw fetch for today only, then skip daily report / clustering / story refresh if no new rows arrived,
   - define the safe duplicate policy before adding midday or pre-market worker runs.
 
-### 2) Earnings Report Module
+### 3) Earnings Report Module
 - `[partial]` Build an earnings module:
   - show the last four earnings events for a subscribed company,
   - capture actual vs estimate, guidance/outlook where available, and short earnings impact analysis,
   - make earnings and post-earnings price reaction easy to review on a timeline.
 
-### 3) Government Document and Macro Report Module
+### 4) Government Document and Macro Report Module
 - `[partial]` Add a macro/government module:
   - ingest key releases such as CPI, PPI, payrolls, unemployment, GDP, Fed/FOMC decisions, and policy statements,
   - show recent and upcoming releases in a market calendar view,
   - keep macro/calendar refresh manual-only for now,
   - connect major releases to market relevance and later to market stories.
-
-### 4) Company Status and Price Intelligence
-- `[partial]` Build company status v2:
-  - combine narrative stories with multi-year price context and moving averages.
-- `[partial]` Improve “explain price move” intelligence:
-  - link critical price points to company news + macro market context.
 
 ### 5) Trade System (Later Stage)
 - `[todo]` Build a new **Trade** tab (major feature):

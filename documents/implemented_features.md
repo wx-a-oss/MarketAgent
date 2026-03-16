@@ -25,6 +25,7 @@ This document tracks features that are already available in the app from a user 
 - Manually change market story priority.
 - Create a new market story from a market news item.
 - Attach a market news item back into an existing market story.
+- View market stories in a two-column master-detail layout with a story list on the left and detail panel on the right.
 - View a market macro calendar with recent and upcoming macro/government releases.
 - Extend the macro calendar manually by one month at a time.
 
@@ -35,11 +36,19 @@ This document tracks features that are already available in the app from a user 
 - Refresh company news by provider and date range.
 - Read daily raw company news cards with source and link.
 - Generate daily company report for a selected day.
+- Use one default company daily-report prompt without a prompt-style picker.
 - Generate weekly company report.
 - Start company story warm-up automatically after subscribing a company.
 - Reuse fetched company raw news in both Stories warm-up and Daily News views.
+- Build daily company news clusters from raw company news.
 - View company stories split into ongoing and finished sections.
+- Store company stories with summary, timeline, future/impact, and priority.
 - Refresh company stories with incremental story updates.
+- View company stories in a two-column master-detail layout with timeline, future/impact, evidence, and recent changes.
+- Manually close or reopen a company story.
+- Manually change company story priority.
+- Create a new company story from a company news item.
+- Attach a company news item back into an existing company story.
 - Ask follow-up questions for a specific story with selectable LLM models.
 - Merge a story Q&A answer back into the current story when the answer adds useful context.
 
