@@ -560,6 +560,97 @@ def render_market_page(
                         font-size: 0.84rem;
                         margin-bottom: 0.7rem;
                     }}
+                    .stories-wrap {{
+                        display: grid;
+                        grid-template-columns: 280px minmax(0, 920px);
+                        gap: 0.8rem;
+                        align-items: start;
+                    }}
+                    .stories-side {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.7rem;
+                        max-height: 70vh;
+                        overflow-y: auto;
+                    }}
+                    .story-list {{
+                        display: grid;
+                        gap: 0.5rem;
+                    }}
+                    .story-item {{
+                        border: 1px solid #dbeafe;
+                        background: #ffffff;
+                        border-radius: 0.7rem;
+                        padding: 0.55rem 0.6rem;
+                        cursor: pointer;
+                    }}
+                    .story-item.active {{
+                        border-color: #60a5fa;
+                        box-shadow: 0 0 0 1px #93c5fd inset;
+                    }}
+                    .story-item-title {{
+                        font-size: 0.9rem;
+                        font-weight: 700;
+                        color: #0f172a;
+                        margin-bottom: 0.25rem;
+                    }}
+                    .story-item-meta {{
+                        font-size: 0.76rem;
+                        color: #64748b;
+                    }}
+                    .story-group-heading {{
+                        font-size: 0.75rem;
+                        font-weight: 700;
+                        letter-spacing: 0.06em;
+                        text-transform: uppercase;
+                        color: #64748b;
+                        margin: 0.25rem 0 0.15rem;
+                        padding: 0 0.15rem;
+                    }}
+                    .stories-main {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.8rem;
+                        width: 100%;
+                        max-width: 920px;
+                    }}
+                    .story-detail-section {{
+                        margin-top: 0.65rem;
+                    }}
+                    .story-detail-section h3 {{
+                        margin: 0 0 0.28rem;
+                        font-size: 0.9rem;
+                    }}
+                    .story-detail-box {{
+                        border: 1px solid #e5e7eb;
+                        border-radius: 0.65rem;
+                        background: #fff;
+                        padding: 0.55rem 0.65rem;
+                        line-height: 1.6;
+                        font-size: 0.9rem;
+                        overflow-wrap: anywhere;
+                    }}
+                    .placeholder {{
+                        color: #64748b;
+                    }}
+                    @media (max-width: 1200px) {{
+                        .stories-wrap {{
+                            grid-template-columns: 260px minmax(0, 1fr);
+                        }}
+                        .stories-main {{
+                            max-width: none;
+                        }}
+                    }}
+                    @media (max-width: 900px) {{
+                        .stories-wrap {{
+                            grid-template-columns: 1fr;
+                        }}
+                        .stories-side {{
+                            max-height: none;
+                        }}
+                    }}
                     .macro-events {{
                         display: grid;
                         gap: 0.7rem;
@@ -634,8 +725,10 @@ def render_market_page(
                         </div>
                         <div id="market-stories-status" class="view-status-row"></div>
                         <div id="market-story-warmup" class="story-warmup"></div>
-                        <div id="market-ongoing-stories"></div>
-                        <div id="market-finished-stories"></div>
+                        <div class="stories-wrap">
+                            <div class="stories-side"><div class="story-list" id="market-story-list"></div></div>
+                            <div class="stories-main" id="market-story-detail"><p class="placeholder">Select a story to see details.</p></div>
+                        </div>
                     </section>
                 </div>
                 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
@@ -657,10 +750,11 @@ def render_market_page(
                     const marketViewTabs = document.getElementById("market-view-tabs");
                     const marketStoriesStatus = document.getElementById("market-stories-status");
                     const marketStoryWarmup = document.getElementById("market-story-warmup");
-                    const marketOngoingStoriesEl = document.getElementById("market-ongoing-stories");
-                    const marketFinishedStoriesEl = document.getElementById("market-finished-stories");
+                    const marketStoryListEl = document.getElementById("market-story-list");
+                    const marketStoryDetailEl = document.getElementById("market-story-detail");
                     let latestNews = [];
                     let latestStoryOptions = [];
+                    let activeMarketStoryKey = "";
                     let currentMarketView = "overview";
                     let dailyNewsAutoInitializedKey = "";
                     let marketStoriesAutoInitializedKey = "";
@@ -724,6 +818,56 @@ def render_market_page(
                         return (window.marked && typeof window.marked.parse === "function")
                             ? window.marked.parse(content)
                             : `<pre>${{content}}</pre>`;
+                    }}
+
+                    function escapeHtml(value) {{
+                        return String(value ?? "")
+                            .replace(/&/g, "&amp;")
+                            .replace(/</g, "&lt;")
+                            .replace(/>/g, "&gt;")
+                            .replace(/\"/g, "&quot;")
+                            .replace(/'/g, "&#39;");
+                    }}
+
+                    function formatStoryArray(value) {{
+                        if (!Array.isArray(value) || !value.length) {{
+                            return "<p>—</p>";
+                        }}
+                        function formatEntry(entry) {{
+                            if (entry === null || entry === undefined) {{
+                                return "—";
+                            }}
+                            if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {{
+                                return renderRichText(String(entry));
+                            }}
+                            if (Array.isArray(entry)) {{
+                                return `<ul>${{entry.map((row) => `<li>${{formatEntry(row)}}</li>`).join("")}}</ul>`;
+                            }}
+                            if (typeof entry === "object") {{
+                                const title = entry.title || entry.news_title || entry.headline || entry.label || entry.key || entry.scenario || "";
+                                const date = entry.date || entry.news_date_time || entry.report_date || entry.as_of_date || "";
+                                const source = entry.source || entry.news_source || entry.provider || "";
+                                const link = entry.url || entry.news_source_link || entry.link || "";
+                                const summary = entry.summary || entry.note || entry.change || entry.text || entry.impact || "";
+                                if (title || date || source || link || summary) {{
+                                    const top = [
+                                        title ? `<strong>${{escapeHtml(String(title))}}</strong>` : "",
+                                        date ? escapeHtml(String(date)) : "",
+                                        source ? escapeHtml(String(source)) : "",
+                                    ].filter(Boolean).join(" · ");
+                                    const linkHtml = link
+                                        ? `<div><a href="${{escapeHtml(String(link))}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(String(link))}}</a></div>`
+                                        : "";
+                                    const summaryHtml = summary
+                                        ? `<div>${{renderRichText(String(summary))}}</div>`
+                                        : "";
+                                    return `<div>${{top || "Item"}}${{linkHtml}}${{summaryHtml}}</div>`;
+                                }}
+                                return `<pre>${{escapeHtml(JSON.stringify(entry, null, 2))}}</pre>`;
+                            }}
+                            return escapeHtml(String(entry));
+                        }}
+                        return `<ul>${{value.map((entry) => `<li>${{formatEntry(entry)}}</li>`).join("")}}</ul>`;
                     }}
 
                     function initOutputLanguage() {{
@@ -1181,31 +1325,87 @@ def render_market_page(
                         }}
                     }}
 
-                    function renderStoryCards(title, stories) {{
-                        if (!stories || !stories.length) {{
-                            return `<section><h3>${{title}}</h3><p class="status">No stories in this section.</p></section>`;
+                    function buildMarketTimeline(story) {{
+                        const timelineItems = Array.isArray(story.timeline_items) ? story.timeline_items.filter((item) => item && typeof item === "object") : [];
+                        if (timelineItems.length) {{
+                            return timelineItems;
+                        }}
+                        const fallback = [];
+                        if (story.happened_text) {{
+                            fallback.push({{ label: "Earlier", summary: story.happened_text }});
+                        }}
+                        if (story.happening_text) {{
+                            fallback.push({{ label: "Current", summary: story.happening_text }});
+                        }}
+                        return fallback;
+                    }}
+
+                    function buildMarketFuture(story) {{
+                        const futureItems = Array.isArray(story.future_and_impact) ? story.future_and_impact.filter((item) => item && typeof item === "object") : [];
+                        if (futureItems.length) {{
+                            return futureItems;
+                        }}
+                        if (story.next_text) {{
+                            return [{{ scenario: story.next_text }}];
+                        }}
+                        return [];
+                    }}
+
+                    function renderMarketStoryGroup(title, stories) {{
+                        if (!Array.isArray(stories) || !stories.length) {{
+                            return "";
                         }}
                         return `
-                            <section>
-                                <h3>${{title}}</h3>
-                                <div class="story-group">
-                                    ${{stories.map((story) => `
-                                        <div class="story-card">
-                                            <h3>${{story.story_title}}</h3>
-                                            <div class="news-meta">status=${{story.story_status || "ongoing"}} · priority=${{story.priority || "normal"}}</div>
-                                            <div>${{renderRichText(story.story_summary || "")}}</div>
-                                            <span class="story-section-label">Timeline</span>
-                                            <div>${{renderRichText((story.timeline_items || []).map((item) => `- ${{item.date || ""}}: ${{item.label || ""}}${{item.summary ? ` — ${{item.summary}}` : ""}}`).join("\\n"))}}</div>
-                                            <span class="story-section-label">Future and Impact</span>
-                                            <div>${{renderRichText((story.future_and_impact || []).map((item) => `- Scenario: ${{item.scenario || ""}} | Probability: ${{item.probability || ""}} | Impact: ${{item.impact || ""}}`).join("\\n"))}}</div>
-                                            <div class="summary-controls" style="margin-top:0.75rem;">
-                                                <button class="story-close-btn" type="button" data-story-key="${{story.story_key}}">${{["finished","resolved","closed"].includes(String(story.story_status || "").toLowerCase()) ? "Reopen" : "Close"}}</button>
-                                                <button class="story-priority-btn" type="button" data-story-key="${{story.story_key}}" data-priority="${{story.priority === 'high' ? 'normal' : 'high'}}">${{story.priority === 'high' ? 'Set Normal' : 'Set High'}}</button>
-                                            </div>
-                                        </div>
-                                    `).join("")}}
+                            <div class="story-group-heading">${{escapeHtml(title)}}</div>
+                            ${{stories.map((story) => `
+                                <div class="story-item ${{story.story_key === activeMarketStoryKey ? "active" : ""}}" data-story-key="${{story.story_key}}">
+                                    <div class="story-item-title">${{escapeHtml(story.story_title || "")}}</div>
+                                    <div class="story-item-meta">#${{story.importance_rank || "—"}} · ${{escapeHtml(story.story_status || "ongoing")}}</div>
                                 </div>
-                            </section>
+                            `).join("")}}
+                        `;
+                    }}
+
+                    function renderMarketStoryDetail(story) {{
+                        if (!story) {{
+                            return '<p class="placeholder">Select a story to see details.</p>';
+                        }}
+                        const summaryText = String(
+                            story.story_summary
+                            || story.happening_text
+                            || story.happened_text
+                            || story.next_text
+                            || ""
+                        ).trim();
+                        const timelineRows = formatStoryArray(buildMarketTimeline(story));
+                        const futureRows = formatStoryArray(buildMarketFuture(story));
+                        const isClosed = ["finished", "resolved", "closed"].includes(String(story.story_status || "").toLowerCase());
+                        return `
+                            <div class="story-detail-section">
+                                <h3>${{escapeHtml(story.story_title || "")}}</h3>
+                                <div class="story-item-meta">status=${{escapeHtml(story.story_status || "ongoing")}} · priority=${{escapeHtml(story.priority || "normal")}} · updated=${{escapeHtml(story.updated_at || "")}}</div>
+                                <div class="story-detail-box">${{renderRichText(summaryText || "—")}}</div>
+                                <div class="summary-controls" style="margin-top:0.6rem;">
+                                    <button class="story-close-btn" type="button" data-story-key="${{story.story_key}}">${{isClosed ? "Reopen Story" : "Close Story"}}</button>
+                                    <button class="story-priority-btn" type="button" data-story-key="${{story.story_key}}" data-priority="${{story.priority === 'high' ? 'normal' : 'high'}}">${{story.priority === 'high' ? 'Set Normal Priority' : 'Set High Priority'}}</button>
+                                </div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Timeline</h3>
+                                <div class="story-detail-box">${{timelineRows}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Future and Impact</h3>
+                                <div class="story-detail-box">${{futureRows}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Evidence</h3>
+                                <div class="story-detail-box">${{formatStoryArray(story.evidence || [])}}</div>
+                            </div>
+                            <div class="story-detail-section">
+                                <h3>Recent Changes</h3>
+                                <div class="story-detail-box">${{formatStoryArray(story.change_log || [])}}</div>
+                            </div>
                         `;
                     }}
 
@@ -1230,29 +1430,54 @@ def render_market_page(
                             parts.push(`${{warmup.finished_story_count || 0}} finished`);
                         }}
                         if (marketStoryWarmup) marketStoryWarmup.textContent = parts.join(" · ");
-                        if (marketOngoingStoriesEl) {{
-                            marketOngoingStoriesEl.innerHTML = renderStoryCards("Ongoing Stories", payload.ongoing_stories || []);
-                        }}
-                        if (marketFinishedStoriesEl) {{
-                            marketFinishedStoriesEl.innerHTML = renderStoryCards("Finished Stories", payload.finished_stories || []);
-                        }}
                         latestStoryOptions = [...(payload.ongoing_stories || []), ...(payload.finished_stories || [])];
-                        document.querySelectorAll(".story-close-btn").forEach((button) => {{
-                            button.addEventListener("click", async () => {{
-                                const storyKey = button.getAttribute("data-story-key") || "";
-                                const nextAction = String(button.textContent || "").toLowerCase().includes("reopen") ? "reopen" : "close";
-                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/${{nextAction}}?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
-                                await loadMarketStories(false);
+                        if (!activeMarketStoryKey || !latestStoryOptions.some((story) => story.story_key === activeMarketStoryKey)) {{
+                            activeMarketStoryKey = latestStoryOptions.length ? String(latestStoryOptions[0].story_key || "") : "";
+                        }}
+                        if (marketStoryListEl) {{
+                            const listHtml = [
+                                renderMarketStoryGroup("Ongoing Stories", payload.ongoing_stories || []),
+                                renderMarketStoryGroup("Finished Stories", payload.finished_stories || []),
+                            ].filter(Boolean).join("");
+                            marketStoryListEl.innerHTML = listHtml || '<p class="placeholder">No stories yet.</p>';
+                            marketStoryListEl.querySelectorAll(".story-item").forEach((node) => {{
+                                node.addEventListener("click", () => {{
+                                    activeMarketStoryKey = String(node.dataset.storyKey || "");
+                                    marketStoryListEl.querySelectorAll(".story-item").forEach((x) => x.classList.remove("active"));
+                                    node.classList.add("active");
+                                    const activeStory = latestStoryOptions.find((story) => story.story_key === activeMarketStoryKey) || null;
+                                    if (marketStoryDetailEl) {{
+                                        marketStoryDetailEl.innerHTML = renderMarketStoryDetail(activeStory);
+                                        bindMarketStoryDetailActions();
+                                    }}
+                                }});
                             }});
-                        }});
-                        document.querySelectorAll(".story-priority-btn").forEach((button) => {{
-                            button.addEventListener("click", async () => {{
-                                const storyKey = button.getAttribute("data-story-key") || "";
-                                const priority = button.getAttribute("data-priority") || "high";
-                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(priority)}}&prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
-                                await loadMarketStories(false);
+                        }}
+                        if (marketStoryDetailEl) {{
+                            const activeStory = latestStoryOptions.find((story) => story.story_key === activeMarketStoryKey) || null;
+                            marketStoryDetailEl.innerHTML = renderMarketStoryDetail(activeStory);
+                        }}
+
+                        function bindMarketStoryDetailActions() {{
+                            document.querySelectorAll(".story-close-btn").forEach((button) => {{
+                                button.addEventListener("click", async () => {{
+                                    const storyKey = button.getAttribute("data-story-key") || "";
+                                    const nextAction = String(button.textContent || "").toLowerCase().includes("reopen") ? "reopen" : "close";
+                                    await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/${{nextAction}}?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
+                                    await loadMarketStories(false);
+                                }});
                             }});
-                        }});
+                            document.querySelectorAll(".story-priority-btn").forEach((button) => {{
+                                button.addEventListener("click", async () => {{
+                                    const storyKey = button.getAttribute("data-story-key") || "";
+                                    const priority = button.getAttribute("data-priority") || "high";
+                                    await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(priority)}}&prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
+                                    await loadMarketStories(false);
+                                }});
+                            }});
+                        }}
+
+                        bindMarketStoryDetailActions();
                         if (marketStoriesStatus) marketStoriesStatus.textContent = refresh ? "Updated" : "";
                     }}
 
