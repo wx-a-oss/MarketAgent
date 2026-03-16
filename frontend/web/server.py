@@ -56,6 +56,7 @@ from market_agent.analysis.company.news import (
     generate_company_daily_report,
     generate_company_status_snapshot,
     get_company_news,
+    list_company_daily_clusters,
     get_company_story_state,
     list_company_story_qa,
     list_company_story_updates,
@@ -67,14 +68,19 @@ from market_agent.analysis.company.news import (
     ensure_company_profile,
     filter_company_news_day,
     filter_company_news_item,
+    refresh_company_daily_clusters,
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
     set_company_ticker,
     ask_company_story_question,
+    attach_news_to_company_story,
+    create_company_story_from_news,
     merge_company_story_qa_answer,
     summarize_company_news_day,
     summarize_company_news_item,
+    update_company_story_priority,
+    update_company_story_status,
 )
 from market_agent.analysis import analyze_single_stock_sections
 from market_agent.llms.news.registry import list_news_models
@@ -1215,7 +1221,6 @@ async def generate_company_report(
 async def generate_company_daily_report_api(
     company_name: str,
     date: str = Query(...),
-    prompt_style: str = Query("simple"),
     output_language: str = Query("zh-CN"),
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
@@ -1229,12 +1234,20 @@ async def generate_company_daily_report_api(
         target_date=target_date,
         provider_name=provider or "openai",
         model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style or "simple",
+        prompt_style="simple",
+        output_language=output_language,
+    )
+    cluster_stats = refresh_company_daily_clusters(
+        company_name,
+        target_date=target_date,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style="simple",
         output_language=output_language,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
-    return {"company": company_name, "groups": groups, **stats}
+    return {"company": company_name, "groups": groups, "cluster_stats": cluster_stats, **stats}
 
 
 @app.get("/api/company/{company_name}/status")
@@ -1425,6 +1438,114 @@ async def get_company_story_detail_api(
         limit=10,
     )
     return {"company": company_name, "story": story, "updates": updates, "qa": qa}
+
+
+@app.post("/api/company/{company_name}/stories/{story_key}/close")
+async def close_company_story_api(
+    company_name: str,
+    story_key: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_company_story_status(
+        company_name,
+        story_key=story_key,
+        story_status="finished",
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed, "story_key": story_key, "story_status": "finished"}
+
+
+@app.post("/api/company/{company_name}/stories/{story_key}/reopen")
+async def reopen_company_story_api(
+    company_name: str,
+    story_key: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_company_story_status(
+        company_name,
+        story_key=story_key,
+        story_status="ongoing",
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed, "story_key": story_key, "story_status": "ongoing"}
+
+
+@app.post("/api/company/{company_name}/stories/{story_key}/priority")
+async def update_company_story_priority_api(
+    company_name: str,
+    story_key: str,
+    priority: str = Query("high"),
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    changed = update_company_story_priority(
+        company_name,
+        story_key=story_key,
+        priority=priority,
+        provider_name=provider or "openai",
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed, "story_key": story_key, "priority": priority}
+
+
+@app.post("/api/company/{company_name}/stories/create-from-news")
+async def create_company_story_from_news_api(
+    company_name: str,
+    request: Request,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    payload = await request.json()
+    target_date = datetime.fromisoformat(str(payload.get("target_date"))).date()
+    story = create_company_story_from_news(
+        company_name,
+        target_date=target_date,
+        story_title=str(payload.get("story_title") or "").strip(),
+        news_item=payload.get("news_item") or {},
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if not story:
+        return {"error": "failed to create story"}
+    return {"company": company_name, "story": story}
+
+
+@app.post("/api/company/{company_name}/stories/{story_key}/attach-news")
+async def attach_news_to_company_story_api(
+    company_name: str,
+    story_key: str,
+    request: Request,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    payload = await request.json()
+    changed = attach_news_to_company_story(
+        company_name,
+        target_date=datetime.fromisoformat(str(payload.get("target_date"))).date(),
+        story_key=story_key,
+        news_item=payload.get("news_item") or {},
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {"ok": changed, "story_key": story_key}
 
 
 @app.post("/api/company/{company_name}/stories/{story_key}/ask")
@@ -1885,7 +2006,6 @@ async def summarize_company_news_for_day(
     company_name: str,
     date: str = Query(...),
     limit: int = Query(5),
-    analysis_prompt: Optional[str] = Query("simple"),
     output_language: str = Query("zh-CN"),
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
@@ -1899,7 +2019,15 @@ async def summarize_company_news_for_day(
         target_date=target_date,
         provider_name=provider or "openai",
         model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=(analysis_prompt or "simple"),
+        prompt_style="simple",
+        output_language=output_language,
+    )
+    cluster_stats = refresh_company_daily_clusters(
+        company_name,
+        target_date=target_date,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style="simple",
         output_language=output_language,
     )
     articles = get_company_news(company_name, output_language=output_language)
@@ -1909,6 +2037,7 @@ async def summarize_company_news_for_day(
         "groups": groups,
         "processed_count": stats.get("item_count", 0),
         "analyzed_count": 1 if stats.get("generated") else 0,
+        "cluster_count": cluster_stats.get("cluster_count", 0),
         "dropped_count": 0,
         "elapsed_sec": stats.get("elapsed_sec", 0.0),
     }
@@ -4168,6 +4297,12 @@ def _group_news_items(
             company_name,
             report_date=day,
         )
+        daily_clusters = list_company_daily_clusters(
+            company_name,
+            target_date=day,
+            provider_name="openai",
+            prompt_style="simple",
+        )
         groups.append(
             {
                 "type": "daily",
@@ -4175,6 +4310,7 @@ def _group_news_items(
                 "label": day_label,
                 "items": daily[day],
                 "daily_report": daily_report,
+                "daily_clusters": daily_clusters,
             }
         )
     return groups

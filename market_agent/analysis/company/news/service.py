@@ -22,6 +22,7 @@ from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     COL_STORY_KEY,
     TBL_COMPANY_NEWS_ANALYZED,
+    TBL_COMPANY_NEWS_DAILY_CLUSTER,
     TBL_COMPANY_STORY_QA,
     TBL_COMPANY_STORY_STATE,
     TBL_COMPANY_STORY_UPDATE,
@@ -52,6 +53,8 @@ STORY_WARMUP_PROMPT_JSON_LIMIT = max(
 STORY_WARMUP_CHUNK_SIZE = max(
     5, int(os.getenv("COMPANY_STORY_WARMUP_CHUNK_SIZE", "25").strip() or "25")
 )
+COMPANY_DAILY_CLUSTER_MIN = 3
+COMPANY_DAILY_CLUSTER_MAX = 8
 
 logger = logging.getLogger("uvicorn.error")
 _WARMUP_THREADS: Dict[str, threading.Thread] = {}
@@ -640,6 +643,105 @@ def generate_company_daily_report(
     }
 
 
+def list_company_daily_clusters(
+    company_name: str,
+    *,
+    target_date: date,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM {TBL_COMPANY_NEWS_DAILY_CLUSTER}
+                WHERE company_name = %s
+                  AND cluster_date = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (company_name, target_date, provider_name, prompt_style, output_language),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "company_name": row["company_name"],
+            "cluster_date": row["cluster_date"].isoformat(),
+            "cluster_key": row["cluster_key"],
+            "cluster_title": row["cluster_title"],
+            "cluster_summary": row["cluster_summary"] or "",
+            "source_news": row["source_news_json"] or [],
+            "provider": row["provider"],
+            "model": row["model"],
+            "prompt_style": row["prompt_style"],
+            "output_language": row[COL_OUTPUT_LANGUAGE],
+            "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M:%S") if row["updated_at"] else "",
+        }
+        for row in rows
+    ]
+
+
+def refresh_company_daily_clusters(
+    company_name: str,
+    *,
+    target_date: date,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 120,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return {"generated": False, "cluster_count": 0, "target_date": target_date.isoformat()}
+    items = _build_company_story_incremental_news_items(
+        company_name,
+        target_date=target_date,
+        llm_model=model,
+        output_language=output_language,
+    )
+    if not items:
+        return {"generated": False, "cluster_count": 0, "target_date": target_date.isoformat()}
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    prompt = _build_company_daily_cluster_prompt(
+        company_name,
+        target_date=target_date,
+        items=items,
+        output_language=output_language,
+    )
+    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    clusters = _normalize_company_cluster_rows(
+        company_name=company_name,
+        target_date=target_date,
+        payload=payload,
+    )
+    _replace_company_daily_clusters(
+        company_name=company_name,
+        target_date=target_date,
+        clusters=clusters,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={"items": items, "prompt": prompt},
+    )
+    return {"generated": True, "cluster_count": len(clusters), "target_date": target_date.isoformat()}
+
+
 def generate_company_status_snapshot(
     company_name: str,
     *,
@@ -728,12 +830,16 @@ def list_company_story_states(
                     company_name,
                     {COL_STORY_KEY},
                     story_title,
+                    story_summary,
                     importance_rank,
                     story_status,
+                    priority,
                     confidence,
                     happened_text,
                     happening_text,
                     next_text,
+                    timeline_json,
+                    future_impact_json,
                     open_questions_json,
                     evidence_json,
                     change_log_json,
@@ -778,12 +884,16 @@ def get_company_story_state(
                     company_name,
                     {COL_STORY_KEY},
                     story_title,
+                    story_summary,
                     importance_rank,
                     story_status,
+                    priority,
                     confidence,
                     happened_text,
                     happening_text,
                     next_text,
+                    timeline_json,
+                    future_impact_json,
                     open_questions_json,
                     evidence_json,
                     change_log_json,
@@ -967,20 +1077,21 @@ def refresh_company_story_states(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    daily_news = _build_company_story_incremental_news_items(
+    clusters = list_company_daily_clusters(
         company_name,
         target_date=end_date,
-        llm_model=model,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
         output_language=output_language,
     )
-    if not daily_news:
+    if not clusters:
         return {
             "generated": False,
             "story_count": len(existing),
-            "routed_news_count": 0,
+            "routed_cluster_count": 0,
             "updated_story_count": 0,
             "new_story_count": 0,
-            "ignored_news_count": 0,
+            "ignored_cluster_count": 0,
             "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
         }
     provider = get_news_provider(
@@ -995,13 +1106,13 @@ def refresh_company_story_states(
         prompt_style=prompt_style,
         output_language=output_language,
         existing_stories=existing,
-        news_items=daily_news,
+        clusters=clusters,
     )
     routing_raw_output = provider.generate_text(prompt=routing_prompt)
     routing_payload = _parse_json_object(routing_raw_output) or {}
     routing_result = _normalize_story_routing_result(
         existing_stories=existing,
-        news_items=daily_news,
+        clusters=clusters,
         payload=routing_payload,
     )
     applied = _apply_incremental_story_updates(
@@ -1030,7 +1141,7 @@ def refresh_company_story_states(
         input_payload={
             "routing_prompt": routing_prompt,
             "routing_result": routing_result,
-            "daily_news": daily_news,
+            "daily_clusters": clusters,
             "existing_story_count": len(existing),
             "updated_story_keys": applied["updated_story_keys"],
             "new_story_keys": applied["new_story_keys"],
@@ -1047,10 +1158,10 @@ def refresh_company_story_states(
     return {
         "generated": True,
         "story_count": len(final_stories),
-        "routed_news_count": len(daily_news),
+        "routed_cluster_count": len(clusters),
         "updated_story_count": len(applied["updated_story_keys"]),
         "new_story_count": len(applied["new_story_keys"]),
-        "ignored_news_count": len(routing_result["ignored_items"]),
+        "ignored_cluster_count": len(routing_result["ignored_items"]),
         "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
     }
 
@@ -1220,6 +1331,199 @@ def merge_company_story_qa_answer(
         stories=merged_stories,
     )
     return merged_story
+
+
+def update_company_story_status(
+    company_name: str,
+    *,
+    story_key: str,
+    story_status: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> bool:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {TBL_COMPANY_STORY_STATE}
+                SET story_status = %s, updated_at = NOW()
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                  AND is_active = TRUE
+                """,
+                (story_status, company_name, story_key, provider_name, prompt_style, output_language),
+            )
+            changed = cur.rowcount > 0
+        conn.commit()
+    return changed
+
+
+def update_company_story_priority(
+    company_name: str,
+    *,
+    story_key: str,
+    priority: str,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> bool:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {TBL_COMPANY_STORY_STATE}
+                SET priority = %s, updated_at = NOW()
+                WHERE company_name = %s
+                  AND {COL_STORY_KEY} = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                  AND is_active = TRUE
+                """,
+                (priority, company_name, story_key, provider_name, prompt_style, output_language),
+            )
+            changed = cur.rowcount > 0
+        conn.commit()
+    return changed
+
+
+def create_company_story_from_news(
+    company_name: str,
+    *,
+    target_date: date,
+    story_title: str,
+    news_item: Dict[str, Any],
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> Optional[Dict[str, Any]]:
+    company_name = _normalize_company_name(company_name)
+    title = str(story_title or news_item.get("news_title") or "").strip()
+    if not company_name or not title:
+        return None
+    existing = list_company_story_states(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    story_key = _normalize_story_key("", fallback_title=title, fallback_index=len(existing))
+    story = _normalize_story_record(
+        {
+            "story_key": story_key,
+            "story_title": title,
+            "story_summary": str(news_item.get("summary") or news_item.get("news_title") or "").strip(),
+            "importance_rank": len(existing) + 1,
+            "story_status": "ongoing",
+            "priority": "normal",
+            "timeline_items": [
+                {
+                    "date": target_date.isoformat(),
+                    "label": str(news_item.get("news_title") or title).strip(),
+                    "summary": str(news_item.get("summary") or "").strip(),
+                }
+            ],
+            "future_and_impact": [],
+            "evidence": [
+                {
+                    "news_title": str(news_item.get("news_title") or title).strip(),
+                    "news_date_time": str(news_item.get("news_date_time") or target_date.isoformat()),
+                    "news_source_link": str(news_item.get("news_source_link") or "").strip(),
+                    "summary": str(news_item.get("summary") or "").strip(),
+                }
+            ],
+            "change_log": ["Created manually from company news."],
+        }
+    )
+    if not story:
+        return None
+    _persist_story_refresh(
+        company_name=company_name,
+        as_of_date=target_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={"manual_action": "create_story_from_news", "news_item": news_item},
+        raw_output=json.dumps({"story": story}, ensure_ascii=False),
+        stories=sorted(existing + [story], key=lambda item: (int(item.get("importance_rank") or 999), str(item.get("story_title") or ""))),
+    )
+    return story
+
+
+def attach_news_to_company_story(
+    company_name: str,
+    *,
+    target_date: date,
+    story_key: str,
+    news_item: Dict[str, Any],
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> bool:
+    company_name = _normalize_company_name(company_name)
+    stories = list_company_story_states(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    updated: List[Dict[str, Any]] = []
+    matched = False
+    for story in stories:
+        if str(story.get("story_key") or "").strip() != str(story_key or "").strip():
+            updated.append(story)
+            continue
+        matched = True
+        next_story = dict(story)
+        timeline_items = list(next_story.get("timeline_items") or [])
+        timeline_items.append(
+            {
+                "date": target_date.isoformat(),
+                "label": str(news_item.get("news_title") or "").strip() or next_story.get("story_title"),
+                "summary": str(news_item.get("summary") or "").strip(),
+            }
+        )
+        evidence = list(next_story.get("evidence") or [])
+        evidence.append(
+            {
+                "news_title": str(news_item.get("news_title") or "").strip(),
+                "news_date_time": str(news_item.get("news_date_time") or target_date.isoformat()),
+                "news_source_link": str(news_item.get("news_source_link") or "").strip(),
+                "summary": str(news_item.get("summary") or "").strip(),
+            }
+        )
+        change_log = list(next_story.get("change_log") or [])
+        change_log.append("Attached manually from company news.")
+        next_story["timeline_items"] = timeline_items
+        next_story["evidence"] = evidence
+        next_story["change_log"] = change_log
+        next_story["story_status"] = "ongoing"
+        updated.append(next_story)
+    if not matched:
+        return False
+    _persist_story_refresh(
+        company_name=company_name,
+        as_of_date=target_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload={"manual_action": "attach_news_to_story", "story_key": story_key, "news_item": news_item},
+        raw_output=json.dumps({"story_key": story_key, "news_item": news_item}, ensure_ascii=False),
+        stories=updated,
+    )
+    return True
 
 
 def summarize_company_news_item(
@@ -3088,12 +3392,16 @@ def _persist_story_refresh(
                         company_name,
                         {COL_STORY_KEY},
                         story_title,
+                        story_summary,
                         importance_rank,
                         story_status,
+                        priority,
                         confidence,
                         happened_text,
                         happening_text,
                         next_text,
+                        timeline_json,
+                        future_impact_json,
                         open_questions_json,
                         evidence_json,
                         change_log_json,
@@ -3105,16 +3413,20 @@ def _persist_story_refresh(
                         is_active,
                         updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, TRUE, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, NOW(), %s, %s, %s, %s, TRUE, NOW())
                     ON CONFLICT (company_name, {COL_STORY_KEY}, provider, prompt_style, {COL_OUTPUT_LANGUAGE})
                     DO UPDATE SET
                         story_title = EXCLUDED.story_title,
+                        story_summary = EXCLUDED.story_summary,
                         importance_rank = EXCLUDED.importance_rank,
                         story_status = EXCLUDED.story_status,
+                        priority = EXCLUDED.priority,
                         confidence = EXCLUDED.confidence,
                         happened_text = EXCLUDED.happened_text,
                         happening_text = EXCLUDED.happening_text,
                         next_text = EXCLUDED.next_text,
+                        timeline_json = EXCLUDED.timeline_json,
+                        future_impact_json = EXCLUDED.future_impact_json,
                         open_questions_json = EXCLUDED.open_questions_json,
                         evidence_json = EXCLUDED.evidence_json,
                         change_log_json = EXCLUDED.change_log_json,
@@ -3127,12 +3439,16 @@ def _persist_story_refresh(
                         company_name,
                         story_key,
                         item["story_title"],
+                        item.get("story_summary") or "",
                         int(item["importance_rank"]),
                         item["story_status"],
+                        item.get("priority") or "normal",
                         float(item["confidence"]),
                         item["happened_text"],
                         item["happening_text"],
                         item["next_text"],
+                        json.dumps(item.get("timeline_items") or [], ensure_ascii=False),
+                        json.dumps(item.get("future_and_impact") or [], ensure_ascii=False),
                         json.dumps(item.get("open_questions") or [], ensure_ascii=False),
                         json.dumps(item.get("evidence") or [], ensure_ascii=False),
                         json.dumps(item.get("change_log") or [], ensure_ascii=False),
@@ -3394,36 +3710,23 @@ def _build_company_daily_report_prompt(
     output_language: str = "zh-CN",
 ) -> str:
     items_json = json.dumps(items, ensure_ascii=False, indent=2)
-    normalized_prompt = str(prompt_style or "simple").strip().lower()
     language_line = _build_output_language_line(output_language)
-    if normalized_prompt == "structured":
-        return (
-            f"Summarize all {company_name} news for {target_date.isoformat()} into a structured daily company report.\n"
-            "Requirements:\n"
-            "- Ignore duplicate or near-duplicate news items.\n"
-            "- Keep all material company-related points; ignore unrelated points.\n"
-            "- Rank information by importance to this company.\n"
-            "- Try to open links first for more context; if inaccessible, use available content/web search.\n"
-            "- Use layered structure with clear sections and bullet points.\n"
-            "- For each important story, use exactly these subsection labels: 事件, 影响, 跟踪.\n"
-            "- Keep those subsection labels short and compact; do not expand them into longer phrases.\n"
-            f"{language_line}"
-            "Sections:\n"
-            "1. Top Summary\n2. Important News & Insights\n3. What Changed Today\n4. What To Watch Next\n"
-            f"News items JSON:\n{items_json}\n"
-        )
     return (
         f"Please summarize all {company_name} news for {target_date.isoformat()}.\n"
-        "Goal: help me quickly understand what happened to the company today and the most important insights.\n"
+        "Goal: help me quickly understand what happened to the company today, why it matters, and what to watch next.\n"
         "Requirements:\n"
         "- Ignore duplicate or near-duplicate news items.\n"
         "- Keep all material points and do not omit important company-related information.\n"
         "- Ignore points not related to this company or its market/investor outlook.\n"
         "- Rank information by importance to this company (most important first).\n"
         "- Try to open links first for fuller context. If inaccessible, use available content and best available information.\n"
-        "- Use layered structure for output which is easy for reading.\n"
-        "- For each important story, use exactly these subsection labels: 事件, 影响, 跟踪.\n"
-        "- Keep those subsection labels short and compact; do not expand them into longer phrases.\n"
+        "- Use a clear layered structure that is easy to read.\n"
+        "- Start with a short top summary.\n"
+        "- Then list the important news items in importance order.\n"
+        "- For each important news item, include exactly two bullet labels: Facts and Impact.\n"
+        "- Do not add a separate watch or follow-up subsection for each item.\n"
+        "- End with one final section for what investors should watch next.\n"
+        "- In that final section, include concise bullet points on upcoming catalysts, risks, confirmations, or developments that may matter next.\n"
         f"{language_line}"
         f"News items JSON:\n{items_json}\n"
     )
@@ -3886,48 +4189,28 @@ def _generate_company_story_warmup_story_map(
         temperature=0.2,
         timeout_sec=240,
     )
-    items = _build_company_story_warmup_input_items(
-        company_name,
+    items = _build_company_story_cluster_input_items(
+        company_name=company_name,
         start_date=start_date,
         end_date=end_date,
-        llm_model=model,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
         output_language=output_language,
     )
-    prompt = _build_company_story_warmup_prompt(
+    prompt = _build_company_story_warmup_cluster_prompt(
         company_name,
         start_date=start_date,
         end_date=end_date,
         output_language=output_language,
         items=items,
     )
-    payload: Dict[str, Any]
-    if len(json.dumps(items, ensure_ascii=False)) <= STORY_WARMUP_PROMPT_JSON_LIMIT:
-        raw_output = provider.generate_text(prompt=prompt)
-        payload = _parse_json_object(raw_output) or {}
-    else:
-        chunk_results: List[Dict[str, Any]] = []
-        for offset in range(0, len(items), STORY_WARMUP_CHUNK_SIZE):
-            chunk = items[offset : offset + STORY_WARMUP_CHUNK_SIZE]
-            chunk_prompt = _build_company_story_warmup_prompt(
-                company_name,
-                start_date=start_date,
-                end_date=end_date,
-                output_language=output_language,
-                items=chunk,
-            )
-            chunk_output = provider.generate_text(prompt=chunk_prompt)
-            chunk_results.append(_parse_json_object(chunk_output) or {})
-        merge_prompt = _build_company_story_warmup_consolidation_prompt(
-            company_name,
-            start_date=start_date,
-            end_date=end_date,
-            output_language=output_language,
-            chunk_results=chunk_results,
-        )
-        raw_output = provider.generate_text(prompt=merge_prompt)
-        payload = _parse_json_object(raw_output) or {}
-    grouped = _normalize_story_warmup_groups(payload)
-    combined = grouped["ongoing_stories"] + grouped["finished_stories"]
+    raw_output = provider.generate_text(prompt=prompt)
+    payload = _parse_json_object(raw_output) or {}
+    combined = [
+        item
+        for item in (_normalize_story_record(row) for row in (payload.get("stories") if isinstance(payload.get("stories"), list) else []))
+        if item
+    ]
     _persist_story_refresh(
         company_name=company_name,
         as_of_date=end_date,
@@ -3938,15 +4221,15 @@ def _generate_company_story_warmup_story_map(
         input_payload={
             "warmup_window_start": start_date.isoformat(),
             "warmup_window_end": end_date.isoformat(),
-            "item_count": len(items),
-            "items": items,
+            "cluster_count": len(items),
+            "clusters": items,
         },
         raw_output=json.dumps(payload, ensure_ascii=False),
         stories=combined,
     )
     return {
-        "ongoing_story_count": len(grouped["ongoing_stories"]),
-        "finished_story_count": len(grouped["finished_stories"]),
+        "ongoing_story_count": len([s for s in combined if str(s.get("story_status") or "").lower() not in {"finished", "resolved", "closed"}]),
+        "finished_story_count": len([s for s in combined if str(s.get("story_status") or "").lower() in {"finished", "resolved", "closed"}]),
         "raw_fetched_count": len(items),
         "raw_stored_count": len(items),
         "filtered_kept_count": len(items),
@@ -4050,21 +4333,213 @@ def _build_company_story_incremental_news_items(
     return items
 
 
-def _build_story_routing_story_context(existing_stories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    compact: List[Dict[str, Any]] = []
-    for story in existing_stories:
-        compact.append(
+def _build_company_story_context(existing_stories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "story_key": item.get("story_key"),
+            "story_title": item.get("story_title"),
+            "story_summary": item.get("story_summary") or "",
+            "story_status": item.get("story_status") or "ongoing",
+            "importance_rank": item.get("importance_rank") or 999,
+            "priority": item.get("priority") or "normal",
+        }
+        for item in existing_stories
+        if isinstance(item, dict)
+    ]
+
+
+def _build_company_daily_cluster_prompt(
+    company_name: str,
+    *,
+    target_date: date,
+    items: List[Dict[str, Any]],
+    output_language: str,
+) -> str:
+    items_json = json.dumps(items, ensure_ascii=False, indent=2)
+    language_line = _build_output_language_line(output_language)
+    return (
+        f"Cluster the company news for {company_name} on {target_date.isoformat()} into a small set of distinct daily company narratives.\n"
+        "Goal:\n"
+        f"- Produce {COMPANY_DAILY_CLUSTER_MIN} to {COMPANY_DAILY_CLUSTER_MAX} meaningful clusters when possible.\n"
+        "- Group duplicate or overlapping coverage into one cluster.\n"
+        "- Each cluster should have a short title and a compact summary.\n"
+        "- Return JSON only.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "clusters": [\n'
+        "    {\n"
+        '      "cluster_key": "short-stable-key",\n'
+        '      "cluster_title": "short title",\n'
+        '      "cluster_summary": "one compact summary paragraph",\n'
+        '      "source_news": [{"news_id": 123, "headline": "...", "url": "...", "datetime_text": "..."}]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        f"News items JSON:\n{items_json}\n"
+    )
+
+
+def _normalize_company_cluster_rows(
+    *,
+    company_name: str,
+    target_date: date,
+    payload: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    rows = payload.get("clusters")
+    if not isinstance(rows, list):
+        rows = []
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(rows):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("cluster_title") or "").strip()
+        summary = str(item.get("cluster_summary") or "").strip()
+        if not title:
+            continue
+        cluster_key = _normalize_story_key(item.get("cluster_key"), fallback_title=title, fallback_index=index)
+        if cluster_key in seen:
+            continue
+        seen.add(cluster_key)
+        source_news = item.get("source_news") if isinstance(item.get("source_news"), list) else []
+        normalized.append(
             {
-                "story_key": story.get("story_key"),
-                "story_title": story.get("story_title"),
-                "story_status": story.get("story_status"),
-                "importance_rank": story.get("importance_rank"),
-                "past": story.get("happened_text") or "",
-                "now": story.get("happening_text") or "",
-                "next": story.get("next_text") or "",
+                "company_name": company_name,
+                "cluster_date": target_date,
+                "cluster_key": cluster_key,
+                "cluster_title": title,
+                "cluster_summary": summary or title,
+                "source_news": source_news,
             }
         )
-    return compact
+    return normalized
+
+
+def _replace_company_daily_clusters(
+    *,
+    company_name: str,
+    target_date: date,
+    clusters: List[Dict[str, Any]],
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    input_payload: Dict[str, Any],
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                DELETE FROM {TBL_COMPANY_NEWS_DAILY_CLUSTER}
+                WHERE company_name = %s
+                  AND cluster_date = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                """,
+                (company_name, target_date, provider_name, prompt_style, output_language),
+            )
+            for item in clusters:
+                cur.execute(
+                    f"""
+                    INSERT INTO {TBL_COMPANY_NEWS_DAILY_CLUSTER}
+                        (company_name, cluster_date, cluster_key, cluster_title, cluster_summary, source_news_json,
+                         provider, model, prompt_style, {COL_OUTPUT_LANGUAGE}, input_payload, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
+                    """,
+                    (
+                        company_name,
+                        item["cluster_date"],
+                        item["cluster_key"],
+                        item["cluster_title"],
+                        item["cluster_summary"],
+                        json.dumps(item.get("source_news") or [], ensure_ascii=False),
+                        provider_name,
+                        model,
+                        prompt_style,
+                        output_language,
+                        json.dumps(input_payload, ensure_ascii=False),
+                    ),
+                )
+        conn.commit()
+
+
+def _build_company_story_cluster_input_items(
+    *,
+    company_name: str,
+    start_date: date,
+    end_date: date,
+    provider_name: str,
+    prompt_style: str,
+    output_language: str,
+) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT cluster_date, cluster_key, cluster_title, cluster_summary, source_news_json
+                FROM {TBL_COMPANY_NEWS_DAILY_CLUSTER}
+                WHERE company_name = %s
+                  AND cluster_date >= %s
+                  AND cluster_date <= %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY cluster_date ASC, updated_at ASC, id ASC
+                """,
+                (company_name, start_date, end_date, provider_name, prompt_style, output_language),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "cluster_date": row["cluster_date"].isoformat(),
+            "cluster_key": row["cluster_key"],
+            "cluster_title": row["cluster_title"],
+            "cluster_summary": row["cluster_summary"] or "",
+            "source_news": row["source_news_json"] or [],
+        }
+        for row in rows
+    ]
+
+
+def _build_company_story_warmup_cluster_prompt(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    output_language: str,
+    items: List[Dict[str, Any]],
+) -> str:
+    language_line = _build_output_language_line(output_language)
+    items_json = json.dumps(items, ensure_ascii=False, indent=2)
+    return (
+        f"You are building the initial company story map for {company_name} from daily clusters between {start_date.isoformat()} and {end_date.isoformat()}.\n"
+        "Find the distinct company storylines across the period.\n"
+        "Each story must include a title, a compact summary, an ordered timeline_items list, and a future_and_impact list.\n"
+        "Timeline items should reflect meaningful developments in chronological order.\n"
+        "Future and impact items should describe plausible forward scenarios with probability and impact.\n"
+        "Return JSON only as an object with key stories.\n"
+        f"{language_line}"
+        "Output JSON schema:\n"
+        "{\n"
+        '  "stories": [\n'
+        "    {\n"
+        '      "story_key": "stable-key",\n'
+        '      "story_title": "short title",\n'
+        '      "story_summary": "compact summary",\n'
+        '      "importance_rank": 1,\n'
+        '      "story_status": "ongoing|finished|resolved|closed",\n'
+        '      "priority": "normal|high",\n'
+        '      "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
+        '      "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
+        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
+        '      "change_log": ["..."]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        f"Daily company clusters JSON:\n{items_json}\n"
+    )
 
 
 def _build_company_story_routing_prompt(
@@ -4074,27 +4549,28 @@ def _build_company_story_routing_prompt(
     prompt_style: str,
     output_language: str,
     existing_stories: List[Dict[str, Any]],
-    news_items: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
 ) -> str:
     language_line = _build_output_language_line(output_language)
     payload_json = json.dumps(
         {
-            "existing_stories": _build_story_routing_story_context(existing_stories),
-            "daily_news": news_items,
+            "existing_stories": _build_company_story_context(existing_stories),
+            "daily_clusters": clusters,
         },
         ensure_ascii=False,
         indent=2,
     )
     return (
-        f"You are routing daily company news into the live story map for {company_name} as of {as_of_date.isoformat()}.\n"
+        f"You are routing daily company clusters into the live story map for {company_name} as of {as_of_date.isoformat()}.\n"
         "Goal:\n"
-        "- Assign each news item to exactly one outcome.\n"
-        "- Prefer an existing story if the item clearly belongs there.\n"
-        "- Create a new story only if the item introduces a distinct new storyline.\n"
-        "- Ignore only if the item is not related or duplicate.\n"
+        "- Assign each cluster to exactly one outcome.\n"
+        "- Prefer an existing story if the cluster clearly belongs there.\n"
+        "- Create a new story only if the cluster introduces a distinct new storyline.\n"
+        "- Ignore only if the cluster is duplicate or not materially useful.\n"
         "Rules:\n"
-        "- One news item can belong to only one story bucket.\n"
-        "- Do not assign the same news item to multiple stories.\n"
+        "- One cluster can belong to only one story bucket.\n"
+        "- Do not assign the same cluster to multiple stories.\n"
+        "- Use story title, story summary, and priority as the routing context.\n"
         "- If the match is ambiguous, choose the best-fit story and keep story boundaries clean.\n"
         "- Return JSON only.\n"
         f"{language_line}"
@@ -4102,7 +4578,7 @@ def _build_company_story_routing_prompt(
         "{\n"
         '  "decisions": [\n'
         "    {\n"
-        '      "news_id": 123,\n'
+        '      "cluster_key": "cluster-key",\n'
         '      "action": "existing_story|new_story|ignore",\n'
         '      "story_key": "existing_story_key",\n'
         '      "new_story_title": "title only when action=new_story",\n'
@@ -4117,7 +4593,7 @@ def _build_company_story_routing_prompt(
 def _normalize_story_routing_result(
     *,
     existing_stories: List[Dict[str, Any]],
-    news_items: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     existing_by_key = {
@@ -4125,15 +4601,15 @@ def _normalize_story_routing_result(
         for item in existing_stories
         if str(item.get("story_key") or "").strip()
     }
-    news_by_id = {
-        int(item.get("news_id") or 0): item
-        for item in news_items
-        if int(item.get("news_id") or 0) > 0
+    clusters_by_key = {
+        str(item.get("cluster_key") or "").strip(): item
+        for item in clusters
+        if str(item.get("cluster_key") or "").strip()
     }
     decisions = payload.get("decisions")
     if not isinstance(decisions, list):
         decisions = []
-    assigned_ids: set[int] = set()
+    assigned_keys: set[str] = set()
     existing_groups: Dict[str, List[Dict[str, Any]]] = {}
     new_groups: Dict[str, Dict[str, Any]] = {}
     ignored_items: List[Dict[str, Any]] = []
@@ -4141,45 +4617,43 @@ def _normalize_story_routing_result(
         if not isinstance(item, dict):
             continue
         try:
-            news_id = int(item.get("news_id") or 0)
+            cluster_key = str(item.get("cluster_key") or "").strip()
         except (TypeError, ValueError):
             continue
-        if news_id <= 0 or news_id in assigned_ids or news_id not in news_by_id:
+        if not cluster_key or cluster_key in assigned_keys or cluster_key not in clusters_by_key:
             continue
-        assigned_ids.add(news_id)
+        assigned_keys.add(cluster_key)
         action = str(item.get("action") or "").strip().lower()
-        news = news_by_id[news_id]
+        cluster = clusters_by_key[cluster_key]
         if action == "existing_story":
             story_key = str(item.get("story_key") or "").strip()
             if story_key and story_key in existing_by_key:
-                existing_groups.setdefault(story_key, []).append(news)
+                existing_groups.setdefault(story_key, []).append(cluster)
                 continue
         if action == "new_story":
-            new_title = _as_text(item.get("new_story_title")) or news.get("news_title") or f"Story {news_id}"
+            new_title = _as_text(item.get("new_story_title")) or cluster.get("cluster_title") or f"Story {cluster_key}"
             new_key = _normalize_story_key("", fallback_title=new_title, fallback_index=len(new_groups))
             bucket = new_groups.setdefault(
-                new_key,
-                {"story_key": new_key, "story_title": new_title, "items": []},
+                new_key, {"story_key": new_key, "story_title": new_title, "clusters": []},
             )
-            bucket["items"].append(news)
+            bucket["clusters"].append(cluster)
             continue
         ignored_items.append(
             {
-                "news_id": news_id,
+                "cluster_key": cluster_key,
                 "reason": _as_text(item.get("reason")) or "ignore",
-                "news_title": news.get("news_title") or "",
+                "cluster_title": cluster.get("cluster_title") or "",
             }
         )
-    for news_id, news in news_by_id.items():
-        if news_id in assigned_ids:
+    for cluster_key, cluster in clusters_by_key.items():
+        if cluster_key in assigned_keys:
             continue
-        new_title = news.get("news_title") or f"Story {news_id}"
+        new_title = cluster.get("cluster_title") or f"Story {cluster_key}"
         new_key = _normalize_story_key("", fallback_title=new_title, fallback_index=len(new_groups))
         bucket = new_groups.setdefault(
-            new_key,
-            {"story_key": new_key, "story_title": new_title, "items": []},
+            new_key, {"story_key": new_key, "story_title": new_title, "clusters": []},
         )
-        bucket["items"].append(news)
+        bucket["clusters"].append(cluster)
     return {
         "existing_groups": existing_groups,
         "new_groups": list(new_groups.values()),
@@ -4193,13 +4667,13 @@ def _build_incremental_existing_story_prompt(
     as_of_date: date,
     output_language: str,
     story: Dict[str, Any],
-    items: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
 ) -> str:
     language_line = _build_output_language_line(output_language)
     payload_json = json.dumps(
         {
-            "existing_story": _build_story_routing_story_context([story])[0],
-            "daily_news": items,
+            "existing_story": _build_company_story_context([story])[0],
+            "daily_clusters": clusters,
         },
         ensure_ascii=False,
         indent=2,
@@ -4207,10 +4681,10 @@ def _build_incremental_existing_story_prompt(
     return (
         f"Update one existing company story for {company_name} as of {as_of_date.isoformat()}.\n"
         "Goal:\n"
-        "- Use the assigned daily news to update this single story only.\n"
+        "- Use the assigned daily clusters to update this single story only.\n"
         "- Preserve continuity and keep the same story_key.\n"
-        "- Move points between Past, Now, and Next when state changes.\n"
-        "- In Next, each bullet should include scenario, impact, probability/confidence, and sentiment.\n"
+        "- Update story_summary, timeline_items, and future_and_impact.\n"
+        "- Timeline items must be ordered chronologically.\n"
         "- Return JSON only.\n"
         f"{language_line}"
         "Output JSON schema:\n"
@@ -4219,11 +4693,11 @@ def _build_incremental_existing_story_prompt(
         '    "story_key": "same_existing_key",\n'
         '    "story_title": "short title",\n'
         '    "importance_rank": 1,\n'
-        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
-        '    "happened_text": "- ...",\n'
-        '    "happening_text": "- ...",\n'
-        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
-        '    "open_questions": ["..."],\n'
+        '    "story_status": "ongoing|stable|rising|fading|resolved|finished|closed",\n'
+        '    "priority": "normal|high",\n'
+        '    "story_summary": "compact summary",\n'
+        '    "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
+        '    "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
         '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
         '    "change_log": ["..."]\n'
         "  }\n"
@@ -4239,14 +4713,14 @@ def _build_incremental_new_story_prompt(
     output_language: str,
     story_key: str,
     story_title: str,
-    items: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
 ) -> str:
     language_line = _build_output_language_line(output_language)
     payload_json = json.dumps(
         {
             "new_story_key": story_key,
             "new_story_title": story_title,
-            "daily_news": items,
+            "daily_clusters": clusters,
         },
         ensure_ascii=False,
         indent=2,
@@ -4254,9 +4728,8 @@ def _build_incremental_new_story_prompt(
     return (
         f"Create one new company story for {company_name} as of {as_of_date.isoformat()}.\n"
         "Goal:\n"
-        "- Build exactly one distinct new story from the assigned daily news.\n"
-        "- Use Past, Now, and Next.\n"
-        "- In Next, each bullet should include scenario, impact, probability/confidence, and sentiment.\n"
+        "- Build exactly one distinct new story from the assigned daily clusters.\n"
+        "- Provide a compact summary, timeline_items, and future_and_impact.\n"
         "- Return JSON only.\n"
         f"{language_line}"
         "Output JSON schema:\n"
@@ -4265,11 +4738,11 @@ def _build_incremental_new_story_prompt(
         '    "story_key": "provided_key",\n'
         '    "story_title": "short title",\n'
         '    "importance_rank": 1,\n'
-        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
-        '    "happened_text": "- ...",\n'
-        '    "happening_text": "- ...",\n'
-        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
-        '    "open_questions": ["..."],\n'
+        '    "story_status": "ongoing|stable|rising|fading|resolved|finished|closed",\n'
+        '    "priority": "normal|high",\n'
+        '    "story_summary": "compact summary",\n'
+        '    "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
+        '    "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
         '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
         '    "change_log": ["..."]\n'
         "  }\n"
@@ -4295,6 +4768,7 @@ def _normalize_incremental_story_item(
             "story_title": story.get("story_title") or fallback_story_title,
             "importance_rank": story.get("importance_rank") or fallback_rank,
             "confidence": story.get("confidence", 0.5),
+            "priority": story.get("priority") or "normal",
         }
     )
     return normalized
@@ -4322,8 +4796,8 @@ def _apply_incremental_story_updates(
     new_story_keys: List[str] = []
 
     for story_key, story in existing_by_key.items():
-        items = routed["existing_groups"].get(story_key) or []
-        if not items:
+        clusters = routed["existing_groups"].get(story_key) or []
+        if not clusters:
             final_stories.append(story)
             continue
         prompt = _build_incremental_existing_story_prompt(
@@ -4331,7 +4805,7 @@ def _apply_incremental_story_updates(
             as_of_date=as_of_date,
             output_language=output_language,
             story=story,
-            items=items,
+            clusters=clusters,
         )
         raw_output = provider.generate_text(prompt=prompt)
         payload = _parse_json_object(raw_output) or {}
@@ -4349,15 +4823,15 @@ def _apply_incremental_story_updates(
                 "story_key": story_key,
                 "prompt": prompt,
                 "raw_output": raw_output,
-                "news_ids": [int(item.get("news_id") or 0) for item in items],
+                "cluster_keys": [str(item.get("cluster_key") or "").strip() for item in clusters],
             }
         )
 
     for index, bucket in enumerate(routed["new_groups"]):
         story_key = str(bucket.get("story_key") or "").strip()
         story_title = str(bucket.get("story_title") or "").strip() or f"Story {index + 1}"
-        items = bucket.get("items") if isinstance(bucket.get("items"), list) else []
-        if not items:
+        clusters = bucket.get("clusters") if isinstance(bucket.get("clusters"), list) else []
+        if not clusters:
             continue
         prompt = _build_incremental_new_story_prompt(
             company_name,
@@ -4365,7 +4839,7 @@ def _apply_incremental_story_updates(
             output_language=output_language,
             story_key=story_key,
             story_title=story_title,
-            items=items,
+            clusters=clusters,
         )
         raw_output = provider.generate_text(prompt=prompt)
         payload = _parse_json_object(raw_output) or {}
@@ -4385,7 +4859,7 @@ def _apply_incremental_story_updates(
                 "story_key": normalized["story_key"],
                 "prompt": prompt,
                 "raw_output": raw_output,
-                "news_ids": [int(item.get("news_id") or 0) for item in items],
+                "cluster_keys": [str(item.get("cluster_key") or "").strip() for item in clusters],
             }
         )
 
@@ -4525,19 +4999,49 @@ def _normalize_story_record(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         confidence = 0.5
     confidence = max(0.0, min(confidence, 1.0))
     story_key = _normalize_story_key(item.get("story_key"), fallback_title=title, fallback_index=rank)
+    timeline_items = item.get("timeline_items") if isinstance(item.get("timeline_items"), list) else []
+    future_and_impact = item.get("future_and_impact") if isinstance(item.get("future_and_impact"), list) else []
+    story_summary = _as_text(item.get("story_summary")) or ""
+    happened_text = _as_text(item.get("happened_text")) or ""
+    happening_text = _as_text(item.get("happening_text")) or ""
+    next_text = _as_text(item.get("next_text")) or ""
+    if not story_summary:
+        story_summary = happening_text or happened_text or next_text
+    if not timeline_items:
+        timeline_items = _story_timeline_from_legacy_fields(
+            happened_text=happened_text,
+            happening_text=happening_text,
+        )
+    if not future_and_impact and next_text:
+        future_and_impact = [{"scenario": next_text, "probability": "", "impact": ""}]
+    priority = _as_text(item.get("priority")) or "normal"
     return {
         "story_key": story_key,
         "story_title": title,
+        "story_summary": story_summary,
         "importance_rank": max(1, rank),
         "story_status": _as_text(item.get("story_status")) or "stable",
+        "priority": priority,
         "confidence": confidence,
-        "happened_text": _as_text(item.get("happened_text")) or "",
-        "happening_text": _as_text(item.get("happening_text")) or "",
-        "next_text": _as_text(item.get("next_text")) or "",
+        "happened_text": happened_text,
+        "happening_text": happening_text,
+        "next_text": next_text,
+        "timeline_items": [entry for entry in timeline_items if isinstance(entry, dict)],
+        "future_and_impact": [entry for entry in future_and_impact if isinstance(entry, dict)],
         "open_questions": item.get("open_questions") if isinstance(item.get("open_questions"), list) else [],
         "evidence": item.get("evidence") if isinstance(item.get("evidence"), list) else [],
         "change_log": item.get("change_log") if isinstance(item.get("change_log"), list) else [],
     }
+
+
+def _story_timeline_from_legacy_fields(*, happened_text: str, happening_text: str) -> List[Dict[str, Any]]:
+    timeline: List[Dict[str, Any]] = []
+    for label, text in (("Past", happened_text), ("Now", happening_text)):
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            continue
+        timeline.append({"date": "", "label": label, "summary": cleaned})
+    return timeline
 
 
 def _row_to_story_state(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -4558,12 +5062,16 @@ def _row_to_story_state(row: Dict[str, Any]) -> Dict[str, Any]:
         "company_name": row["company_name"],
         "story_key": row[COL_STORY_KEY],
         "story_title": row["story_title"] or "",
+        "story_summary": row.get("story_summary") or "",
         "importance_rank": int(row["importance_rank"] or 999),
         "story_status": row["story_status"] or "stable",
+        "priority": row.get("priority") or "normal",
         "confidence": float(row["confidence"] or 0.5),
         "happened_text": row["happened_text"] or "",
         "happening_text": row["happening_text"] or "",
         "next_text": row["next_text"] or "",
+        "timeline_items": _safe_json_list(row.get("timeline_json")),
+        "future_and_impact": _safe_json_list(row.get("future_impact_json")),
         "open_questions": _safe_json_list(row["open_questions_json"]),
         "evidence": _safe_json_list(row["evidence_json"]),
         "change_log": _safe_json_list(row["change_log_json"]),
@@ -5190,6 +5698,17 @@ def _run_company_story_warmup_job_inner(
                 "failed_stage": "",
             },
         )
+        current_day = start_date
+        while current_day <= end_date:
+            refresh_company_daily_clusters(
+                company_name,
+                target_date=current_day,
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+            )
+            current_day += timedelta(days=1)
         logger.info("Story warm-up analyze start: company=%s", company_name)
         try:
             analysis_result = _generate_company_story_warmup_story_map(

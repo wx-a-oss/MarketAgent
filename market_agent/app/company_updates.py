@@ -17,6 +17,7 @@ from market_agent.analysis.company.news import (
     generate_company_daily_report,
     get_company_story_warmup_state,
     list_company_story_states,
+    refresh_company_daily_clusters,
     list_watchlist_companies,
     refresh_company_news_for_range,
     refresh_company_story_states,
@@ -150,6 +151,14 @@ def run_company_daily_update(
         prompt_style=prompt_style,
         output_language=output_language,
     )
+    cluster_stats = refresh_company_daily_clusters(
+        company_name,
+        target_date=run_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
     story_stats = refresh_company_story_states(
         company_name,
         provider_name=provider_name,
@@ -164,6 +173,7 @@ def run_company_daily_update(
         "mode": "daily_update",
         "refresh_stats": refresh_stats,
         "daily_report_stats": daily_report_stats,
+        "cluster_stats": cluster_stats,
         "story_stats": story_stats,
     }
 

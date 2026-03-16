@@ -1098,7 +1098,11 @@ def render_company_detail_page(
                                     ${{!item.is_analyzed ? `<div class="news-summary">
                                         <div><strong>Source:</strong> ${{sourceText || "—"}}</div>
                                         <div>${{sourceLink || ""}}</div>
-                                        <button class="news-action-btn remove-inline" type="button">Remove</button>
+                                        <div class="news-actions">
+                                            <button class="news-action-btn create-story" type="button">Create Story</button>
+                                            <button class="news-action-btn attach-story" type="button">Attach Story</button>
+                                            <button class="news-action-btn remove-inline" type="button">Remove</button>
+                                        </div>
                                     </div>` : `<div class="news-summary">
                                         <div><strong>Summary:</strong> ${{summaryText}}</div>
                                         <div><strong>Sentiment:</strong> ${{sentimentText}}</div>
@@ -1107,6 +1111,8 @@ def render_company_detail_page(
                                         ${{allContentFields.join("")}}
                                         ${{rawResponse ? `<div class="news-field"><strong>OpenAI Response:</strong><pre>${{rawResponse}}</pre></div>` : ""}}
                                         <div class="news-actions">
+                                            <button class="news-action-btn create-story" type="button">Create Story</button>
+                                            <button class="news-action-btn attach-story" type="button">Attach Story</button>
                                             <button class="news-action-btn original" type="button">Original</button>
                                             <button class="news-action-btn delete" type="button">Remove</button>
                                         </div>
@@ -1428,6 +1434,13 @@ def render_company_detail_page(
                         if (!story) {{
                             return '<p class="placeholder">Select a story to see details.</p>';
                         }}
+                        const timelineRows = Array.isArray(story.timeline_items) && story.timeline_items.length
+                            ? `<ul>${{story.timeline_items.map((item) => `<li><strong>${{escapeHtml(String(item.date || item.label || ""))}}</strong>${{item.summary ? ` · ${{escapeHtml(String(item.summary))}}` : ""}}</li>`).join("")}}</ul>`
+                            : "—";
+                        const futureRows = Array.isArray(story.future_and_impact) && story.future_and_impact.length
+                            ? `<ul>${{story.future_and_impact.map((item) => `<li>${{escapeHtml(String(item.scenario || ""))}}${{item.probability ? ` · prob=${{escapeHtml(String(item.probability))}}` : ""}}${{item.impact ? ` · impact=${{escapeHtml(String(item.impact))}}` : ""}}</li>`).join("")}}</ul>`
+                            : "—";
+                        const isClosed = ["finished", "resolved", "closed"].includes(String(story.story_status || "").toLowerCase());
                         const askModelOptions = Array.isArray(stockModelChoices)
                             ? stockModelChoices.map((item) => {{
                                 const provider = String(item.provider || "openai");
@@ -1457,23 +1470,20 @@ def render_company_detail_page(
                         return `
                             <div class="story-detail-section">
                                 <h3>${{escapeHtml(story.story_title || "")}}</h3>
-                                <div class="story-item-meta">status=${{story.story_status}} · updated=${{story.updated_at || ""}}</div>
+                                <div class="story-item-meta">status=${{story.story_status}} · priority=${{story.priority || "normal"}} · updated=${{story.updated_at || ""}}</div>
+                                <div class="story-detail-box">${{escapeHtml(story.story_summary || "—")}}</div>
+                                <div class="story-ask-controls" style="margin-top:0.6rem;">
+                                    <button class="story-merge-btn" id="story-status-toggle-btn" type="button">${{isClosed ? "Reopen Story" : "Close Story"}}</button>
+                                    <button class="story-merge-btn" id="story-priority-btn" type="button">${{String(story.priority || "normal") === "high" ? "Set Normal Priority" : "Set High Priority"}}</button>
+                                </div>
                             </div>
                             <div class="story-detail-section">
-                                <h3>Past</h3>
-                                <div class="story-detail-box">${{toReadableBullets(story.happened_text || "—")}}</div>
+                                <h3>Timeline</h3>
+                                <div class="story-detail-box">${{timelineRows}}</div>
                             </div>
                             <div class="story-detail-section">
-                                <h3>Now</h3>
-                                <div class="story-detail-box">${{toReadableBullets(story.happening_text || "—")}}</div>
-                            </div>
-                            <div class="story-detail-section">
-                                <h3>Next</h3>
-                                <div class="story-detail-box">${{toReadableBullets(story.next_text || "—")}}</div>
-                            </div>
-                            <div class="story-detail-section">
-                                <h3>Open Questions</h3>
-                                <div class="story-detail-box">${{formatStoryArray(story.open_questions || [])}}</div>
+                                <h3>Future and Impact</h3>
+                                <div class="story-detail-box">${{futureRows}}</div>
                             </div>
                             <div class="story-detail-section">
                                 <h3>Evidence</h3>
@@ -1508,10 +1518,6 @@ def render_company_detail_page(
                                         <div class="status-meta" id="stories-meta">Loading stories...</div>
                                     </div>
                                     <div class="status-controls">
-                                        <select class="status-select" id="stories-prompt-style">
-                                            <option value="simple" selected>simple</option>
-                                            <option value="structured">structured</option>
-                                        </select>
                                         <button class="status-btn" id="stories-refresh-btn" type="button">Refresh Stories</button>
                                     </div>
                                 </div>
@@ -1521,7 +1527,6 @@ def render_company_detail_page(
                                 </div>
                             </div>
                         `;
-                        const promptSelect = document.getElementById("stories-prompt-style");
                         const refreshBtn = document.getElementById("stories-refresh-btn");
                         const metaEl = document.getElementById("stories-meta");
                         const listEl = document.getElementById("story-list");
@@ -1695,10 +1700,44 @@ def render_company_detail_page(
                                     }}
                                 }});
                             }});
+                            const statusToggleBtn = document.getElementById("story-status-toggle-btn");
+                            if (statusToggleBtn) {{
+                                statusToggleBtn.addEventListener("click", async () => {{
+                                    const endpoint = isClosed ? "reopen" : "close";
+                                    const response = await fetch(
+                                        `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/${{endpoint}}?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                        {{ method: "POST" }}
+                                    );
+                                    const payload = await response.json();
+                                    if (payload && !payload.error) {{
+                                        const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                        delete storyCache[cacheKey];
+                                        await loadStories(false, true, style, true);
+                                        await renderDetail(storyKey, style);
+                                    }}
+                                }});
+                            }}
+                            const priorityBtn = document.getElementById("story-priority-btn");
+                            if (priorityBtn) {{
+                                priorityBtn.addEventListener("click", async () => {{
+                                    const nextPriority = String(story.priority || "normal") === "high" ? "normal" : "high";
+                                    const response = await fetch(
+                                        `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(nextPriority)}}&prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                        {{ method: "POST" }}
+                                    );
+                                    const payload = await response.json();
+                                    if (payload && !payload.error) {{
+                                        const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                        delete storyCache[cacheKey];
+                                        await loadStories(false, true, style, true);
+                                        await renderDetail(storyKey, style);
+                                    }}
+                                }});
+                            }}
                         }}
 
                         async function loadStories(forceRefresh = false, keepSelection = false, explicitStyle = null, bypassCache = false) {{
-                            const style = explicitStyle || (promptSelect ? promptSelect.value : "simple");
+                            const style = explicitStyle || "simple";
                             if (metaEl) {{
                                 metaEl.textContent = forceRefresh ? "Refreshing stories..." : "Loading stories...";
                             }}
@@ -1748,12 +1787,6 @@ def render_company_detail_page(
                             await renderDetail(activeStoryKey, style);
                         }}
 
-                        if (promptSelect) {{
-                            promptSelect.addEventListener("change", () => {{
-                                activeStoryKey = "";
-                                loadStories(false);
-                            }});
-                        }}
                         if (refreshBtn) {{
                             refreshBtn.addEventListener("click", async () => {{
                                 refreshBtn.disabled = true;
@@ -2316,6 +2349,7 @@ def render_company_detail_page(
                             ? ((group.key || "").startsWith("day-") ? group.key.slice(4) : (group.label || ""))
                             : "";
                         const dailyReport = isDaily ? (group.daily_report || null) : null;
+                        const dailyClusters = isDaily && Array.isArray(group.daily_clusters) ? group.daily_clusters : [];
                         const dailyReportHtml = isDaily
                             ? (dailyReport
                                 ? `<div class="daily-report-card">
@@ -2326,6 +2360,14 @@ def render_company_detail_page(
                                     <div class="daily-report-meta">No daily report yet for this day.</div>
                                    </div>`)
                             : "";
+                        const dailyClusterHtml = isDaily
+                            ? (dailyClusters.length
+                                ? `<div class="daily-report-card">
+                                    <div class="daily-report-meta">Daily clusters · ${{dailyClusters.length}} clusters</div>
+                                    <div class="daily-report-output"><ul>${{dailyClusters.map((cluster) => `<li><strong>${{escapeHtml(cluster.cluster_title || "")}}</strong> · ${{escapeHtml(cluster.cluster_summary || "")}}</li>`).join("")}}</ul></div>
+                                   </div>`
+                                : `<div class="daily-report-card"><div class="daily-report-meta">No daily clusters yet for this day.</div></div>`)
+                            : "";
                         const header = isDaily
                             ? `
                                 <div class="day-group-header">
@@ -2334,10 +2376,6 @@ def render_company_detail_page(
                                         ${{filterableCount > 0
                                         ? `<div class="day-analyze-controls">
                                                 <button class="day-analyze-btn" id="day-analyze-btn" type="button">Daily Report</button>
-                                                <select class="day-analyze-prompt" id="day-analyze-prompt">
-                                                    <option value="structured">structured</option>
-                                                    <option value="simple" selected>simple</option>
-                                                </select>
                                                 <span class="day-analyze-result" id="day-analyze-result"></span>
                                            </div>`
                                         : `<span class="day-note">No items for day actions</span>`}}
@@ -2346,7 +2384,7 @@ def render_company_detail_page(
                                 </div>
                             `
                             : `<h2>${{label}}</h2>`;
-                        contentEl.innerHTML = header + dailyReportHtml + items.map(buildNewsCard).join("");
+                        contentEl.innerHTML = header + dailyReportHtml + dailyClusterHtml + items.map(buildNewsCard).join("");
                         contentEl.querySelectorAll(".news-card").forEach((card) => {{
                             card.addEventListener("click", (event) => {{
                                 if (card.classList.contains("raw")) {{
@@ -2413,8 +2451,59 @@ def render_company_detail_page(
                                 }}
                             }});
                         }});
+                        contentEl.querySelectorAll(".news-action-btn.create-story").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const card = event.target.closest(".news-card");
+                                const newsId = card ? card.dataset.newsId : null;
+                                const item = items.find((entry) => String(entry.id) === String(newsId));
+                                if (!item || !dayDate) return;
+                                const storyTitle = window.prompt("Story title", item.news_title || "");
+                                if (!storyTitle) return;
+                                await fetch(
+                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/create-from-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                    {{
+                                        method: "POST",
+                                        headers: {{ "Content-Type": "application/json" }},
+                                        body: JSON.stringify({{ target_date: dayDate, story_title: storyTitle, news_item: item }}),
+                                    }}
+                                );
+                                delete storyCache[`simple|${{getOutputLanguage()}}`];
+                            }});
+                        }});
+                        contentEl.querySelectorAll(".news-action-btn.attach-story").forEach((button) => {{
+                            button.addEventListener("click", async (event) => {{
+                                event.stopPropagation();
+                                const card = event.target.closest(".news-card");
+                                const newsId = card ? card.dataset.newsId : null;
+                                const item = items.find((entry) => String(entry.id) === String(newsId));
+                                if (!item || !dayDate) return;
+                                const cachedStories = storyCache[`simple|${{getOutputLanguage()}}`];
+                                const storyOptions = cachedStories && Array.isArray(cachedStories.stories) ? cachedStories.stories : [];
+                                if (!storyOptions.length) {{
+                                    await fetchStoryList("simple", false, true);
+                                }}
+                                const latestStories = storyCache[`simple|${{getOutputLanguage()}}`];
+                                const options = latestStories && Array.isArray(latestStories.stories) ? latestStories.stories : [];
+                                const keyHint = window.prompt(
+                                    "Attach to story key",
+                                    options.map((story) => `${{story.story_key}}: ${{story.story_title}}`).join("\\n")
+                                );
+                                if (!keyHint) return;
+                                const targetKey = String(keyHint.split(":")[0] || "").trim();
+                                if (!targetKey) return;
+                                await fetch(
+                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(targetKey)}}/attach-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                    {{
+                                        method: "POST",
+                                        headers: {{ "Content-Type": "application/json" }},
+                                        body: JSON.stringify({{ target_date: dayDate, news_item: item }}),
+                                    }}
+                                );
+                                delete storyCache[`simple|${{getOutputLanguage()}}`];
+                            }});
+                        }});
                         const dayAnalyzeBtn = document.getElementById("day-analyze-btn");
-                        const dayAnalyzePrompt = document.getElementById("day-analyze-prompt");
                         const dayAnalyzeResult = document.getElementById("day-analyze-result");
                         if (dayAnalyzeBtn && dayDate) {{
                             dayAnalyzeBtn.addEventListener("click", async () => {{
@@ -2424,14 +2513,8 @@ def render_company_detail_page(
                                     }}
                                     return;
                                 }}
-                                const analysisPrompt = dayAnalyzePrompt && dayAnalyzePrompt.value
-                                    ? String(dayAnalyzePrompt.value)
-                                    : "simple";
                                 const dayAnalyzeStart = Date.now();
                                 dayAnalyzeBtn.disabled = true;
-                                if (dayAnalyzePrompt) {{
-                                    dayAnalyzePrompt.disabled = true;
-                                }}
                                 dayAnalyzeBtn.textContent = "Generating...";
                                 if (dayAnalyzeResult) {{
                                     dayAnalyzeResult.textContent = "";
@@ -2440,7 +2523,6 @@ def render_company_detail_page(
                                     const url =
                                         `/api/company/${{encodeURIComponent(companyName)}}/news/summarize/day` +
                                         `?date=${{encodeURIComponent(dayDate)}}` +
-                                        `&analysis_prompt=${{encodeURIComponent(analysisPrompt)}}` +
                                         `&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
                                     const response = await fetch(url, {{ method: "POST" }});
                                     const payload = await response.json();
@@ -2465,9 +2547,6 @@ def render_company_detail_page(
                                     }}
                                 }} finally {{
                                     dayAnalyzeBtn.disabled = false;
-                                    if (dayAnalyzePrompt) {{
-                                        dayAnalyzePrompt.disabled = false;
-                                    }}
                                     dayAnalyzeBtn.textContent = "Daily Report";
                                 }}
                             }});

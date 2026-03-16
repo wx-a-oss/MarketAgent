@@ -54,6 +54,7 @@ TBL_COMPANY_STORY_STATE = "company_story_state"
 TBL_COMPANY_STORY_UPDATE = "company_story_update"
 TBL_COMPANY_STORY_QA = "company_story_qa"
 TBL_COMPANY_STORY_WARMUP_STATE = "company_story_warmup_state"
+TBL_COMPANY_NEWS_DAILY_CLUSTER = "company_news_daily_cluster"
 COL_STORY_KEY = "story_key"
 
 # Company stock move analysis storage

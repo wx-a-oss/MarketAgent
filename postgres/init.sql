@@ -131,12 +131,16 @@ CREATE TABLE IF NOT EXISTS company_story_state (
     company_name TEXT NOT NULL,
     story_key TEXT NOT NULL,
     story_title TEXT NOT NULL,
+    story_summary TEXT,
     importance_rank INTEGER NOT NULL DEFAULT 999,
     story_status TEXT NOT NULL DEFAULT 'stable',
+    priority TEXT NOT NULL DEFAULT 'normal',
     confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5,
     happened_text TEXT,
     happening_text TEXT,
     next_text TEXT,
+    timeline_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    future_impact_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     open_questions_json TEXT NOT NULL DEFAULT '[]',
     evidence_json TEXT NOT NULL DEFAULT '[]',
     change_log_json TEXT NOT NULL DEFAULT '[]',
@@ -187,6 +191,29 @@ CREATE INDEX IF NOT EXISTS idx_company_story_update_lookup
         output_language,
         created_at DESC
     );
+
+CREATE TABLE IF NOT EXISTS company_news_daily_cluster (
+    id BIGSERIAL PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    cluster_date DATE NOT NULL,
+    cluster_key TEXT NOT NULL,
+    cluster_title TEXT NOT NULL,
+    cluster_summary TEXT NOT NULL DEFAULT '',
+    source_news_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_style TEXT NOT NULL DEFAULT 'simple',
+    output_language TEXT NOT NULL DEFAULT 'zh-CN',
+    input_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_news_daily_cluster_unique
+    ON company_news_daily_cluster (company_name, cluster_date, cluster_key, provider, prompt_style, output_language);
+
+CREATE INDEX IF NOT EXISTS idx_company_news_daily_cluster_lookup
+    ON company_news_daily_cluster (company_name, cluster_date DESC, provider, prompt_style, output_language, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS company_story_qa (
     id BIGSERIAL PRIMARY KEY,
