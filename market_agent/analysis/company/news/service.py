@@ -5986,6 +5986,14 @@ def _run_company_story_warmup_job_inner(
         )
         current_day = start_date
         while current_day <= end_date:
+            generate_company_daily_report(
+                company_name,
+                target_date=current_day,
+                provider_name=provider_name,
+                model=model,
+                prompt_style=prompt_style,
+                output_language=output_language,
+            )
             refresh_company_daily_clusters(
                 company_name,
                 target_date=current_day,

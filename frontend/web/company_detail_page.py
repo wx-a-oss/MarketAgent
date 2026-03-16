@@ -884,7 +884,7 @@ def render_company_detail_page(
                         const source = String(params.get("source") || "").trim().toLowerCase();
                         const dateRange = String(params.get("date_range") || "").trim();
                         return {{
-                            viewMode: normalizeViewMode(params.get("view")),
+                            viewMode: "stories",
                             groupKey: String(params.get("group") || "").trim() || null,
                             stockRange: normalizeRangeKey(params.get("range")),
                             lang: lang === "en" ? "en" : "zh-CN",

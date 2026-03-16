@@ -484,6 +484,55 @@ def test_run_market_daily_update_reuses_existing_raw(monkeypatch) -> None:
     assert result["story_stats"]["routed_cluster_count"] == 3
 
 
+def test_market_warmup_generates_daily_reports_and_clusters(monkeypatch) -> None:
+    state = {"job_state": "not_started"}
+    report_days = []
+    cluster_days = []
+
+    monkeypatch.setattr(market_updates, "get_market_story_warmup_state", lambda: dict(state))
+
+    def fake_upsert(**kwargs):
+        state.update(kwargs)
+
+    monkeypatch.setattr(market_updates, "_upsert_market_story_warmup_state", fake_upsert)
+    monkeypatch.setattr(
+        market_updates,
+        "_get_market_raw_coverage",
+        lambda start_date, end_date: {
+            "item_count": 4,
+            "covered_day_count": 2,
+            "missing_dates": [],
+        },
+    )
+    monkeypatch.setattr(
+        market_updates,
+        "generate_market_daily_report",
+        lambda **kwargs: report_days.append(kwargs["target_date"]) or {"generated": True, "report_count": 1},
+    )
+    monkeypatch.setattr(
+        market_updates,
+        "refresh_market_daily_clusters",
+        lambda **kwargs: cluster_days.append(kwargs["target_date"]) or {"generated": True, "cluster_count": 2},
+    )
+    monkeypatch.setattr(
+        market_updates,
+        "_generate_market_story_map",
+        lambda **kwargs: {"ongoing_story_count": 1, "finished_story_count": 0, "cluster_count": 4},
+    )
+
+    market_updates.start_market_story_warmup(
+        provider_name="openai",
+        model="gpt-5.4",
+        prompt_style="simple",
+        output_language="zh-CN",
+        warmup_days=2,
+        slice_days=2,
+    )
+
+    assert report_days == [date(2026, 3, 15), date(2026, 3, 16)]
+    assert cluster_days == [date(2026, 3, 15), date(2026, 3, 16)]
+
+
 def test_market_macro_refresh_uses_llm_calendar(monkeypatch) -> None:
     monkeypatch.setattr(
         market_updates,

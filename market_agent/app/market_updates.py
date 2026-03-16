@@ -251,6 +251,13 @@ def start_market_story_warmup(
     current = start_date
     cluster_total = 0
     while current <= target_date:
+        generate_market_daily_report(
+            target_date=current,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
         cluster_stats = refresh_market_daily_clusters(
             target_date=current,
             provider_name=provider_name,
