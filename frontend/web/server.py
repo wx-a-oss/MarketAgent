@@ -46,6 +46,7 @@ from market_agent.app import (
     update_market_story_priority,
     update_market_story_status,
     get_company_story_overview,
+    rebuild_company_warmup,
     run_company_daily_update,
     start_company_daily_update,
     start_company_story_warmup,
@@ -1091,7 +1092,10 @@ async def update_company_ticker(company_name: str, request: Request) -> Dict[str
     ticker = payload.get("ticker")
     if ticker is not None and not isinstance(ticker, str):
         return {"error": "ticker must be a string or null"}
-    profile = set_company_ticker(company_name, ticker)
+    try:
+        profile = set_company_ticker(company_name, ticker)
+    except ValueError as exc:
+        return {"error": str(exc)}
     return {
         "ok": True,
         "company_name": company_name,
@@ -1402,6 +1406,33 @@ async def refresh_company_stories_api(
         start_warmup_if_needed=False,
     )
     return {**overview, **result}
+
+
+@app.post("/api/company/{company_name}/stories/rebuild-warmup")
+async def rebuild_company_story_warmup_api(
+    company_name: str,
+    prompt_style: str = Query("simple"),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    provider_name = provider or "openai"
+    warmup = rebuild_company_warmup(
+        company_name,
+        provider_name=provider_name,
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    overview = get_company_story_overview(
+        company_name,
+        provider_name=provider_name,
+        model=model or DEFAULT_OPENAI_MODEL,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        start_warmup_if_needed=False,
+    )
+    return {**overview, "mode": "warmup_rebuilt", "warmup": warmup}
 
 
 @app.get("/api/company/{company_name}/stories/{story_key}")

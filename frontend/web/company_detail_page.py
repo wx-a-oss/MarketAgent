@@ -1518,6 +1518,7 @@ def render_company_detail_page(
                                         <div class="status-meta" id="stories-meta">Loading stories...</div>
                                     </div>
                                     <div class="status-controls">
+                                        <button class="status-btn" id="stories-rebuild-btn" type="button">Rebuild Warm-up</button>
                                         <button class="status-btn" id="stories-refresh-btn" type="button">Refresh Stories</button>
                                     </div>
                                 </div>
@@ -1528,6 +1529,7 @@ def render_company_detail_page(
                             </div>
                         `;
                         const refreshBtn = document.getElementById("stories-refresh-btn");
+                        const rebuildBtn = document.getElementById("stories-rebuild-btn");
                         const metaEl = document.getElementById("stories-meta");
                         const listEl = document.getElementById("story-list");
                         const detailEl = document.getElementById("story-detail");
@@ -1592,6 +1594,9 @@ def render_company_detail_page(
                                 detailParts.push(`Elapsed ${{elapsed}}s`);
                                 if (warmup.last_error) {{
                                     detailParts.push(`Issue: ${{warmup.last_error}}`);
+                                }}
+                                if (state === "failed" && Number(warmup.raw_fetched_count || 0) <= 0) {{
+                                    detailParts.push("Fix ticker or rebuild warm-up");
                                 }}
                             }}
                             detailParts.push(`${{ongoingStories.length}} ongoing stories`);
@@ -1797,6 +1802,31 @@ def render_company_detail_page(
                                 }} finally {{
                                     refreshBtn.disabled = false;
                                     refreshBtn.textContent = "Refresh Stories";
+                                }}
+                            }});
+                        }}
+
+                        if (rebuildBtn) {{
+                            rebuildBtn.addEventListener("click", async () => {{
+                                rebuildBtn.disabled = true;
+                                rebuildBtn.textContent = "Rebuilding...";
+                                try {{
+                                    activeStoryKey = "";
+                                    const response = await fetch(
+                                        `/api/company/${{encodeURIComponent(companyName)}}/stories/rebuild-warmup?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                        {{ method: "POST" }}
+                                    );
+                                    const payload = await response.json();
+                                    if (payload && !payload.error) {{
+                                        const cacheKey = `simple|${{getOutputLanguage()}}`;
+                                        delete storyCache[cacheKey];
+                                        await loadStories(false, true, "simple", true);
+                                    }} else if (metaEl) {{
+                                        metaEl.textContent = `Error: ${{(payload && payload.error) || "Failed to rebuild warm-up."}}`;
+                                    }}
+                                }} finally {{
+                                    rebuildBtn.disabled = false;
+                                    rebuildBtn.textContent = "Rebuild Warm-up";
                                 }}
                             }});
                         }}

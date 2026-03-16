@@ -202,6 +202,42 @@ def get_company_story_warmup_state(
     return _row_to_story_warmup_state(row)
 
 
+def is_company_story_warmup_invalid(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> bool:
+    state = get_company_story_warmup_state(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    profile = get_company_profile(company_name)
+    ticker = ""
+    if profile:
+        ticker = str(profile.get("ticker") or profile.get("symbol") or "").strip()
+    if not ticker:
+        return True
+    job_state = str(state.get("job_state") or "").strip().lower()
+    if job_state == "failed":
+        failed_stage = str(state.get("failed_stage") or "").strip().lower()
+        if failed_stage == "fetching_raw":
+            return True
+        if int(state.get("raw_fetched_count") or 0) <= 0:
+            return True
+        if "ticker" in str(state.get("last_error") or "").lower():
+            return True
+        return False
+    if job_state in {"not_started", ""}:
+        return True
+    if job_state == "completed" and int(state.get("raw_fetched_count") or 0) <= 0:
+        return True
+    return False
+
+
 def ensure_company_story_warmup_started(
     company_name: str,
     *,
@@ -227,7 +263,12 @@ def ensure_company_story_warmup_started(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    if state.get("job_state") == "completed":
+    if state.get("job_state") == "completed" and not is_company_story_warmup_invalid(
+        normalized,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    ):
         return state
     _ensure_story_warmup_thread(
         normalized,
@@ -243,6 +284,72 @@ def ensure_company_story_warmup_started(
         provider_name=provider_name,
         prompt_style=prompt_style,
         output_language=output_language,
+    )
+
+
+def rebuild_company_story_warmup(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    warmup_days: int = DEFAULT_STORY_WARMUP_DAYS,
+    slice_days: int = DEFAULT_STORY_WARMUP_SLICE_DAYS,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    normalized = _normalize_company_name(company_name)
+    if not normalized:
+        return get_company_story_warmup_state(
+            company_name,
+            provider_name=provider_name,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {TBL_COMPANY_STORY_STATE} WHERE company_name = %s", (normalized,))
+            cur.execute(f"DELETE FROM {TBL_COMPANY_STORY_UPDATE} WHERE company_name = %s", (normalized,))
+            cur.execute(
+                f"""
+                UPDATE {TBL_COMPANY_STORY_WARMUP_STATE}
+                SET job_state = 'not_started',
+                    current_stage = 'idle',
+                    total_slices = 0,
+                    completed_slices = 0,
+                    current_slice_start_date = NULL,
+                    current_slice_end_date = NULL,
+                    last_completed_slice_end_date = NULL,
+                    analysis_started = FALSE,
+                    analysis_completed = FALSE,
+                    raw_fetched_count = 0,
+                    raw_stored_count = 0,
+                    filtered_kept_count = 0,
+                    ongoing_story_count = 0,
+                    finished_story_count = 0,
+                    retry_count = 0,
+                    last_retry_at = NULL,
+                    last_error = '',
+                    failed_stage = '',
+                    started_at = NULL,
+                    completed_at = NULL,
+                    updated_at = NOW()
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                """,
+                (normalized, provider_name, prompt_style, output_language),
+            )
+        conn.commit()
+    return ensure_company_story_warmup_started(
+        normalized,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        warmup_days=warmup_days,
+        slice_days=slice_days,
     )
 
 
@@ -2101,6 +2208,10 @@ def set_company_ticker(company_name: str, ticker: Optional[str]) -> Optional[Dic
     if not company_name:
         return None
     normalized_ticker = _normalize_ticker(ticker)
+    existing = get_company_profile(company_name)
+    existing_ticker = _normalize_ticker(existing.get("ticker")) if existing else None
+    if company_has_fetched_data(company_name) and normalized_ticker != existing_ticker:
+        raise ValueError("ticker cannot be changed after company news or story data has been fetched")
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -2120,6 +2231,28 @@ def set_company_ticker(company_name: str, ticker: Optional[str]) -> Optional[Dic
             )
         conn.commit()
     return get_company_profile(company_name)
+
+
+def company_has_fetched_data(company_name: str) -> bool:
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return False
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            checks = [
+                "SELECT EXISTS(SELECT 1 FROM company_news_raw WHERE company_name = %s LIMIT 1)",
+                f"SELECT EXISTS(SELECT 1 FROM {TBL_COMPANY_NEWS_ANALYZED} WHERE company_name = %s LIMIT 1)",
+                "SELECT EXISTS(SELECT 1 FROM company_news_daily_report WHERE company_name = %s LIMIT 1)",
+                f"SELECT EXISTS(SELECT 1 FROM {TBL_COMPANY_NEWS_DAILY_CLUSTER} WHERE company_name = %s LIMIT 1)",
+                f"SELECT EXISTS(SELECT 1 FROM {TBL_COMPANY_STORY_STATE} WHERE company_name = %s LIMIT 1)",
+                f"SELECT EXISTS(SELECT 1 FROM {TBL_COMPANY_STORY_UPDATE} WHERE company_name = %s LIMIT 1)",
+            ]
+            for sql in checks:
+                cur.execute(sql, (company_name,))
+                row = cur.fetchone()
+                if row and bool(row[0]):
+                    return True
+    return False
 
 
 def ensure_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
@@ -5517,7 +5650,35 @@ def _run_company_story_warmup_job_inner(
 
         if not state.get("analysis_started"):
             finnhub_source = get_news_source("finnhub")
-            ticker = _resolve_company_ticker(company_name) or company_name
+            ticker = _resolve_company_ticker(company_name)
+            if not ticker:
+                _upsert_story_warmup_state(
+                    company_name,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                    updates={
+                        "job_state": "failed",
+                        "current_stage": "fetching_raw",
+                        "window_days": safe_warmup_days,
+                        "slice_days": safe_slice_days,
+                        "window_start_date": start_date,
+                        "window_end_date": end_date,
+                        "total_slices": len(slices),
+                        "completed_slices": completed_slices,
+                        "analysis_started": False,
+                        "analysis_completed": False,
+                        "raw_fetched_count": fetched_total,
+                        "raw_stored_count": raw_stored_count,
+                        "filtered_kept_count": filtered_kept_count,
+                        "last_error": "No valid ticker available for company warm-up.",
+                        "failed_stage": "fetching_raw",
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                logger.warning("Story warm-up aborted: company=%s no valid ticker", company_name)
+                return
             for slice_index, (slice_start, slice_end) in enumerate(slices, start=1):
                 if last_completed_slice_end and slice_end <= last_completed_slice_end:
                     continue
@@ -5671,6 +5832,38 @@ def _run_company_story_warmup_job_inner(
                             pytime.sleep(DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC)
                             continue
                         raise
+
+            if fetched_total <= 0:
+                _upsert_story_warmup_state(
+                    company_name,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                    updates={
+                        "job_state": "failed",
+                        "current_stage": "fetching_raw",
+                        "window_days": safe_warmup_days,
+                        "slice_days": safe_slice_days,
+                        "window_start_date": start_date,
+                        "window_end_date": end_date,
+                        "total_slices": len(slices),
+                        "completed_slices": completed_slices,
+                        "current_slice_start_date": None,
+                        "current_slice_end_date": None,
+                        "last_completed_slice_end_date": last_completed_slice_end,
+                        "analysis_started": False,
+                        "analysis_completed": False,
+                        "raw_fetched_count": fetched_total,
+                        "raw_stored_count": raw_stored_count,
+                        "filtered_kept_count": filtered_kept_count,
+                        "last_error": "Warm-up fetched zero news items. Check the company ticker and rebuild warm-up.",
+                        "failed_stage": "fetching_raw",
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                logger.warning("Story warm-up failed: company=%s fetched zero raw news", company_name)
+                return
 
         _upsert_story_warmup_state(
             company_name,

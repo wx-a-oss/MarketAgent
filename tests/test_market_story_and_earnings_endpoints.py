@@ -197,6 +197,69 @@ def test_calendar_page_renders_calendar_controls() -> None:
     assert "Extend 1 Month" in html
 
 
+def test_update_company_ticker_returns_user_error_when_data_exists(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.set_company_ticker",
+        lambda company_name, ticker: (_ for _ in ()).throw(
+            ValueError("ticker cannot be changed after company news or story data has been fetched")
+        ),
+    )
+    client = TestClient(app)
+    response = client.put("/api/company/Nvidia/ticker", json={"ticker": "NVDA"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert "cannot be changed" in payload["error"]
+
+
+def test_company_story_rebuild_warmup_endpoint_returns_status(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.rebuild_company_warmup",
+        lambda company_name, **kwargs: {"job_state": "running", "current_stage": "fetching_raw"},
+    )
+    monkeypatch.setattr(
+        "frontend.web.server.get_company_story_overview",
+        lambda company_name, **kwargs: {
+            "company": company_name,
+            "warmup": {"job_state": "running", "current_stage": "fetching_raw"},
+            "ongoing_stories": [],
+            "finished_stories": [],
+        },
+    )
+    client = TestClient(app)
+    response = client.post("/api/company/Nvidia/stories/rebuild-warmup")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "warmup_rebuilt"
+    assert payload["warmup"]["job_state"] == "running"
+
+
+def test_company_story_refresh_endpoint_returns_warmup_started(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.start_company_daily_update",
+        lambda company_name, **kwargs: {
+            "company_name": company_name,
+            "target_date": "2026-03-16",
+            "mode": "warmup_started",
+            "warmup": {"job_state": "running", "current_stage": "fetching_raw"},
+        },
+    )
+    monkeypatch.setattr(
+        "frontend.web.server.get_company_story_overview",
+        lambda company_name, **kwargs: {
+            "company": company_name,
+            "warmup": {"job_state": "running", "current_stage": "fetching_raw"},
+            "ongoing_stories": [],
+            "finished_stories": [],
+        },
+    )
+    client = TestClient(app)
+    response = client.post("/api/company/Nvidia/stories/refresh")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "warmup_started"
+    assert payload["warmup"]["job_state"] == "running"
+
+
 def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> None:
     html = render_company_detail_page(
         "Google",
@@ -209,6 +272,7 @@ def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> N
     assert ">Earnings<" in html
     assert "Price Intelligence" in html
     assert "Analyze Position" in html
+    assert "Rebuild Warm-up" in html
 
 
 def test_daily_worker_runs_market_before_companies(monkeypatch) -> None:

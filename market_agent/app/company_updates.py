@@ -17,7 +17,9 @@ from market_agent.analysis.company.news import (
     ensure_company_story_warmup_started,
     generate_company_daily_report,
     get_company_story_warmup_state,
+    is_company_story_warmup_invalid,
     list_company_story_states,
+    rebuild_company_story_warmup,
     refresh_company_daily_clusters,
     list_watchlist_companies,
     refresh_company_news_for_range,
@@ -45,6 +47,28 @@ def start_company_story_warmup(
         add_company_to_watchlist(company_name)
     ensure_company_profile(company_name)
     return ensure_company_story_warmup_started(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        warmup_days=warmup_days,
+        slice_days=slice_days,
+    )
+
+
+def rebuild_company_warmup(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+    warmup_days: int = DEFAULT_STORY_WARMUP_DAYS,
+    slice_days: int = DEFAULT_STORY_WARMUP_SLICE_DAYS,
+) -> Dict[str, Any]:
+    ensure_company_profile(company_name)
+    return rebuild_company_story_warmup(
         company_name,
         provider_name=provider_name,
         model=model,
@@ -125,7 +149,12 @@ def start_company_daily_update(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    if warmup.get("job_state") != "completed":
+    if warmup.get("job_state") != "completed" or is_company_story_warmup_invalid(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    ):
         warmup = start_company_story_warmup(
             company_name,
             provider_name=provider_name,
@@ -227,7 +256,12 @@ def run_company_daily_update(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    if warmup.get("job_state") != "completed":
+    if warmup.get("job_state") != "completed" or is_company_story_warmup_invalid(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    ):
         warmup = start_company_story_warmup(
             company_name,
             provider_name=provider_name,
