@@ -74,13 +74,13 @@ def _openai_chat(
     timeout_sec: int,
     messages: Iterable[Dict[str, str]],
 ) -> str:
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": temperature,
-            "messages": list(messages),
-        }
-    ).encode("utf-8")
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": list(messages),
+    }
+    if _supports_custom_temperature(model):
+        payload["temperature"] = temperature
+    body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         OPENAI_API_URL,
         data=body,
@@ -107,6 +107,13 @@ def _openai_chat(
     if not content:
         raise RuntimeError("OpenAI API returned empty content.")
     return content
+
+
+def _supports_custom_temperature(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("gpt-5"):
+        return False
+    return True
 
 
 def chat_completion(

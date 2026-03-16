@@ -126,13 +126,10 @@ MARKET_INDEX_CONFIG: List[Tuple[str, List[str], str]] = [
     ("Nasdaq 100 ETF", ["QQQ"], "US"),
     ("Dow Jones ETF", ["DIA"], "US"),
     ("Russell 2000 ETF", ["IWM"], "US"),
-]
-
-MARKET_INDEX_YAHOO_RSS_CONFIG: List[Tuple[str, str, str]] = [
-    ("China Index (SSE Composite)", "000001.SS", "CN"),
-    ("Korea Index (KOSPI)", "^KS11", "KR"),
-    ("Japan Index (Nikkei 225)", "^N225", "JP"),
-    ("Europe Index (Euro Stoxx 50)", "^STOXX50E", "EU"),
+    ("China ETF", ["MCHI"], "CN"),
+    ("Korea ETF", ["EWY"], "KR"),
+    ("Japan ETF", ["EWJ"], "JP"),
+    ("Europe ETF", ["FEZ"], "EU"),
 ]
 
 MARKET_BOND_CONFIG: List[Tuple[str, List[str]]] = [
@@ -2015,7 +2012,6 @@ def _fetch_market_bucket(
 
 def _build_market_price_sections_live() -> List[Dict[str, Any]]:
     index_items = _fetch_market_bucket(MARKET_INDEX_CONFIG)
-    index_items.extend(_fetch_yahoo_index_rss_bucket(MARKET_INDEX_YAHOO_RSS_CONFIG))
     return [
         {
             "key": "indexes",

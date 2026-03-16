@@ -52,6 +52,18 @@ def render_market_page(
                         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                         gap: 0.8rem;
                     }}
+                    .market-overview-section {{
+                        margin-top: 1rem;
+                    }}
+                    .market-overview-section:first-child {{
+                        margin-top: 0.2rem;
+                    }}
+                    .market-overview-section-title {{
+                        margin: 0 0 0.65rem;
+                        font-size: 1rem;
+                        font-weight: 700;
+                        color: #111827;
+                    }}
                     .market-item {{
                         border: 1px solid #e5e7eb;
                         border-radius: 0.65rem;
@@ -140,6 +152,37 @@ def render_market_page(
                     .summary-status {{
                         font-size: 0.82rem;
                         color: #6b7280;
+                    }}
+                    .view-toolbar {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 1rem;
+                        flex-wrap: wrap;
+                        margin-bottom: 0.55rem;
+                    }}
+                    .view-toolbar h2,
+                    .view-toolbar h1 {{
+                        margin: 0;
+                    }}
+                    .view-toolbar-left,
+                    .view-toolbar-right {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        flex-wrap: wrap;
+                    }}
+                    .view-status-row {{
+                        color: #6b7280;
+                        font-size: 0.83rem;
+                        margin-bottom: 0.85rem;
+                    }}
+                    .view-select {{
+                        padding: 0.45rem 0.55rem;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.45rem;
+                        background: #ffffff;
+                        font-size: 0.9rem;
                     }}
                     .summary-card {{
                         border: 1px solid #e5e7eb;
@@ -459,6 +502,35 @@ def render_market_page(
                     .market-subview.active {{
                         display: block;
                     }}
+                    .overview-toolbar {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 1rem;
+                        margin-bottom: 0.85rem;
+                        flex-wrap: wrap;
+                    }}
+                    .overview-toolbar h1 {{
+                        margin: 0;
+                    }}
+                    .overview-toolbar-meta {{
+                        display: grid;
+                        gap: 0.25rem;
+                    }}
+                    .overview-toolbar-copy {{
+                        color: #6b7280;
+                        font-size: 0.84rem;
+                    }}
+                    .overview-toolbar-controls {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        flex-wrap: wrap;
+                    }}
+                    .overview-refresh-status {{
+                        color: #6b7280;
+                        font-size: 0.82rem;
+                    }}
                     .story-group {{
                         display: grid;
                         gap: 0.7rem;
@@ -515,18 +587,6 @@ def render_market_page(
             <body class="report">
                 {render_nav("market")}
                 <div class="container">
-                    <section class="card">
-                        <div class="section-title">
-                            <h1>Today's Market</h1>
-                            <div class="controls">
-                                <input id="market-date" class="date-input" type="text" />
-                                <button id="refresh-market" class="refresh-btn" type="button">Refresh</button>
-                                <span id="market-status" class="status"></span>
-                            </div>
-                        </div>
-                        <p class="status">Pick a date to view that day's market news and summaries. Auto refresh runs during U.S. market hours.</p>
-                    </section>
-
                     <div class="subtabs" id="market-view-tabs">
                         <button class="subtab-btn active" type="button" data-market-view="overview">Overview</button>
                         <button class="subtab-btn" type="button" data-market-view="daily-news">Daily News</button>
@@ -534,23 +594,30 @@ def render_market_page(
                     </div>
 
                     <div id="market-overview-view" class="market-subview active">
-                        <div id="market-sections"></div>
+                        <section class="card">
+                            <div class="view-toolbar">
+                                <h2>Market Overview</h2>
+                                <div class="view-toolbar-right">
+                                    <input id="market-date-overview" class="date-input" type="text" />
+                                    <button id="refresh-market" class="refresh-btn" type="button">Refresh Overview</button>
+                                </div>
+                            </div>
+                            <div class="view-status-row">Pick a date to view the market snapshot. Auto refresh runs during U.S. market hours.</div>
+                            <div id="market-status" class="overview-refresh-status"></div>
+                            <div id="market-sections"></div>
+                        </section>
                     </div>
 
                     <div id="market-daily-news-view" class="market-subview">
                         <section class="card">
-                            <div class="section-title">
-                                <h2 style="margin:0;">Daily Market News</h2>
-                                <span id="market-news-count" class="status"></span>
+                            <div class="view-toolbar">
+                                <h2>Daily Market News</h2>
+                                <div class="view-toolbar-right">
+                                    <input id="market-date-daily-news" class="date-input" type="text" />
+                                    <button id="refresh-market-daily-news" class="refresh-btn" type="button">Refresh Daily News</button>
+                                </div>
                             </div>
-                            <div class="summary-controls">
-                                <select id="summary-prompt">
-                                    <option value="simple" selected>simple</option>
-                                    <option value="structured">structured</option>
-                                </select>
-                                <button id="refresh-market-daily-news" class="analyze-btn" type="button">Refresh Daily News</button>
-                                <span id="summary-status" class="summary-status"></span>
-                            </div>
+                            <div id="summary-status" class="view-status-row"></div>
                             <div id="market-daily-clusters"></div>
                             <div id="news-summaries"></div>
                             <div id="market-news" class="news-list"></div>
@@ -558,13 +625,14 @@ def render_market_page(
                     </div>
 
                     <section id="market-stories-view" class="card market-subview">
-                        <div class="section-title">
-                            <h2 style="margin:0;">Market Stories</h2>
-                            <div class="summary-controls" style="margin:0;">
-                                <button id="refresh-market-stories" class="analyze-btn" type="button">Refresh Stories</button>
-                                <span id="market-stories-status" class="summary-status"></span>
+                        <div class="view-toolbar">
+                            <h2>Market Stories</h2>
+                            <div class="view-toolbar-right">
+                                <input id="market-date-stories" class="date-input" type="text" />
+                                <button id="refresh-market-stories" class="refresh-btn" type="button">Refresh Stories</button>
                             </div>
                         </div>
+                        <div id="market-stories-status" class="view-status-row"></div>
                         <div id="market-story-warmup" class="story-warmup"></div>
                         <div id="market-ongoing-stories"></div>
                         <div id="market-finished-stories"></div>
@@ -575,16 +643,17 @@ def render_market_page(
                 <script>
                     const singleNewsModels = {model_choices_json};
                     const refreshBtn = document.getElementById("refresh-market");
-                    const dateInput = document.getElementById("market-date");
+                    const overviewDateInput = document.getElementById("market-date-overview");
+                    const dailyNewsDateInput = document.getElementById("market-date-daily-news");
+                    const storiesDateInput = document.getElementById("market-date-stories");
+                    const dateInputs = [overviewDateInput, dailyNewsDateInput, storiesDateInput].filter(Boolean);
                     const statusEl = document.getElementById("market-status");
                     const marketSectionsEl = document.getElementById("market-sections");
-                    const summaryPrompt = document.getElementById("summary-prompt");
                     const summaryLanguage = document.getElementById("global-language-select");
                     const refreshDailyNewsBtn = document.getElementById("refresh-market-daily-news");
                     const summaryStatus = document.getElementById("summary-status");
                     const summariesEl = document.getElementById("news-summaries");
                     const marketDailyClustersEl = document.getElementById("market-daily-clusters");
-                    const marketNewsCountEl = document.getElementById("market-news-count");
                     const marketViewTabs = document.getElementById("market-view-tabs");
                     const marketStoriesStatus = document.getElementById("market-stories-status");
                     const marketStoryWarmup = document.getElementById("market-story-warmup");
@@ -595,13 +664,12 @@ def render_market_page(
                     let currentMarketView = "overview";
                     let dailyNewsAutoInitializedKey = "";
                     let marketStoriesAutoInitializedKey = "";
+                    const datePickers = [];
                     function readUrlState() {{
                         const params = new URLSearchParams(window.location.search || "");
-                        const prompt = String(params.get("prompt") || "").trim().toLowerCase();
                         const lang = String(params.get("lang") || "").trim();
                         const date = String(params.get("date") || "").trim();
                         return {{
-                            prompt: prompt === "structured" ? "structured" : "simple",
                             lang: lang === "en" ? "en" : "zh-CN",
                             date,
                         }};
@@ -610,10 +678,6 @@ def render_market_page(
                         const url = new URL(window.location.href);
                         const params = url.searchParams;
                         params.set("date", selectedDate);
-                        if (summaryPrompt) {{
-                            const prompt = String(summaryPrompt.value || "simple").toLowerCase();
-                            params.set("prompt", prompt === "structured" ? "structured" : "simple");
-                        }}
                         params.set("lang", getOutputLanguage());
                         window.history.replaceState({{}}, "", `${{url.pathname}}?${{params.toString()}}`);
                     }}
@@ -626,7 +690,6 @@ def render_market_page(
                     }}
                     let selectedDate = initialState.date || localDateText();
                     let reportDateSet = new Set();
-                    let datePicker = null;
 
                     function getOutputLanguage() {{
                         const selected = summaryLanguage && summaryLanguage.value
@@ -673,10 +736,6 @@ def render_market_page(
                                 localStorage.setItem(key, getOutputLanguage());
                                 updateUrlState();
                             }});
-                        }}
-                        if (summaryPrompt) {{
-                            summaryPrompt.value = initialState.prompt || "simple";
-                            summaryPrompt.addEventListener("change", () => updateUrlState());
                         }}
                     }}
 
@@ -730,12 +789,12 @@ def render_market_page(
                     function renderMarketSections(sections) {{
                         if (!marketSectionsEl) return;
                         if (!sections || !sections.length) {{
-                            marketSectionsEl.innerHTML = '<section class="card"><p class="status">No price snapshot available for this date.</p></section>';
+                            marketSectionsEl.innerHTML = '<p class="status">No price snapshot available for this date.</p>';
                             return;
                         }}
                         marketSectionsEl.innerHTML = sections.map((section, idx) => `
-                            <section class="card" data-section-key="${{section.key || idx}}">
-                                <h2>${{section.label || section.key || "Section"}}</h2>
+                            <section class="market-overview-section" data-section-key="${{section.key || idx}}">
+                                <h2 class="market-overview-section-title">${{section.label || section.key || "Section"}}</h2>
                                 <div class="market-grid" id="market-grid-${{idx}}"></div>
                             </section>
                         `).join("");
@@ -1025,7 +1084,6 @@ def render_market_page(
                     }}
 
                     async function loadDailyNews(refresh = false) {{
-                        if (!summaryPrompt) return;
                         if (refreshDailyNewsBtn) {{
                             refreshDailyNewsBtn.disabled = true;
                             refreshDailyNewsBtn.textContent = refresh ? "Refreshing..." : "Refresh Daily News";
@@ -1034,10 +1092,9 @@ def render_market_page(
                             summaryStatus.textContent = refresh ? "Refreshing daily news..." : "Loading...";
                         }}
                         try {{
-                            const promptStyle = summaryPrompt.value || "simple";
                             const params = new URLSearchParams({{
                                 date: selectedDate,
-                                prompt_style: promptStyle,
+                                prompt_style: "simple",
                                 output_language: getOutputLanguage(),
                             }});
                             const endpoint = refresh ? `/api/market/daily-news/refresh?${{params.toString()}}` : `/api/market/daily-news?${{params.toString()}}`;
@@ -1052,11 +1109,10 @@ def render_market_page(
                             renderSummaryHistory(payload.summaries || []);
                             renderDailyClusters(payload.clusters || []);
                             await loadSummaryDates();
-                            if (marketNewsCountEl) {{
+                            if (summaryStatus) {{
                                 const count = Number((payload.raw_news || []).length || 0);
-                                marketNewsCountEl.textContent = `${{count}} item${{count === 1 ? "" : "s"}}`;
+                                summaryStatus.textContent = `${{count}} item${{count === 1 ? "" : "s"}}${{refresh ? " · updated" : ""}}`;
                             }}
-                            if (summaryStatus) summaryStatus.textContent = refresh ? "Updated" : "";
                         }} catch (error) {{
                             if (summaryStatus) summaryStatus.textContent = "Refresh failed";
                             console.error(error);
@@ -1069,10 +1125,8 @@ def render_market_page(
                     }}
 
                     async function ensureDailyNewsLoaded() {{
-                        if (!summaryPrompt) return;
-                        const promptStyle = summaryPrompt.value || "simple";
                         const lang = getOutputLanguage();
-                        const key = `${{selectedDate}}|${{promptStyle}}|${{lang}}`;
+                        const key = `${{selectedDate}}|simple|${{lang}}`;
                         await loadDailyNews(false);
                         const hasStoredDailyNews = Array.isArray(latestNews) && latestNews.length > 0;
                         const hasStoredSummaries = summariesEl && summariesEl.querySelector(".summary-card");
@@ -1159,7 +1213,7 @@ def render_market_page(
                         if (marketStoriesStatus) {{
                             marketStoriesStatus.textContent = refresh ? "Refreshing..." : "Loading...";
                         }}
-                        const prompt = summaryPrompt ? String(summaryPrompt.value || "simple") : "simple";
+                        const prompt = "simple";
                         const lang = getOutputLanguage();
                         const endpoint = refresh
                             ? `/api/market/stories/refresh?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}&date=${{encodeURIComponent(selectedDate)}}`
@@ -1203,7 +1257,7 @@ def render_market_page(
                     }}
 
                     async function ensureMarketStoriesLoaded() {{
-                        const prompt = summaryPrompt ? String(summaryPrompt.value || "simple") : "simple";
+                        const prompt = "simple";
                         const lang = getOutputLanguage();
                         const key = `${{selectedDate}}|${{prompt}}|${{lang}}`;
                         await loadMarketStories(false);
@@ -1256,9 +1310,11 @@ def render_market_page(
                             const payload = await response.json();
                             const rows = payload.dates || [];
                             reportDateSet = new Set(rows.map((row) => String(row.date || "")));
-                            if (datePicker) {{
-                                datePicker.redraw();
-                            }}
+                            datePickers.forEach((picker) => {{
+                                if (picker && typeof picker.redraw === "function") {{
+                                    picker.redraw();
+                                }}
+                            }});
                         }} catch (_error) {{
                             reportDateSet = new Set();
                         }}
@@ -1266,6 +1322,14 @@ def render_market_page(
 
                     async function onDateChanged(nextDate) {{
                         selectedDate = String(nextDate || selectedDate);
+                        dateInputs.forEach((input) => {{
+                            if (input) input.value = selectedDate;
+                        }});
+                        datePickers.forEach((picker) => {{
+                            if (picker && typeof picker.setDate === "function") {{
+                                picker.setDate(selectedDate, false);
+                            }}
+                        }});
                         updateUrlState();
                         await refreshMarket();
                         if (currentMarketView === "daily-news") {{
@@ -1299,22 +1363,25 @@ def render_market_page(
                     }}
                     initOutputLanguage();
                     refreshBtn.addEventListener("click", refreshMarket);
-                    if (window.flatpickr && dateInput) {{
-                        datePicker = window.flatpickr(dateInput, {{
-                            dateFormat: "Y-m-d",
-                            defaultDate: selectedDate,
-                            maxDate: "today",
-                            onDayCreate: function(_dObj, _dStr, _fp, dayElem) {{
-                                const dateText = dayElem.dateObj.toISOString().slice(0, 10);
-                                if (reportDateSet.has(dateText)) {{
-                                    dayElem.classList.add("has-report");
-                                }}
-                            }},
-                            onChange: function(selectedDates) {{
-                                if (!selectedDates || !selectedDates.length) return;
-                                const nextDate = selectedDates[0].toISOString().slice(0, 10);
-                                onDateChanged(nextDate);
-                            }},
+                    if (window.flatpickr && dateInputs.length) {{
+                        dateInputs.forEach((input) => {{
+                            const picker = window.flatpickr(input, {{
+                                dateFormat: "Y-m-d",
+                                defaultDate: selectedDate,
+                                maxDate: "today",
+                                onDayCreate: function(_dObj, _dStr, _fp, dayElem) {{
+                                    const dateText = dayElem.dateObj.toISOString().slice(0, 10);
+                                    if (reportDateSet.has(dateText)) {{
+                                        dayElem.classList.add("has-report");
+                                    }}
+                                }},
+                                onChange: function(selectedDates) {{
+                                    if (!selectedDates || !selectedDates.length) return;
+                                    const nextDate = selectedDates[0].toISOString().slice(0, 10);
+                                    onDateChanged(nextDate);
+                                }},
+                            }});
+                            datePickers.push(picker);
                         }});
                     }}
                     Promise.all([loadSummaryDates(), refreshMarket()]).then(async () => {{
