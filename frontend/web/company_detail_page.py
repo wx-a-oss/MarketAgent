@@ -1518,8 +1518,8 @@ def render_company_detail_page(
                                         <div class="status-meta" id="stories-meta">Loading stories...</div>
                                     </div>
                                     <div class="status-controls">
-                                        <button class="status-btn" id="stories-rebuild-btn" type="button">Rebuild Warm-up</button>
-                                        <button class="status-btn" id="stories-refresh-btn" type="button">Refresh Stories</button>
+                                        <button class="status-btn" id="stories-rebuild-btn" type="button" style="display:none;">Rebuild Warm-up</button>
+                                        <button class="status-btn" id="stories-refresh-btn" type="button">Update Stories</button>
                                     </div>
                                 </div>
                                 <div class="stories-wrap">
@@ -1556,6 +1556,10 @@ def render_company_detail_page(
                         function renderWarmupMeta(payload) {{
                             const warmup = payload && payload.warmup ? payload.warmup : null;
                             latestWarmup = warmup;
+                            if (rebuildBtn) {{
+                                const state = String((warmup && warmup.job_state) || "not_started");
+                                rebuildBtn.style.display = state === "failed" ? "" : "none";
+                            }}
                             const ongoingStories = Array.isArray(payload && payload.ongoing_stories) ? payload.ongoing_stories : [];
                             const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
                             const summaryParts = [];
@@ -1795,13 +1799,13 @@ def render_company_detail_page(
                         if (refreshBtn) {{
                             refreshBtn.addEventListener("click", async () => {{
                                 refreshBtn.disabled = true;
-                                refreshBtn.textContent = "Refreshing...";
+                                refreshBtn.textContent = "Updating...";
                                 try {{
                                     activeStoryKey = "";
                                     await loadStories(true);
                                 }} finally {{
                                     refreshBtn.disabled = false;
-                                    refreshBtn.textContent = "Refresh Stories";
+                                    refreshBtn.textContent = "Update Stories";
                                 }}
                             }});
                         }}

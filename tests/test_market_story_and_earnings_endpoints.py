@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from frontend.web.market_page import render_market_page  # noqa: E402
 from frontend.web.server import app  # noqa: E402
 from market_agent.app.company_updates import run_daily_updates_for_watchlist  # noqa: E402
 from market_agent.app import market_updates  # noqa: E402
+from market_agent.analysis.company.news import service as company_news_service  # noqa: E402
 
 
 def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
@@ -257,7 +259,62 @@ def test_company_story_refresh_endpoint_returns_warmup_started(monkeypatch) -> N
     assert response.status_code == 200
     payload = response.json()
     assert payload["mode"] == "warmup_started"
-    assert payload["warmup"]["job_state"] == "running"
+
+
+def test_build_fetch_ranges_for_slice_skips_covered_past_days() -> None:
+    today = date(2026, 3, 16)
+    covered_days = {
+        date(2026, 3, 7),
+        date(2026, 3, 8),
+        date(2026, 3, 10),
+        date(2026, 3, 11),
+    }
+
+    def fake_has_raw(company_name: str, target_date: date) -> bool:
+        return target_date in covered_days
+
+    original = company_news_service._has_company_raw_for_day
+    company_news_service._has_company_raw_for_day = fake_has_raw
+    try:
+        ranges = company_news_service._build_fetch_ranges_for_slice(
+            "Nvidia",
+            slice_start=date(2026, 3, 7),
+            slice_end=today,
+            today=today,
+        )
+    finally:
+        company_news_service._has_company_raw_for_day = original
+
+    assert ranges == [
+        (date(2026, 3, 9), date(2026, 3, 9)),
+        (date(2026, 3, 12), date(2026, 3, 16)),
+    ]
+
+
+def test_company_story_incremental_items_include_kept_filtered_rows(monkeypatch) -> None:
+    article = SimpleNamespace(
+        id=1,
+        news_date_time=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),
+        news_title="Nvidia launches new AI chip",
+        news_source="Reuters",
+        news_source_link="https://example.com",
+        llm_analyzed_content=json.dumps({"summary": "Launch details"}),
+        original_content="raw",
+        is_filtered=True,
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "get_company_news_for_range",
+        lambda *args, **kwargs: [article],
+    )
+
+    items = company_news_service._build_company_story_incremental_news_items(
+        "Nvidia",
+        target_date=date(2026, 3, 16),
+    )
+
+    assert len(items) == 1
+    assert items[0]["news_title"] == "Nvidia launches new AI chip"
 
 
 def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> None:

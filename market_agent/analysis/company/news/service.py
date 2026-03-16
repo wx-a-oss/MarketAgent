@@ -2255,6 +2255,82 @@ def company_has_fetched_data(company_name: str) -> bool:
     return False
 
 
+def _has_company_raw_for_day(company_name: str, target_date: date) -> bool:
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return False
+    start_dt = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(target_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM company_news_raw
+                    WHERE company_name = %s
+                      AND news_date_time >= %s
+                      AND news_date_time < %s
+                    LIMIT 1
+                )
+                """,
+                (company_name, start_dt, end_dt),
+            )
+            row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _count_company_raw_for_range(company_name: str, start_date: date, end_date: date) -> int:
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return 0
+    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM company_news_raw
+                WHERE company_name = %s
+                  AND news_date_time >= %s
+                  AND news_date_time < %s
+                """,
+                (company_name, start_dt, end_dt),
+            )
+            row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _build_fetch_ranges_for_slice(
+    company_name: str,
+    *,
+    slice_start: date,
+    slice_end: date,
+    today: date,
+) -> List[tuple[date, date]]:
+    fetch_days: List[date] = []
+    current = slice_start
+    while current <= slice_end:
+        if current >= today or not _has_company_raw_for_day(company_name, current):
+            fetch_days.append(current)
+        current += timedelta(days=1)
+    if not fetch_days:
+        return []
+    ranges: List[tuple[date, date]] = []
+    range_start = fetch_days[0]
+    prev = fetch_days[0]
+    for day in fetch_days[1:]:
+        if day == prev + timedelta(days=1):
+            prev = day
+            continue
+        ranges.append((range_start, prev))
+        range_start = day
+        prev = day
+    ranges.append((range_start, prev))
+    return ranges
+
+
 def ensure_company_profile(company_name: str) -> Optional[Dict[str, Any]]:
     company_name = _normalize_company_name(company_name)
     existing = get_company_profile(company_name)
@@ -4450,8 +4526,6 @@ def _build_company_story_incremental_news_items(
     )
     items: List[Dict[str, Any]] = []
     for article in sorted(articles, key=lambda item: (item.news_date_time, item.id or 0)):
-        if article.is_filtered:
-            continue
         decoded = _decode_llm_content(article.llm_analyzed_content, article.original_content)
         items.append(
             {
@@ -5650,40 +5724,50 @@ def _run_company_story_warmup_job_inner(
 
         if not state.get("analysis_started"):
             finnhub_source = get_news_source("finnhub")
-            ticker = _resolve_company_ticker(company_name)
-            if not ticker:
-                _upsert_story_warmup_state(
-                    company_name,
-                    provider_name=provider_name,
-                    model=model,
-                    prompt_style=prompt_style,
-                    output_language=output_language,
-                    updates={
-                        "job_state": "failed",
-                        "current_stage": "fetching_raw",
-                        "window_days": safe_warmup_days,
-                        "slice_days": safe_slice_days,
-                        "window_start_date": start_date,
-                        "window_end_date": end_date,
-                        "total_slices": len(slices),
-                        "completed_slices": completed_slices,
-                        "analysis_started": False,
-                        "analysis_completed": False,
-                        "raw_fetched_count": fetched_total,
-                        "raw_stored_count": raw_stored_count,
-                        "filtered_kept_count": filtered_kept_count,
-                        "last_error": "No valid ticker available for company warm-up.",
-                        "failed_stage": "fetching_raw",
-                        "completed_at": datetime.now(timezone.utc),
-                    },
-                )
-                logger.warning("Story warm-up aborted: company=%s no valid ticker", company_name)
-                return
+            ticker: Optional[str] = None
             for slice_index, (slice_start, slice_end) in enumerate(slices, start=1):
                 if last_completed_slice_end and slice_end <= last_completed_slice_end:
                     continue
                 retries = 0
                 while True:
+                    fetch_ranges = _build_fetch_ranges_for_slice(
+                        company_name,
+                        slice_start=slice_start,
+                        slice_end=slice_end,
+                        today=end_date,
+                    )
+                    if fetch_ranges and not ticker:
+                        ticker = _resolve_company_ticker(company_name)
+                    if fetch_ranges and not ticker:
+                        _upsert_story_warmup_state(
+                            company_name,
+                            provider_name=provider_name,
+                            model=model,
+                            prompt_style=prompt_style,
+                            output_language=output_language,
+                            updates={
+                                "job_state": "failed",
+                                "current_stage": "fetching_raw",
+                                "window_days": safe_warmup_days,
+                                "slice_days": safe_slice_days,
+                                "window_start_date": start_date,
+                                "window_end_date": end_date,
+                                "total_slices": len(slices),
+                                "completed_slices": completed_slices,
+                                "current_slice_start_date": slice_start,
+                                "current_slice_end_date": slice_end,
+                                "analysis_started": False,
+                                "analysis_completed": False,
+                                "raw_fetched_count": fetched_total,
+                                "raw_stored_count": raw_stored_count,
+                                "filtered_kept_count": filtered_kept_count,
+                                "last_error": "No valid ticker available for company warm-up.",
+                                "failed_stage": "fetching_raw",
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                        logger.warning("Story warm-up aborted: company=%s no valid ticker", company_name)
+                        return
                     _upsert_story_warmup_state(
                         company_name,
                         provider_name=provider_name,
@@ -5721,24 +5805,33 @@ def _run_company_story_warmup_job_inner(
                         slice_end.isoformat(),
                     )
                     try:
-                        raw_items = finnhub_source.fetch_news(
-                            company_name=ticker,
-                            start_date=slice_start.isoformat(),
-                            end_date=slice_end.isoformat(),
-                        )
-                        fetched_total += len(raw_items)
-                        raw_articles = _news_items_from_provider(
-                            company_name,
-                            _tag_source(raw_items, "finnhub"),
-                            end_date=slice_end,
-                            analyzed=False,
-                        )
-                        _store_articles(
-                            raw_articles,
-                            llm_model=model,
-                            output_language=output_language,
-                        )
-                        raw_stored_count += len(raw_articles)
+                        for fetch_start, fetch_end in fetch_ranges:
+                            logger.info(
+                                "Story warm-up fetch subrange: company=%s slice=%d/%d range=%s..%s",
+                                company_name,
+                                slice_index,
+                                len(slices),
+                                fetch_start.isoformat(),
+                                fetch_end.isoformat(),
+                            )
+                            raw_items = finnhub_source.fetch_news(
+                                company_name=ticker,
+                                start_date=fetch_start.isoformat(),
+                                end_date=fetch_end.isoformat(),
+                            )
+                            fetched_total += len(raw_items)
+                            raw_articles = _news_items_from_provider(
+                                company_name,
+                                _tag_source(raw_items, "finnhub"),
+                                end_date=fetch_end,
+                                analyzed=False,
+                            )
+                            _store_articles(
+                                raw_articles,
+                                llm_model=model,
+                                output_language=output_language,
+                            )
+                            raw_stored_count += len(raw_articles)
                         kept_count = _filter_company_news_range_raw(
                             company_name=company_name,
                             start_date=slice_start,
@@ -5776,12 +5869,13 @@ def _run_company_story_warmup_job_inner(
                             },
                         )
                         logger.info(
-                            "Story warm-up fetch end: company=%s slice=%d/%d fetched=%d kept=%d",
+                            "Story warm-up fetch end: company=%s slice=%d/%d fetched=%d kept=%d reused_raw=%s",
                             company_name,
                             slice_index,
                             len(slices),
-                            len(raw_items),
+                            fetched_total,
                             kept_count,
+                            "yes" if not fetch_ranges else "no",
                         )
                         break
                     except Exception as exc:
@@ -5832,8 +5926,7 @@ def _run_company_story_warmup_job_inner(
                             pytime.sleep(DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC)
                             continue
                         raise
-
-            if fetched_total <= 0:
+            if _count_company_raw_for_range(company_name, start_date, end_date) <= 0:
                 _upsert_story_warmup_state(
                     company_name,
                     provider_name=provider_name,
