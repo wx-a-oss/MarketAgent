@@ -190,11 +190,11 @@ def render_calendar_page() -> str:
                             <div>
                                 <h1 style="margin:0;">Calendar</h1>
                                 <p class="summary-status" style="margin:0.35rem 0 0;">
-                                    Scheduled U.S. macro releases. Each update extends the stored forward calendar by 1 month.
+                                    Scheduled U.S. macro releases. Each refresh rechecks the next 3 months and adds missing future events while keeping past history visible below.
                                 </p>
                             </div>
                             <div class="summary-controls">
-                                <button id="refresh-market-macro" class="analyze-btn" type="button">Extend 1 Month</button>
+                                <button id="refresh-market-macro" class="analyze-btn" type="button">Refresh 3 Months</button>
                                 <span id="market-macro-status" class="summary-status"></span>
                             </div>
                         </div>
@@ -205,7 +205,9 @@ def render_calendar_page() -> str:
                     const summaryLanguage = document.getElementById("global-language-select");
                     const marketMacroEventsEl = document.getElementById("market-macro-events");
                     const marketMacroStatus = document.getElementById("market-macro-status");
+                    const refreshMacroBtn = document.getElementById("refresh-market-macro");
                     let selectedMacroDate = "";
+                    let macroJobStop = null;
 
                     function getOutputLanguage() {{
                         const selected = summaryLanguage && summaryLanguage.value
@@ -234,6 +236,53 @@ def render_calendar_page() -> str:
                         return text.length > 22 ? `${{text.slice(0, 21)}}…` : text;
                     }}
 
+                    function buildJobKey(...parts) {{
+                        return parts.map((item) => String(item || "").trim().toLowerCase()).join("|");
+                    }}
+
+                    function formatJobText(job) {{
+                        if (!job) return "";
+                        const counts = job.final_counts || {{}};
+                        const bits = [String(job.status || "")];
+                        if (job.current_stage) bits.push(String(job.current_stage));
+                        if (job.elapsed_sec) bits.push(`${{Number(job.elapsed_sec || 0).toFixed(1)}}s`);
+                        if (job.input_char_count) bits.push(`prompt=${{job.input_char_count}} chars`);
+                        if (counts.updated) bits.push(`updated=${{counts.updated}}`);
+                        if (counts.event_count) bits.push(`events=${{counts.event_count}}`);
+                        if (job.result_summary) bits.push(String(job.result_summary));
+                        if (job.error_text) bits.push(String(job.error_text));
+                        return bits.filter(Boolean).join(" · ");
+                    }}
+
+                    async function fetchJobByKey(jobKey) {{
+                        const response = await fetch(`/api/jobs/by-key?job_key=${{encodeURIComponent(jobKey)}}&include_finished=true`);
+                        const payload = await response.json();
+                        return payload.job || null;
+                    }}
+
+                    async function fetchJob(jobId) {{
+                        const response = await fetch(`/api/jobs/${{encodeURIComponent(String(jobId))}}`);
+                        const payload = await response.json();
+                        return payload.job || null;
+                    }}
+
+                    function pollJob(jobId, onUpdate, onDone) {{
+                        let stopped = false;
+                        async function tick() {{
+                            if (stopped) return;
+                            const job = await fetchJob(jobId);
+                            if (onUpdate) onUpdate(job);
+                            const running = job && ["queued", "running"].includes(String(job.status || ""));
+                            if (running) {{
+                                window.setTimeout(tick, 2000);
+                                return;
+                            }}
+                            if (onDone) onDone(job);
+                        }}
+                        tick();
+                        return () => {{ stopped = true; }};
+                    }}
+
                     function renderMacroEvents(events) {{
                         if (!marketMacroEventsEl) return;
                         if (!events || !events.length) {{
@@ -251,7 +300,12 @@ def render_calendar_page() -> str:
                         }}
                         const dateKeys = Array.from(eventsByDate.keys()).sort();
                         if (!selectedMacroDate || !eventsByDate.has(selectedMacroDate)) {{
-                            selectedMacroDate = dateKeys[0] || "";
+                            const todayText = new Date().toISOString().slice(0, 10);
+                            const pastDates = dateKeys.filter((item) => item < todayText);
+                            const futureDates = dateKeys.filter((item) => item > todayText);
+                            selectedMacroDate = eventsByDate.has(todayText)
+                                ? todayText
+                                : (pastDates.length ? pastDates[pastDates.length - 1] : (futureDates[0] || dateKeys[0] || ""));
                         }}
                         const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                         const monthStarts = [];
@@ -341,9 +395,6 @@ def render_calendar_page() -> str:
                     }}
 
                     async function loadCalendar(refresh = false) {{
-                        if (marketMacroStatus) {{
-                            marketMacroStatus.textContent = refresh ? "Extending 1 more month..." : "Loading...";
-                        }}
                         const endpoint = refresh
                             ? `/api/market/macro/refresh?output_language=${{encodeURIComponent(getOutputLanguage())}}`
                             : "/api/market/macro";
@@ -351,19 +402,46 @@ def render_calendar_page() -> str:
                         const payload = await response.json();
                         renderMacroEvents(payload.events || []);
                         if (marketMacroStatus) {{
-                            marketMacroStatus.textContent = refresh
-                                ? `${{payload.description || "Extended calendar"}} Added/updated ${{payload.event_count || (payload.events || []).length}} events.`
-                                : "";
+                            marketMacroStatus.textContent = payload.job ? formatJobText(payload.job) : "";
+                        }}
+                        if (payload.job && refreshMacroBtn) {{
+                            const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                            refreshMacroBtn.disabled = running;
+                            refreshMacroBtn.textContent = running ? "Refresh Running..." : "Refresh 3 Months";
+                            if (running) {{
+                                if (macroJobStop) macroJobStop();
+                                macroJobStop = pollJob(payload.job.job_id, (job) => {{
+                                    if (marketMacroStatus) marketMacroStatus.textContent = formatJobText(job);
+                                    const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
+                                    refreshMacroBtn.disabled = !!stillRunning;
+                                    refreshMacroBtn.textContent = stillRunning ? "Refresh Running..." : "Refresh 3 Months";
+                                }}, async () => {{
+                                    await loadCalendar(false);
+                                }});
+                            }}
                         }}
                     }}
-
-                    const refreshMacroBtn = document.getElementById("refresh-market-macro");
                     if (refreshMacroBtn) {{
                         refreshMacroBtn.addEventListener("click", async () => {{
                             await loadCalendar(true);
                         }});
                     }}
-                    loadCalendar(false);
+                    loadCalendar(false).then(async () => {{
+                        const job = await fetchJobByKey(buildJobKey("market_macro", "openai", getOutputLanguage()));
+                        if (job && marketMacroStatus) {{
+                            marketMacroStatus.textContent = formatJobText(job);
+                        }}
+                        if (job && refreshMacroBtn && ["queued", "running"].includes(String(job.status || ""))) {{
+                            refreshMacroBtn.disabled = true;
+                            refreshMacroBtn.textContent = "Extend Running...";
+                            if (macroJobStop) macroJobStop();
+                            macroJobStop = pollJob(job.job_id, (currentJob) => {{
+                                if (marketMacroStatus) marketMacroStatus.textContent = formatJobText(currentJob);
+                            }}, async () => {{
+                                await loadCalendar(false);
+                            }});
+                        }}
+                    }});
                 </script>
             </body>
         </html>

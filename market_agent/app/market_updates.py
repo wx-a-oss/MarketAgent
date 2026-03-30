@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
+from zoneinfo import ZoneInfo
 
 from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
@@ -60,6 +61,7 @@ MARKET_STORY_HEADLINE_MAX_CHARS = 240
 MARKET_STORY_SUMMARY_MAX_CHARS = 800
 
 logger = logging.getLogger("uvicorn.error")
+APP_LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 
 @dataclass
@@ -72,6 +74,10 @@ class MarketNewsItem:
     url: str
     summary: str
     payload: Dict[str, Any]
+
+
+def _current_app_date() -> date:
+    return datetime.now(APP_LOCAL_TZ).date()
 
 
 def get_market_story_overview(
@@ -160,7 +166,7 @@ def start_market_story_warmup(
     if state.get("job_state") == "completed":
         logger.info("Market story warmup skipped: already completed.")
         return state
-    target_date = datetime.now(timezone.utc).date()
+    target_date = _current_app_date()
     start_date = target_date - timedelta(days=max(1, int(warmup_days)) - 1)
     logger.info(
         "Market story warmup started: window=%s..%s provider=%s model=%s prompt=%s language=%s slice_days=%s",
@@ -318,7 +324,7 @@ def run_market_daily_update(
     warmup_days: int = DEFAULT_MARKET_STORY_WARMUP_DAYS,
 ) -> Dict[str, Any]:
     ensure_database_schema()
-    target = target_date or datetime.now(timezone.utc).date()
+    target = target_date or _current_app_date()
     logger.info(
         "Market daily update started: target_date=%s provider=%s model=%s prompt=%s language=%s warmup_days=%s",
         target.isoformat(),
@@ -460,7 +466,7 @@ def list_market_macro_events(
     *,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    limit: int = 40,
+    limit: int = 1000,
 ) -> List[Dict[str, Any]]:
     ensure_database_schema()
     clauses = []
@@ -572,10 +578,10 @@ def refresh_market_macro_events(
     ensure_database_schema()
     if extend_window:
         window_start, window_end = _resolve_macro_extension_window()
-        action = "extend_calendar_by_1_month"
+        action = "refresh_next_3_months"
     else:
         window_start, window_end = _resolve_macro_maintenance_window()
-        action = "maintain_next_1_month"
+        action = "maintain_next_3_months"
     selected = _fetch_macro_calendar_with_llm(
         provider_name=provider_name,
         model=model,
@@ -600,6 +606,8 @@ def refresh_market_macro_events(
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
         "action": action,
+        "input_item_count": len(selected),
+        "output_char_count": 0,
     }
 
 
@@ -630,6 +638,9 @@ def refresh_market_story_states(
             "new_story_count": 0,
             "ongoing_story_count": len([s for s in existing if str(s.get("story_status") or "").lower() not in {"finished", "resolved", "closed"}]),
             "finished_story_count": len([s for s in existing if str(s.get("story_status") or "").lower() in {"finished", "resolved", "closed"}]),
+            "input_item_count": 0,
+            "prompt_char_count": 0,
+            "output_char_count": 0,
         }
     provider = get_news_provider(provider_name, model=model, temperature=0.2, timeout_sec=240)
     routing_prompt = _build_market_story_routing_prompt(
@@ -668,7 +679,89 @@ def refresh_market_story_states(
         "new_story_count": len(applied["new_story_keys"]),
         "ongoing_story_count": len([s for s in applied["stories"] if str(s.get("story_status") or "").lower() not in {"finished", "resolved", "closed"}]),
         "finished_story_count": len([s for s in applied["stories"] if str(s.get("story_status") or "").lower() in {"finished", "resolved", "closed"}]),
+        "input_item_count": len(clusters),
+        "prompt_char_count": len(routing_prompt),
+        "output_char_count": len(json.dumps({"routing": routing_payload, "applied": applied["raw_outputs"]}, ensure_ascii=False)),
     }
+
+
+def refresh_market_story_backlog(
+    *,
+    provider_name: str = DEFAULT_MARKET_PROVIDER,
+    model: str = DEFAULT_MARKET_MODEL,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> Dict[str, Any]:
+    ensure_database_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT DISTINCT cluster_date
+                FROM {TBL_MARKET_NEWS_DAILY_CLUSTER}
+                WHERE provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY cluster_date ASC
+                """,
+                (provider_name, prompt_style, output_language),
+            )
+            cluster_dates = [row["cluster_date"] for row in cur.fetchall() if row["cluster_date"]]
+            cur.execute(
+                f"""
+                SELECT MAX(as_of_date) AS last_applied_date
+                FROM {TBL_MARKET_STORY_UPDATE}
+                WHERE provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                """,
+                (provider_name, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    last_applied = row["last_applied_date"] if row else None
+    backlog_dates = [item for item in cluster_dates if last_applied is None or item > last_applied]
+    if not backlog_dates:
+        return {
+            "generated": False,
+            "no_op": True,
+            "first_backlog_date": last_applied.isoformat() if last_applied else "",
+            "last_backlog_date": last_applied.isoformat() if last_applied else "",
+            "backlog_day_count": 0,
+            "routed_cluster_count": 0,
+            "updated_story_count": 0,
+            "new_story_count": 0,
+            "input_item_count": 0,
+            "prompt_char_count": 0,
+            "output_char_count": 0,
+        }
+    aggregate = {
+        "generated": True,
+        "no_op": False,
+        "first_backlog_date": backlog_dates[0].isoformat(),
+        "last_backlog_date": backlog_dates[-1].isoformat(),
+        "backlog_day_count": len(backlog_dates),
+        "routed_cluster_count": 0,
+        "updated_story_count": 0,
+        "new_story_count": 0,
+        "input_item_count": 0,
+        "prompt_char_count": 0,
+        "output_char_count": 0,
+    }
+    for target_date in backlog_dates:
+        stats = refresh_market_story_states(
+            as_of_date=target_date,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+        aggregate["routed_cluster_count"] += int(stats.get("routed_cluster_count", 0))
+        aggregate["updated_story_count"] += int(stats.get("updated_story_count", 0))
+        aggregate["new_story_count"] += int(stats.get("new_story_count", 0))
+        aggregate["input_item_count"] += int(stats.get("input_item_count", 0))
+        aggregate["prompt_char_count"] += int(stats.get("prompt_char_count", 0))
+        aggregate["output_char_count"] += int(stats.get("output_char_count", 0))
+    return aggregate
 
 
 def generate_market_daily_report(
@@ -681,7 +774,7 @@ def generate_market_daily_report(
 ) -> Dict[str, Any]:
     items = list_market_raw_news(target_date=target_date, limit=250)
     if not items:
-        return {"generated": False, "report_count": 0, "target_date": target_date.isoformat()}
+        return {"generated": False, "report_count": 0, "target_date": target_date.isoformat(), "input_item_count": 0, "prompt_char_count": 0, "output_char_count": 0}
     provider = get_news_provider(provider_name, model=model, temperature=0.2, timeout_sec=180)
     prompt = _build_market_daily_report_prompt(
         target_date=target_date,
@@ -699,7 +792,14 @@ def generate_market_daily_report(
         input_payload={"items": items, "prompt": prompt},
         output_text=output_text,
     )
-    return {"generated": True, "report_count": 1, "target_date": target_date.isoformat()}
+    return {
+        "generated": True,
+        "report_count": 1,
+        "target_date": target_date.isoformat(),
+        "input_item_count": len(items),
+        "prompt_char_count": len(prompt),
+        "output_char_count": len(output_text or ""),
+    }
 
 
 def get_market_daily_news_overview(
@@ -950,7 +1050,7 @@ def refresh_market_daily_clusters(
 ) -> Dict[str, Any]:
     items = list_market_raw_news(target_date=target_date, limit=250)
     if not items:
-        return {"generated": False, "cluster_count": 0, "target_date": target_date.isoformat()}
+        return {"generated": False, "cluster_count": 0, "target_date": target_date.isoformat(), "input_item_count": 0, "prompt_char_count": 0, "output_char_count": 0}
     provider = get_news_provider(provider_name, model=model, temperature=0.2, timeout_sec=180)
     prompt = _build_market_daily_cluster_prompt(
         target_date=target_date,
@@ -968,7 +1068,14 @@ def refresh_market_daily_clusters(
         output_language=output_language,
         input_payload={"items": items, "prompt": prompt},
     )
-    return {"generated": True, "cluster_count": len(clusters), "target_date": target_date.isoformat()}
+    return {
+        "generated": True,
+        "cluster_count": len(clusters),
+        "target_date": target_date.isoformat(),
+        "input_item_count": len(items),
+        "prompt_char_count": len(prompt),
+        "output_char_count": len(json.dumps(payload, ensure_ascii=False)),
+    }
 
 
 def _build_market_daily_cluster_prompt(
@@ -1112,11 +1219,12 @@ def _build_market_story_prompt(*, start_date: date, end_date: date, output_langu
 
 def _build_market_macro_calendar_prompt(*, start_date: date, end_date: date, output_language: str) -> str:
     return (
-        f"Build a U.S. macro and government release calendar from {start_date.isoformat()} through {end_date.isoformat()}.\n"
+        f"Refresh a U.S. macro and government release calendar from {start_date.isoformat()} through {end_date.isoformat()}.\n"
         "Use web search / grounded search to find scheduled market-relevant releases.\n"
         "Include at least CPI, PPI, nonfarm payrolls, unemployment rate, GDP, FOMC/rate decisions, and major Treasury or central-bank policy statements.\n"
         "For the Fed, explicitly include each scheduled FOMC meeting date, the rate decision release, the statement, and Powell press conference when scheduled.\n"
         "Also include retail sales, PMI/ISM, consumer confidence, housing data, and trade balance when scheduled in this window.\n"
+        "This refresh is used repeatedly to fill missing future events in the stored calendar, so completeness matters more than commentary.\n"
         "Focus only on when the release happens and what is being released.\n"
         "Return JSON only as an object with an events array.\n"
         "Each object must contain:\n"
@@ -2050,18 +2158,7 @@ def _upsert_market_macro_event(
                      source_payload, impact_summary, provider, model, {COL_OUTPUT_LANGUAGE}, updated_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, NOW())
                 ON CONFLICT (event_name, event_date_time, country)
-                DO UPDATE SET
-                    actual_value = EXCLUDED.actual_value,
-                    previous_value = EXCLUDED.previous_value,
-                    consensus_value = EXCLUDED.consensus_value,
-                    unit = EXCLUDED.unit,
-                    importance = EXCLUDED.importance,
-                    source_payload = EXCLUDED.source_payload,
-                    impact_summary = EXCLUDED.impact_summary,
-                    provider = EXCLUDED.provider,
-                    model = EXCLUDED.model,
-                    output_language = EXCLUDED.output_language,
-                    updated_at = NOW()
+                DO NOTHING
                 """,
                 (
                     item.get("event_code"),
@@ -2082,7 +2179,7 @@ def _upsert_market_macro_event(
                 ),
             )
         conn.commit()
-    return 1
+    return int(cur.rowcount or 0)
 
 
 def _row_to_market_story_state(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -2146,30 +2243,13 @@ def _row_to_macro_event(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _resolve_macro_extension_window() -> tuple[date, date]:
-    today = datetime.now(timezone.utc).date()
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT MAX({COL_EVENT_DATE_TIME}) AS max_event_dt
-                FROM {TBL_MARKET_MACRO_EVENT}
-                WHERE {COL_EVENT_DATE_TIME} >= %s
-                """,
-                (datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc),),
-            )
-            row = cur.fetchone()
-    max_event_dt = row["max_event_dt"] if row else None
-    if max_event_dt:
-        start = max(max_event_dt.date() + timedelta(days=1), today)
-    else:
-        start = today
-    end = start + timedelta(days=29)
-    return start, end
+    today = _current_app_date()
+    return today, today + timedelta(days=89)
 
 
 def _resolve_macro_maintenance_window() -> tuple[date, date]:
-    today = datetime.now(timezone.utc).date()
-    return today, today + timedelta(days=29)
+    today = _current_app_date()
+    return today, today + timedelta(days=89)
 
 
 def _fetch_market_news_for_day(target_date: date) -> List[MarketNewsItem]:

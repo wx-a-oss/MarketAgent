@@ -719,7 +719,6 @@ def render_market_page(
                         <div class="view-toolbar">
                             <h2>Market Stories</h2>
                             <div class="view-toolbar-right">
-                                <input id="market-date-stories" class="date-input" type="text" />
                                 <button id="refresh-market-stories" class="refresh-btn" type="button">Refresh Stories</button>
                             </div>
                         </div>
@@ -738,8 +737,7 @@ def render_market_page(
                     const refreshBtn = document.getElementById("refresh-market");
                     const overviewDateInput = document.getElementById("market-date-overview");
                     const dailyNewsDateInput = document.getElementById("market-date-daily-news");
-                    const storiesDateInput = document.getElementById("market-date-stories");
-                    const dateInputs = [overviewDateInput, dailyNewsDateInput, storiesDateInput].filter(Boolean);
+                    const dateInputs = [overviewDateInput, dailyNewsDateInput].filter(Boolean);
                     const statusEl = document.getElementById("market-status");
                     const marketSectionsEl = document.getElementById("market-sections");
                     const summaryLanguage = document.getElementById("global-language-select");
@@ -758,6 +756,8 @@ def render_market_page(
                     let currentMarketView = "overview";
                     let dailyNewsAutoInitializedKey = "";
                     let marketStoriesAutoInitializedKey = "";
+                    let dailyNewsJobStop = null;
+                    let marketStoriesJobStop = null;
                     const datePickers = [];
                     function readUrlState() {{
                         const params = new URLSearchParams(window.location.search || "");
@@ -774,6 +774,59 @@ def render_market_page(
                         params.set("date", selectedDate);
                         params.set("lang", getOutputLanguage());
                         window.history.replaceState({{}}, "", `${{url.pathname}}?${{params.toString()}}`);
+                    }}
+                    function buildJobKey(...parts) {{
+                        return parts.map((item) => String(item || "").trim().toLowerCase()).join("|");
+                    }}
+                    function formatJobText(job) {{
+                        if (!job) return "";
+                        const counts = job.final_counts || {{}};
+                        const status = String(job.status || "");
+                        const stage = String(job.current_stage || "");
+                        const prefix = status === "running" || status === "queued"
+                            ? `${{status}}${{stage ? ` · ${{stage}}` : ""}}`
+                            : `${{status || "idle"}}`;
+                        const metrics = [];
+                        if (job.elapsed_sec) metrics.push(`${{Number(job.elapsed_sec || 0).toFixed(1)}}s`);
+                        if (job.input_char_count) metrics.push(`prompt=${{job.input_char_count}} chars`);
+                        if (job.input_item_count) metrics.push(`input=${{job.input_item_count}}`);
+                        if (job.output_char_count) metrics.push(`output=${{job.output_char_count}} chars`);
+                        if (counts.fetched_total) metrics.push(`fetched=${{counts.fetched_total}}`);
+                        if (counts.stored_total) metrics.push(`stored=${{counts.stored_total}}`);
+                        if (counts.cluster_count) metrics.push(`clusters=${{counts.cluster_count}}`);
+                        if (counts.report_count) metrics.push(`reports=${{counts.report_count}}`);
+                        if (counts.backlog_day_count) metrics.push(`days=${{counts.backlog_day_count}}`);
+                        if (counts.updated_story_count || counts.new_story_count) {{
+                            metrics.push(`stories +${{counts.new_story_count || 0}}/${{counts.updated_story_count || 0}} updated`);
+                        }}
+                        const summary = String(job.result_summary || job.error_text || "").trim();
+                        return [prefix, ...metrics, summary].filter(Boolean).join(" · ");
+                    }}
+                    async function fetchJobByKey(jobKey) {{
+                        const response = await fetch(`/api/jobs/by-key?job_key=${{encodeURIComponent(jobKey)}}&include_finished=true`);
+                        const payload = await response.json();
+                        return payload.job || null;
+                    }}
+                    async function fetchJob(jobId) {{
+                        const response = await fetch(`/api/jobs/${{encodeURIComponent(String(jobId))}}`);
+                        const payload = await response.json();
+                        return payload.job || null;
+                    }}
+                    function pollJob(jobId, onUpdate, onDone) {{
+                        let stopped = false;
+                        async function tick() {{
+                            if (stopped) return;
+                            const job = await fetchJob(jobId);
+                            if (onUpdate) onUpdate(job);
+                            const status = String((job && job.status) || "");
+                            if (status === "queued" || status === "running") {{
+                                window.setTimeout(tick, 2000);
+                                return;
+                            }}
+                            if (onDone) onDone(job);
+                        }}
+                        tick();
+                        return () => {{ stopped = true; }};
                     }}
                     const initialState = readUrlState();
                     function localDateText(d = new Date()) {{
@@ -1228,13 +1281,6 @@ def render_market_page(
                     }}
 
                     async function loadDailyNews(refresh = false) {{
-                        if (refreshDailyNewsBtn) {{
-                            refreshDailyNewsBtn.disabled = true;
-                            refreshDailyNewsBtn.textContent = refresh ? "Refreshing..." : "Refresh Daily News";
-                        }}
-                        if (summaryStatus) {{
-                            summaryStatus.textContent = refresh ? "Refreshing daily news..." : "Loading...";
-                        }}
                         try {{
                             const params = new URLSearchParams({{
                                 date: selectedDate,
@@ -1255,16 +1301,29 @@ def render_market_page(
                             await loadSummaryDates();
                             if (summaryStatus) {{
                                 const count = Number((payload.raw_news || []).length || 0);
-                                summaryStatus.textContent = `${{count}} item${{count === 1 ? "" : "s"}}${{refresh ? " · updated" : ""}}`;
+                                const base = `${{count}} item${{count === 1 ? "" : "s"}}`;
+                                summaryStatus.textContent = payload.job ? formatJobText(payload.job) || base : `${{base}}${{refresh ? " · update started" : ""}}`;
+                            }}
+                            if (refresh && payload.job) {{
+                                if (refreshDailyNewsBtn) {{
+                                    refreshDailyNewsBtn.disabled = true;
+                                    refreshDailyNewsBtn.textContent = "Refresh Running...";
+                                }}
+                                if (dailyNewsJobStop) dailyNewsJobStop();
+                                dailyNewsJobStop = pollJob(payload.job.job_id, (job) => {{
+                                    if (summaryStatus) summaryStatus.textContent = formatJobText(job);
+                                    if (refreshDailyNewsBtn) {{
+                                        const running = job && ["queued", "running"].includes(String(job.status || ""));
+                                        refreshDailyNewsBtn.disabled = !!running;
+                                        refreshDailyNewsBtn.textContent = running ? "Refresh Running..." : "Refresh Daily News";
+                                    }}
+                                }}, async () => {{
+                                    await loadDailyNews(false);
+                                }});
                             }}
                         }} catch (error) {{
                             if (summaryStatus) summaryStatus.textContent = "Refresh failed";
                             console.error(error);
-                        }} finally {{
-                            if (refreshDailyNewsBtn) {{
-                                refreshDailyNewsBtn.disabled = false;
-                                refreshDailyNewsBtn.textContent = "Refresh Daily News";
-                            }}
                         }}
                     }}
 
@@ -1272,6 +1331,24 @@ def render_market_page(
                         const lang = getOutputLanguage();
                         const key = `${{selectedDate}}|simple|${{lang}}`;
                         await loadDailyNews(false);
+                        const jobKey = buildJobKey("market_daily_news", selectedDate, "openai", "simple", lang, "false");
+                        const job = await fetchJobByKey(jobKey);
+                        if (job && summaryStatus) {{
+                            summaryStatus.textContent = formatJobText(job) || summaryStatus.textContent;
+                        }}
+                        if (job && refreshDailyNewsBtn) {{
+                            const running = ["queued", "running"].includes(String(job.status || ""));
+                            refreshDailyNewsBtn.disabled = running;
+                            refreshDailyNewsBtn.textContent = running ? "Refresh Running..." : "Refresh Daily News";
+                            if (running) {{
+                                if (dailyNewsJobStop) dailyNewsJobStop();
+                                dailyNewsJobStop = pollJob(job.job_id, (currentJob) => {{
+                                    if (summaryStatus) summaryStatus.textContent = formatJobText(currentJob);
+                                }}, async () => {{
+                                    await loadDailyNews(false);
+                                }});
+                            }}
+                        }}
                         const hasStoredDailyNews = Array.isArray(latestNews) && latestNews.length > 0;
                         const hasStoredSummaries = summariesEl && summariesEl.querySelector(".summary-card");
                         const hasStoredClusters = marketDailyClustersEl && marketDailyClustersEl.querySelector(".story-card");
@@ -1416,7 +1493,7 @@ def render_market_page(
                         const prompt = "simple";
                         const lang = getOutputLanguage();
                         const endpoint = refresh
-                            ? `/api/market/stories/refresh?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}&date=${{encodeURIComponent(selectedDate)}}`
+                            ? `/api/market/stories/refresh?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`
                             : `/api/market/stories?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`;
                         const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
                         const payload = await response.json();
@@ -1478,7 +1555,26 @@ def render_market_page(
                         }}
 
                         bindMarketStoryDetailActions();
-                        if (marketStoriesStatus) marketStoriesStatus.textContent = refresh ? "Updated" : "";
+                        if (marketStoriesStatus) {{
+                            marketStoriesStatus.textContent = payload.job ? formatJobText(payload.job) : (refresh ? "Update started" : "");
+                        }}
+                        const refreshStoriesBtn = document.getElementById("refresh-market-stories");
+                        if (payload.job && refreshStoriesBtn) {{
+                            const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                            refreshStoriesBtn.disabled = running;
+                            refreshStoriesBtn.textContent = running ? "Refresh Running..." : "Refresh Stories";
+                            if (running) {{
+                                if (marketStoriesJobStop) marketStoriesJobStop();
+                                marketStoriesJobStop = pollJob(payload.job.job_id, (job) => {{
+                                    if (marketStoriesStatus) marketStoriesStatus.textContent = formatJobText(job);
+                                    const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
+                                    refreshStoriesBtn.disabled = !!stillRunning;
+                                    refreshStoriesBtn.textContent = stillRunning ? "Refresh Running..." : "Refresh Stories";
+                                }}, async () => {{
+                                    await loadMarketStories(false);
+                                }});
+                            }}
+                        }}
                     }}
 
                     async function ensureMarketStoriesLoaded() {{
@@ -1486,6 +1582,25 @@ def render_market_page(
                         const lang = getOutputLanguage();
                         const key = `${{selectedDate}}|${{prompt}}|${{lang}}`;
                         await loadMarketStories(false);
+                        const jobKey = buildJobKey("market_stories", "openai", prompt, lang);
+                        const job = await fetchJobByKey(jobKey);
+                        const refreshStoriesBtn = document.getElementById("refresh-market-stories");
+                        if (job && marketStoriesStatus) {{
+                            marketStoriesStatus.textContent = formatJobText(job);
+                        }}
+                        if (job && refreshStoriesBtn) {{
+                            const running = ["queued", "running"].includes(String(job.status || ""));
+                            refreshStoriesBtn.disabled = running;
+                            refreshStoriesBtn.textContent = running ? "Refresh Running..." : "Refresh Stories";
+                            if (running) {{
+                                if (marketStoriesJobStop) marketStoriesJobStop();
+                                marketStoriesJobStop = pollJob(job.job_id, (currentJob) => {{
+                                    if (marketStoriesStatus) marketStoriesStatus.textContent = formatJobText(currentJob);
+                                }}, async () => {{
+                                    await loadMarketStories(false);
+                                }});
+                            }}
+                        }}
                         const hasStories = latestStoryOptions && latestStoryOptions.length > 0;
                         if (hasStories) {{
                             marketStoriesAutoInitializedKey = key;

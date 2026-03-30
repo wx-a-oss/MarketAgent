@@ -6,31 +6,40 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
 
 ### 1) Price Intelligence
 - `[partial]` Make Price Intelligence the primary downstream intelligence layer:
-  - ensure subscribed companies automatically accumulate enough daily reports and weekly reports for strong inputs,
+  - ensure subscribed companies automatically accumulate enough daily reports for strong inputs,
   - improve the price-intelligence prompt/output so it consistently explains price position, company state, active narratives, and what to watch next,
-  - tighten the dependency flow from raw news -> daily report -> weekly report -> price intelligence,
+  - tighten the dependency flow from raw news -> daily report -> price intelligence,
   - verify output quality on cloud over multiple scheduled runs before expanding scope.
 
-### 2) Repeated Daily Run Gating
+### 2) Iterative Reasoning Engine
+- `[todo]` Move important LLM analysis flows away from one-shot prompts and toward staged iterative reasoning:
+  - break complex analysis into multiple back-and-forth steps instead of asking for the whole answer in one request,
+  - persist intermediate questions, answers, assumptions, and reasoning checkpoints so the system keeps a clear thinking line,
+  - let later steps consume earlier outputs explicitly, rather than relying on one large undirected context blob,
+  - make the reasoning path intentional and inspectable: what matters, why it matters, what it leads to, and what remains uncertain,
+  - use this first in Price Intelligence, then expand to other deep-analysis modules where one-shot prompting is too shallow,
+  - keep evolving prompts over time from rough draft logic toward stronger multi-step logic instead of treating prompts as static final forms.
+
+### 3) Repeated Daily Run Gating
 - `[todo]` Add incremental update gating for repeated daily runs:
   - allow multiple market/company runs per day without repeated LLM work when inputs did not change,
   - rerun raw fetch for today only, then skip daily report / clustering / story refresh if no new rows arrived,
   - define the safe duplicate policy before adding midday or pre-market worker runs.
 
-### 3) Earnings Report Module
+### 4) Earnings Report Module
 - `[partial]` Build an earnings module:
   - show the last four earnings events for a subscribed company,
   - capture actual vs estimate, guidance/outlook where available, and short earnings impact analysis,
   - make earnings and post-earnings price reaction easy to review on a timeline.
 
-### 4) Government Document and Macro Report Module
+### 5) Government Document and Macro Report Module
 - `[partial]` Add a macro/government module:
   - ingest key releases such as CPI, PPI, payrolls, unemployment, GDP, Fed/FOMC decisions, and policy statements,
   - show recent and upcoming releases in a market calendar view,
   - keep macro/calendar refresh manual-only for now,
   - connect major releases to market relevance and later to market stories.
 
-### 5) Trade System (Later Stage)
+### 6) Trade System (Later Stage)
 - `[todo]` Build a new **Trade** tab (major feature):
   - subscribe to a portfolio of company tickers for decision support,
   - evaluate current price position versus historical ranges and moving averages,
@@ -48,7 +57,7 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
   - make this feed reliable enough to support future fast-decision and trading workflows,
   - use story priority/manual story controls to decide what narratives deserve close tracking.
 
-### 6) Strategy & Plan Board (User Workspace)
+### 7) Strategy & Plan Board (User Workspace)
 - `[todo]` Add a top-level **Plan Board** tab for users to write and track their own trading plans.
 - `[todo]` Support flexible plan formats:
   - vague/idea-stage plans,
