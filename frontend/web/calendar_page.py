@@ -227,13 +227,20 @@ def render_calendar_page() -> str:
                             ["Gross Domestic Product", "GDP"],
                             ["Unemployment Rate", "Unemployment"],
                             ["Retail Sales", "Retail Sales"],
-                            ["Consumer Confidence", "Confidence"],
+                            ["Consumer Confidence", "Consumer Confidence"],
                             ["Trade Balance", "Trade Balance"],
                         ];
                         for (const [needle, label] of replacements) {{
                             if (text.toLowerCase().includes(needle.toLowerCase())) return label;
                         }}
                         return text.length > 22 ? `${{text.slice(0, 21)}}…` : text;
+                    }}
+
+                    function localDateKey(value = new Date()) {{
+                        const year = value.getFullYear();
+                        const month = String(value.getMonth() + 1).padStart(2, "0");
+                        const day = String(value.getDate()).padStart(2, "0");
+                        return `${{year}}-${{month}}-${{day}}`;
                     }}
 
                     function buildJobKey(...parts) {{
@@ -299,13 +306,25 @@ def render_calendar_page() -> str:
                             eventsByDate.get(dateKey).push(item);
                         }}
                         const dateKeys = Array.from(eventsByDate.keys()).sort();
-                        if (!selectedMacroDate || !eventsByDate.has(selectedMacroDate)) {{
-                            const todayText = new Date().toISOString().slice(0, 10);
+                        const firstRenderableDate = dateKeys[0] || "";
+                        const lastRenderableDate = dateKeys[dateKeys.length - 1] || "";
+                        const selectedWithinRange = !!(
+                            selectedMacroDate &&
+                            firstRenderableDate &&
+                            lastRenderableDate &&
+                            selectedMacroDate >= firstRenderableDate &&
+                            selectedMacroDate <= lastRenderableDate
+                        );
+                        if (!selectedWithinRange) {{
+                            const todayText = localDateKey();
                             const pastDates = dateKeys.filter((item) => item < todayText);
                             const futureDates = dateKeys.filter((item) => item > todayText);
-                            selectedMacroDate = eventsByDate.has(todayText)
-                                ? todayText
-                                : (pastDates.length ? pastDates[pastDates.length - 1] : (futureDates[0] || dateKeys[0] || ""));
+                            selectedMacroDate =
+                                (todayText && firstRenderableDate && lastRenderableDate && todayText >= firstRenderableDate && todayText <= lastRenderableDate)
+                                    ? todayText
+                                    : (eventsByDate.has(todayText)
+                                        ? todayText
+                                        : (pastDates.length ? pastDates[pastDates.length - 1] : (futureDates[0] || dateKeys[0] || "")));
                         }}
                         const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                         const monthStarts = [];
