@@ -27,6 +27,7 @@ from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
 from frontend.web.global_page import render_global_page
 from frontend.web.market_page import render_market_page
+from frontend.web.notes_page import render_notes_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
 from market_agent.app import (
@@ -38,6 +39,7 @@ from market_agent.app import (
     list_market_daily_clusters,
     list_company_earnings,
     list_market_macro_events,
+    refresh_market_story_backlog,
     refresh_company_earnings,
     refresh_market_daily_clusters,
     refresh_market_macro_events,
@@ -56,15 +58,19 @@ from market_agent.analysis.company.news import (
     delete_company_news,
     generate_weekly_report,
     generate_company_daily_report,
+    generate_company_price_intelligence_run,
     generate_company_status_snapshot,
     get_company_news,
     list_company_daily_clusters,
     get_company_story_state,
     list_company_story_qa,
+    list_company_price_intelligence_runs,
     list_company_story_updates,
     get_company_daily_report,
     get_company_profile,
+    get_company_price_intelligence_run,
     get_company_status_snapshot,
+    get_company_story_warmup_state,
     get_news_report,
     list_watchlist_company_rows,
     ensure_company_profile,
@@ -78,11 +84,24 @@ from market_agent.analysis.company.news import (
     ask_company_story_question,
     attach_news_to_company_story,
     create_company_story_from_news,
+    create_user_note,
     merge_company_story_qa_answer,
+    invalidate_user_note,
     summarize_company_news_day,
     summarize_company_news_item,
     update_company_story_priority,
     update_company_story_status,
+    update_user_note,
+    list_user_notes,
+    list_user_note_tags,
+)
+from market_agent.app.background_jobs import (
+    JobTracker,
+    create_job,
+    find_latest_job,
+    get_job,
+    mark_interrupted_jobs,
+    run_job_async,
 )
 from market_agent.analysis import analyze_single_stock_sections
 from market_agent.llms.news.registry import list_news_models
@@ -126,6 +145,7 @@ app = FastAPI(
     title="MarketAgent Web Frontend",
     description="Lightweight HTML frontend powered by the shared MarketAgent stock API.",
 )
+mark_interrupted_jobs()
 
 client = StockFrontendClient()
 
@@ -139,6 +159,408 @@ MARKET_INDEX_CONFIG: List[Tuple[str, List[str], str]] = [
     ("Japan ETF", ["EWJ"], "JP"),
     ("Europe ETF", ["FEZ"], "EU"),
 ]
+
+
+def _safe_job(job: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not job:
+        return None
+    return {
+        "job_id": job.get("job_id"),
+        "job_type": job.get("job_type"),
+        "job_key": job.get("job_key"),
+        "status": job.get("status"),
+        "current_stage": job.get("current_stage"),
+        "elapsed_sec": job.get("elapsed_sec"),
+        "result_summary": job.get("result_summary"),
+        "error_text": job.get("error_text"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "updated_at": job.get("updated_at"),
+        "provider": job.get("provider"),
+        "model": job.get("model"),
+        "output_language": job.get("output_language"),
+        "prompt_style": job.get("prompt_style"),
+        "target_entity": job.get("target_entity"),
+        "target_date": job.get("target_date"),
+        "window_start": job.get("window_start"),
+        "window_end": job.get("window_end"),
+        "input_char_count": job.get("input_char_count", 0),
+        "input_item_count": job.get("input_item_count", 0),
+        "output_char_count": job.get("output_char_count", 0),
+        "metrics": job.get("metrics_json") or {},
+        "final_counts": job.get("final_counts") or {},
+        "stage_history": job.get("stage_history") or [],
+    }
+
+
+def _job_key(*parts: Any) -> str:
+    normalized: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        normalized.append(text.lower())
+    return "|".join(normalized)
+
+
+def _start_background_job(
+    *,
+    job_type: str,
+    job_key: str,
+    provider: str = "",
+    model: str = "",
+    output_language: str = "",
+    prompt_style: str = "",
+    target_entity: str = "",
+    target_date: Optional[date] = None,
+    window_start: Optional[date] = None,
+    window_end: Optional[date] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    worker: Any,
+) -> Dict[str, Any]:
+    created = create_job(
+        job_type=job_type,
+        job_key=job_key,
+        provider=provider,
+        model=model,
+        output_language=output_language,
+        prompt_style=prompt_style,
+        target_entity=target_entity,
+        target_date=target_date,
+        window_start=window_start,
+        window_end=window_end,
+        metadata=metadata or {},
+    )
+    job = created.get("job") or {}
+    if created.get("mode") == "started":
+        run_job_async(int(job["job_id"]), worker)
+    return {"mode": created.get("mode"), "job": _safe_job(job)}
+
+
+def _wait_for_company_warmup(
+    tracker: JobTracker,
+    *,
+    company_name: str,
+    provider_name: str,
+    prompt_style: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    last_stage = ""
+    while True:
+        state = get_company_story_warmup_state(
+            company_name,
+            provider_name=provider_name,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+        stage = str(state.get("current_stage") or "idle")
+        job_state = str(state.get("job_state") or "not_started")
+        metrics = {
+            "warmup_state": job_state,
+            "warmup_stage": stage,
+            "raw_fetched_count": int(state.get("raw_fetched_count") or 0),
+            "raw_stored_count": int(state.get("raw_stored_count") or 0),
+            "filtered_kept_count": int(state.get("filtered_kept_count") or 0),
+            "ongoing_story_count": int(state.get("ongoing_story_count") or 0),
+            "finished_story_count": int(state.get("finished_story_count") or 0),
+        }
+        if stage != last_stage:
+            tracker.mark_running(stage or "idle", metrics=metrics)
+            last_stage = stage
+        else:
+            tracker.update(stage=stage or "idle", metrics=metrics, counts=metrics)
+        if job_state in {"completed", "failed", "partial"}:
+            return state
+        pytime.sleep(2.0)
+
+
+def _run_market_daily_news_job(
+    tracker: JobTracker,
+    *,
+    target_date: date,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    force_fetch: bool,
+) -> Dict[str, Any]:
+    current = get_market_daily_news_overview(
+        target_date=target_date,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    today = datetime.now().date()
+    has_existing_raw = bool(current.get("raw_news"))
+    refresh_stats: Dict[str, Any]
+    if target_date < today and has_existing_raw:
+        refresh_stats = {
+            "mode": "reuse_existing_raw_past_date",
+            "fetched_total": 0,
+            "stored_total": 0,
+            "reused_existing_raw": True,
+        }
+    elif force_fetch or not has_existing_raw:
+        tracker.mark_running("fetching_raw", metrics={"target_date": target_date.isoformat()})
+        refresh_stats = market_updates_module.refresh_market_news_for_range(start_date=target_date, end_date=target_date)
+    else:
+        refresh_stats = {
+            "mode": "reuse_existing_raw",
+            "fetched_total": 0,
+            "stored_total": 0,
+            "reused_existing_raw": True,
+        }
+    tracker.mark_running("generating_report")
+    daily_report_stats = generate_market_daily_report(
+        target_date=target_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    tracker.mark_running("building_clusters")
+    cluster_stats = refresh_market_daily_clusters(
+        target_date=target_date,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {
+        "result_summary": f"Daily news updated for {target_date.isoformat()}",
+        "metrics": {
+            "refresh_mode": refresh_stats.get("mode", ""),
+            "target_date": target_date.isoformat(),
+            "provider": provider_name,
+            "model": model,
+        },
+        "counts": {
+            "fetched_total": int(refresh_stats.get("fetched_total", 0) or 0),
+            "stored_total": int(refresh_stats.get("stored_total", 0) or 0),
+            "report_count": int(daily_report_stats.get("report_count", 0) or 0),
+            "cluster_count": int(cluster_stats.get("cluster_count", 0) or 0),
+            "reused_existing_raw": bool(refresh_stats.get("reused_existing_raw", False)),
+        },
+        "input_char_count": int(daily_report_stats.get("prompt_char_count", 0) or 0) + int(cluster_stats.get("prompt_char_count", 0) or 0),
+        "input_item_count": int(daily_report_stats.get("input_item_count", 0) or 0) + int(cluster_stats.get("input_item_count", 0) or 0),
+        "output_char_count": int(daily_report_stats.get("output_char_count", 0) or 0) + int(cluster_stats.get("output_char_count", 0) or 0),
+    }
+
+
+def _run_market_story_backlog_job(
+    tracker: JobTracker,
+    *,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    tracker.mark_running("routing_backlog")
+    stats = refresh_market_story_backlog(
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    if stats.get("no_op"):
+        return {
+            "result_summary": "No newer stored market clusters to route.",
+            "metrics": {"no_op": True},
+            "counts": stats,
+            "input_char_count": int(stats.get("prompt_char_count", 0) or 0),
+            "input_item_count": int(stats.get("input_item_count", 0) or 0),
+            "output_char_count": int(stats.get("output_char_count", 0) or 0),
+        }
+    return {
+        "result_summary": f"Market stories updated through {stats.get('last_backlog_date') or ''}",
+        "metrics": {
+            "first_backlog_date": stats.get("first_backlog_date", ""),
+            "last_backlog_date": stats.get("last_backlog_date", ""),
+        },
+        "counts": stats,
+        "input_char_count": int(stats.get("prompt_char_count", 0) or 0),
+        "input_item_count": int(stats.get("input_item_count", 0) or 0),
+        "output_char_count": int(stats.get("output_char_count", 0) or 0),
+    }
+
+
+def _run_market_macro_refresh_job(
+    tracker: JobTracker,
+    *,
+    provider_name: str,
+    model: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    tracker.mark_running("refreshing_calendar")
+    stats = refresh_market_macro_events(
+        provider_name=provider_name,
+        model=model,
+        output_language=output_language,
+        extend_window=True,
+    )
+    return {
+        "result_summary": "Calendar refreshed for the next 3 months.",
+        "metrics": {
+            "window_start": stats.get("window_start", ""),
+            "window_end": stats.get("window_end", ""),
+        },
+        "counts": {
+            "updated": int(stats.get("updated", 0) or 0),
+            "event_count": int(stats.get("event_count", 0) or 0),
+        },
+        "input_item_count": int(stats.get("input_item_count", 0) or 0),
+        "output_char_count": int(stats.get("output_char_count", 0) or 0),
+    }
+
+
+def _run_company_story_update_job(
+    tracker: JobTracker,
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    window_days: int,
+) -> Dict[str, Any]:
+    tracker.mark_running("running_update")
+    result = run_company_daily_update(
+        company_name,
+        target_date=datetime.now().date(),
+        source_name="finnhub",
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        story_window_days=window_days,
+    )
+    if str(result.get("mode") or "") == "warmup_started":
+        state = _wait_for_company_warmup(
+            tracker,
+            company_name=company_name,
+            provider_name=provider_name,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        )
+        return {
+            "result_summary": f"Company warm-up {state.get('job_state') or 'completed'}.",
+            "metrics": {"mode": "warmup_started"},
+            "counts": {
+                "raw_fetched_count": int(state.get("raw_fetched_count", 0) or 0),
+                "raw_stored_count": int(state.get("raw_stored_count", 0) or 0),
+                "filtered_kept_count": int(state.get("filtered_kept_count", 0) or 0),
+                "ongoing_story_count": int(state.get("ongoing_story_count", 0) or 0),
+                "finished_story_count": int(state.get("finished_story_count", 0) or 0),
+            },
+        }
+    return {
+        "result_summary": f"Stories updated for {company_name}.",
+        "metrics": {"mode": result.get("mode", "")},
+        "counts": {
+            "fetched_total": int((result.get("refresh_stats") or {}).get("fetched_total", 0) or 0),
+            "stored_total": int((result.get("refresh_stats") or {}).get("stored_total", 0) or 0),
+            "report_count": int((result.get("daily_report_stats") or {}).get("report_count", 0) or 0),
+            "cluster_count": int((result.get("cluster_stats") or {}).get("cluster_count", 0) or 0),
+            "updated_story_count": int((result.get("story_stats") or {}).get("updated_story_count", 0) or 0),
+            "new_story_count": int((result.get("story_stats") or {}).get("new_story_count", 0) or 0),
+        },
+    }
+
+
+def _run_company_rebuild_warmup_job(
+    tracker: JobTracker,
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    tracker.mark_running("starting_rebuild")
+    rebuild_company_warmup(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    state = _wait_for_company_warmup(
+        tracker,
+        company_name=company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
+    return {
+        "result_summary": f"Warm-up {state.get('job_state') or 'completed'} for {company_name}.",
+        "counts": {
+            "raw_fetched_count": int(state.get("raw_fetched_count", 0) or 0),
+            "raw_stored_count": int(state.get("raw_stored_count", 0) or 0),
+            "filtered_kept_count": int(state.get("filtered_kept_count", 0) or 0),
+            "ongoing_story_count": int(state.get("ongoing_story_count", 0) or 0),
+            "finished_story_count": int(state.get("finished_story_count", 0) or 0),
+        },
+    }
+
+
+def _run_price_intelligence_job(
+    tracker: JobTracker,
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    tracker.mark_running("building_price_intelligence")
+    stats = generate_company_price_intelligence_run(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        output_language=output_language,
+    )
+    return {
+        "result_summary": f"Price intelligence generated for {company_name}.",
+        "counts": {
+            "daily_report_count": int(stats.get("daily_report_count", 0) or 0),
+            "raw_news_count": int(stats.get("raw_news_count", 0) or 0),
+            "run_id": int(stats.get("run_id", 0) or 0),
+        },
+        "input_char_count": int(stats.get("prompt_char_count", 0) or 0),
+        "input_item_count": int(stats.get("input_item_count", 0) or 0),
+        "output_char_count": int(stats.get("output_char_count", 0) or 0),
+        "metrics": {"elapsed_sec": float(stats.get("elapsed_sec", 0.0) or 0.0)},
+    }
+
+
+def _run_detailed_report_job(
+    tracker: JobTracker,
+    *,
+    company_name: str,
+    provider_name: str,
+    model: str,
+    output_language: str,
+    window_days: int,
+) -> Dict[str, Any]:
+    tracker.mark_running("building_detailed_report")
+    stats = generate_company_status_snapshot(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        prompt_style="simple",
+        output_language=output_language,
+        window_days=window_days,
+        timeout_sec=240,
+    )
+    return {
+        "result_summary": f"Detailed report generated for {company_name}.",
+        "counts": {
+            "daily_report_count": int(stats.get("daily_report_count", 0) or 0),
+            "raw_news_count": int(stats.get("raw_news_count", 0) or 0),
+        },
+        "input_char_count": int(stats.get("prompt_char_count", 0) or 0),
+        "input_item_count": int(stats.get("input_item_count", 0) or 0),
+        "output_char_count": int(stats.get("output_char_count", 0) or 0),
+        "metrics": {"elapsed_sec": float(stats.get("elapsed_sec", 0.0) or 0.0)},
+    }
 
 MARKET_BOND_CONFIG: List[Tuple[str, List[str]]] = [
     # Yield symbols first; ETF proxies as fallback.
@@ -548,6 +970,11 @@ async def company_detail(company_name: str) -> str:
     )
 
 
+@app.get("/notes", response_class=HTMLResponse)
+async def notes_page() -> str:
+    return render_notes_page()
+
+
 @app.get("/api/companies")
 async def list_companies() -> Dict[str, Any]:
     companies = list_watchlist_company_rows()
@@ -555,6 +982,74 @@ async def list_companies() -> Dict[str, Any]:
         "companies": companies,
         "company_names": [item["company_name"] for item in companies],
     }
+
+
+@app.get("/api/notes")
+async def get_notes_api(tag: Optional[str] = Query(None)) -> Dict[str, Any]:
+    return {
+        "notes": list_user_notes(tag=tag),
+        "tag": (tag or "").strip(),
+    }
+
+
+@app.get("/api/notes/tags")
+async def get_note_tags_api() -> Dict[str, Any]:
+    return {"tags": list_user_note_tags()}
+
+
+@app.get("/api/jobs/by-key")
+async def get_job_by_key_api(job_key: str = Query(...), include_finished: bool = Query(True)) -> Dict[str, Any]:
+    job = _safe_job(find_latest_job(job_key=job_key, include_finished=include_finished))
+    return {"job": job}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_api(job_id: int) -> Dict[str, Any]:
+    job = _safe_job(get_job(int(job_id)))
+    if not job:
+        return {"error": "job not found"}
+    return {"job": job}
+
+
+@app.post("/api/notes")
+async def create_note_api(request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    try:
+        note = create_user_note(
+            title=payload.get("title"),
+            body_markdown=payload.get("body"),
+            tags=payload.get("tags"),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"note": note}
+
+
+@app.put("/api/notes/{note_id}")
+async def update_note_api(note_id: int, request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    try:
+        note = update_user_note(
+            int(note_id),
+            title=payload.get("title"),
+            body_markdown=payload.get("body"),
+            tags=payload.get("tags"),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except KeyError:
+        return {"error": "note not found"}
+    return {"note": note}
+
+
+@app.post("/api/notes/{note_id}/invalidate")
+async def invalidate_note_api(note_id: int, request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    try:
+        note = invalidate_user_note(int(note_id), reason=payload.get("reason"))
+    except KeyError:
+        return {"error": "note not found"}
+    return {"note": note}
 
 
 @app.get("/api/market/overview")
@@ -652,46 +1147,35 @@ async def refresh_market_daily_news(
         target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
     except ValueError:
         return {"error": "date must be YYYY-MM-DD"}
-    today = datetime.now().date()
     current = get_market_daily_news_overview(
         target_date=target_date,
         provider_name=provider or "openai",
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    has_existing_raw = bool(current.get("raw_news"))
-    if target_date < today and has_existing_raw:
-        refresh_stats = {
-            "mode": "reuse_existing_raw_past_date",
-            "fetched_total": 0,
-            "stored_total": 0,
-            "skipped_existing_days": 1,
-        }
-    elif force_fetch or not has_existing_raw:
-        refresh_stats = market_updates_module.refresh_market_news_for_range(start_date=target_date, end_date=target_date)
-    else:
-        refresh_stats = {"mode": "reuse_existing_raw", "fetched_total": 0, "stored_total": 0, "skipped_existing_days": 0}
-    daily_report_stats = generate_market_daily_report(
-        target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style,
+    provider_name = provider or "openai"
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    job_key = _job_key("market_daily_news", target_date.isoformat(), provider_name, prompt_style, output_language, str(bool(force_fetch)))
+    started = _start_background_job(
+        job_type="market_daily_news_refresh",
+        job_key=job_key,
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
-    )
-    cluster_stats = refresh_market_daily_clusters(
-        target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
         prompt_style=prompt_style,
-        output_language=output_language,
-    )
-    overview = get_market_daily_news_overview(
         target_date=target_date,
-        provider_name=provider or "openai",
-        prompt_style=prompt_style,
-        output_language=output_language,
+        metadata={"force_fetch": bool(force_fetch)},
+        worker=lambda tracker: _run_market_daily_news_job(
+            tracker,
+            target_date=target_date,
+            provider_name=provider_name,
+            model=selected_model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+            force_fetch=force_fetch,
+        ),
     )
-    return {**overview, "refresh_stats": refresh_stats, "daily_report_stats": daily_report_stats, "cluster_stats": cluster_stats}
+    return {**current, **started}
 
 
 @app.get("/api/market/news/summary-dates")
@@ -880,21 +1364,27 @@ async def refresh_market_stories(
     output_language: str = Query("zh-CN"),
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
-    date: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    try:
-        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
-    except ValueError:
-        return {"error": "date must be YYYY-MM-DD"}
-    result = run_market_daily_update(
-        target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style,
+    provider_name = provider or "openai"
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    job_key = _job_key("market_stories", provider_name, prompt_style, output_language)
+    result = _start_background_job(
+        job_type="market_story_backfill",
+        job_key=job_key,
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
+        prompt_style=prompt_style,
+        worker=lambda tracker: _run_market_story_backlog_job(
+            tracker,
+            provider_name=provider_name,
+            model=selected_model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        ),
     )
     overview = get_market_story_overview(
-        provider_name=provider or "openai",
+        provider_name=provider_name,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -1032,13 +1522,22 @@ async def attach_market_news_to_story_api(
 
 @app.get("/api/market/macro")
 async def get_market_macro_api(
-    lookback_days: int = Query(0, ge=0, le=365),
-    lookahead_days: int = Query(30, ge=0, le=365),
+    lookback_days: Optional[int] = Query(None, ge=0, le=3650),
+    lookahead_days: Optional[int] = Query(None, ge=0, le=3650),
 ) -> Dict[str, Any]:
     today = datetime.now().date()
-    start_date = today - timedelta(days=max(0, int(lookback_days)))
-    end_date = today + timedelta(days=max(0, int(lookahead_days)))
-    rows = list_market_macro_events(start_date=start_date, end_date=end_date, limit=80)
+    if lookback_days is None and lookahead_days is None:
+        rows = list_market_macro_events(start_date=None, end_date=None, limit=2000)
+        if rows:
+            start_date = min(datetime.fromisoformat(str(item["event_date_time"]).replace("Z", "+00:00")).date() for item in rows if item.get("event_date_time"))
+            end_date = max(datetime.fromisoformat(str(item["event_date_time"]).replace("Z", "+00:00")).date() for item in rows if item.get("event_date_time"))
+        else:
+            start_date = today
+            end_date = today
+    else:
+        start_date = today - timedelta(days=max(0, int(lookback_days or 0)))
+        end_date = today + timedelta(days=max(0, int(lookahead_days or 0)))
+        rows = list_market_macro_events(start_date=start_date, end_date=end_date, limit=2000)
     return {"events": rows, "start_date": start_date.isoformat(), "end_date": end_date.isoformat()}
 
 
@@ -1048,19 +1547,23 @@ async def refresh_market_macro_api(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    stats = refresh_market_macro_events(
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+    provider_name = provider or "openai"
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    started = _start_background_job(
+        job_type="market_macro_refresh",
+        job_key=_job_key("market_macro", provider_name, output_language),
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
-        extend_window=True,
+        worker=lambda tracker: _run_market_macro_refresh_job(
+            tracker,
+            provider_name=provider_name,
+            model=selected_model,
+            output_language=output_language,
+        ),
     )
-    today = datetime.now().date()
-    rows = list_market_macro_events(start_date=today, end_date=today + timedelta(days=90), limit=240)
-    return {
-        "events": rows,
-        "description": "Extend calendar by 1 more month.",
-        **stats,
-    }
+    rows = list_market_macro_events(start_date=None, end_date=None, limit=2000)
+    return {"events": rows, "description": "Refresh the stored calendar for the next 3 months.", **started}
 
 
 @app.post("/api/companies")
@@ -1264,7 +1767,7 @@ async def get_company_status_api(
     snapshot = get_company_status_snapshot(
         company_name,
         provider_name=provider or "openai",
-        prompt_style=prompt_style or "simple",
+        prompt_style="simple",
     )
     return {"company": company_name, "status": snapshot}
 
@@ -1275,12 +1778,10 @@ async def get_company_price_intelligence_api(
     prompt_style: str = Query("simple"),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    snapshot = get_company_status_snapshot(
-        company_name,
-        provider_name=provider or "openai",
-        prompt_style=prompt_style or "simple",
-    )
-    return {"company": company_name, "status": snapshot}
+    run = get_company_price_intelligence_run(company_name)
+    history = list_company_price_intelligence_runs(company_name, limit=10)
+    previous_run_summary = history[1] if len(history) > 1 else None
+    return {"company": company_name, "run": run, "previous_run_summary": previous_run_summary, "history_preview": history[:10]}
 
 
 @app.post("/api/company/{company_name}/status/generate")
@@ -1292,18 +1793,29 @@ async def generate_company_status_api(
     provider: Optional[str] = Query(None),
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
-    stats = generate_company_status_snapshot(
-        company_name,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style or "simple",
+    provider_name = provider or "openai"
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    stats = _start_background_job(
+        job_type="company_detailed_report",
+        job_key=_job_key("detailed_report", company_name, provider_name, output_language, max(30, int(window_days))),
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
-        window_days=window_days,
+        prompt_style="simple",
+        target_entity=company_name,
+        worker=lambda tracker: _run_detailed_report_job(
+            tracker,
+            company_name=company_name,
+            provider_name=provider_name,
+            model=selected_model,
+            output_language=output_language,
+            window_days=max(30, int(window_days)),
+        ),
     )
     snapshot = get_company_status_snapshot(
         company_name,
-        provider_name=provider or "openai",
-        prompt_style=prompt_style or "simple",
+        provider_name=provider_name,
+        prompt_style="simple",
     )
     return {"company": company_name, "status": snapshot, **stats}
 
@@ -1315,22 +1827,48 @@ async def generate_company_price_intelligence_api(
     output_language: str = Query("zh-CN"),
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
-    window_days: int = Query(90),
 ) -> Dict[str, Any]:
-    stats = generate_company_status_snapshot(
-        company_name,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style or "simple",
+    provider_name = provider or "openai"
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    stats = _start_background_job(
+        job_type="company_price_intelligence",
+        job_key=_job_key("price_intelligence", company_name, provider_name, output_language),
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
-        window_days=window_days,
+        prompt_style="simple",
+        target_entity=company_name,
+        worker=lambda tracker: _run_price_intelligence_job(
+            tracker,
+            company_name=company_name,
+            provider_name=provider_name,
+            model=selected_model,
+            output_language=output_language,
+        ),
     )
-    snapshot = get_company_status_snapshot(
-        company_name,
-        provider_name=provider or "openai",
-        prompt_style=prompt_style or "simple",
-    )
-    return {"company": company_name, "status": snapshot, **stats}
+    run = get_company_price_intelligence_run(company_name)
+    history = list_company_price_intelligence_runs(company_name, limit=10)
+    previous_run_summary = history[1] if len(history) > 1 else None
+    return {"company": company_name, "run": run, "previous_run_summary": previous_run_summary, "history_preview": history[:10], **stats}
+
+
+@app.get("/api/company/{company_name}/price-intelligence/history")
+async def get_company_price_intelligence_history_api(company_name: str, limit: int = Query(20, ge=1, le=100)) -> Dict[str, Any]:
+    return {"company": company_name, "runs": list_company_price_intelligence_runs(company_name, limit=limit)}
+
+
+@app.get("/api/company/{company_name}/price-intelligence/{run_id}")
+async def get_company_price_intelligence_run_api(company_name: str, run_id: int) -> Dict[str, Any]:
+    run = get_company_price_intelligence_run(company_name, run_id=run_id)
+    if not run:
+        return {"error": "run not found"}
+    history = list_company_price_intelligence_runs(company_name, limit=20)
+    previous = None
+    for idx, item in enumerate(history):
+        if int(item.get("id") or 0) == int(run_id):
+            previous = history[idx + 1] if idx + 1 < len(history) else None
+            break
+    return {"company": company_name, "run": run, "previous_run_summary": previous, "history_preview": history[:10]}
 
 
 @app.get("/api/company/{company_name}/earnings")
@@ -1387,20 +1925,29 @@ async def refresh_company_stories_api(
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    result = start_company_daily_update(
-        company_name,
-        target_date=datetime.now().date(),
-        source_name="finnhub",
-        provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style,
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    result = _start_background_job(
+        job_type="company_story_update",
+        job_key=_job_key("company_story_update", company_name, provider_name, prompt_style, output_language, window_days),
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
-        story_window_days=window_days,
+        prompt_style=prompt_style,
+        target_entity=company_name,
+        worker=lambda tracker: _run_company_story_update_job(
+            tracker,
+            company_name=company_name,
+            provider_name=provider_name,
+            model=selected_model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+            window_days=window_days,
+        ),
     )
     overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
         start_warmup_if_needed=False,
@@ -1417,22 +1964,33 @@ async def rebuild_company_story_warmup_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    warmup = rebuild_company_warmup(
-        company_name,
-        provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
-        prompt_style=prompt_style,
+    selected_model = model or DEFAULT_OPENAI_MODEL
+    started = _start_background_job(
+        job_type="company_story_rebuild_warmup",
+        job_key=_job_key("company_story_rebuild", company_name, provider_name, prompt_style, output_language),
+        provider=provider_name,
+        model=selected_model,
         output_language=output_language,
+        prompt_style=prompt_style,
+        target_entity=company_name,
+        worker=lambda tracker: _run_company_rebuild_warmup_job(
+            tracker,
+            company_name=company_name,
+            provider_name=provider_name,
+            model=selected_model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+        ),
     )
     overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
         start_warmup_if_needed=False,
     )
-    return {**overview, "mode": "warmup_rebuilt", "warmup": warmup}
+    return {**overview, **started}
 
 
 @app.get("/api/company/{company_name}/stories/{story_key}")
@@ -1784,7 +2342,10 @@ async def analyze_company_indicators_api(
     try:
         snapshot = client.query(resolved_ticker)
         llm_provider = get_provider(provider, model=model)
-        result = analyze_single_stock_sections(snapshot, provider=llm_provider)
+        result = analyze_single_stock_sections(
+            snapshot,
+            provider=llm_provider,
+        )
     except Exception as exc:
         return {"error": f"failed to analyze indicators: {exc}"}
     return {

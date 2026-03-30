@@ -6,6 +6,7 @@ import json
 import os
 import re
 import logging
+import math
 import threading
 import time as pytime
 from datetime import date, datetime, time, timedelta, timezone
@@ -18,15 +19,41 @@ from market_agent.analysis.company.news.datamodels import NewsArticle
 from market_agent.analysis.company.ticker_fallbacks import resolve_company_ticker_fallback
 from market_agent.datasources.finnhub import FinnhubClient
 from market_agent.news_sources import get_news_source
+from market_agent.analysis.company.news.prompts import (
+    _build_company_daily_cluster_prompt,
+    _build_company_daily_report_prompt,
+    _build_company_price_intelligence_prompt,
+    _build_company_quick_price_intelligence_prompt,
+    _build_company_story_context,
+    _build_company_story_qa_merge_prompt,
+    _build_company_story_qa_prompt,
+    _build_company_story_routing_prompt,
+    _build_company_story_update_prompt,
+    _build_company_story_warmup_cluster_prompt,
+    _build_company_story_warmup_consolidation_prompt,
+    _build_company_story_warmup_prompt,
+    _build_incremental_existing_story_prompt,
+    _build_incremental_new_story_prompt,
+    _build_output_language_line,
+)
 from market_agent.schema_fields import (
+    COL_OUTPUT_JSON,
     COL_OUTPUT_LANGUAGE,
+    COL_PAYLOAD,
+    COL_POINT_DATE_TIME,
+    COL_RANGE_KEY,
+    COL_SNAPSHOT_DATE,
     COL_STORY_KEY,
     TBL_COMPANY_NEWS_ANALYZED,
     TBL_COMPANY_NEWS_DAILY_CLUSTER,
+    TBL_COMPANY_PRICE_INTELLIGENCE_RUN,
+    TBL_COMPANY_PRICE_MOVE_ANALYSIS,
+    TBL_COMPANY_STATUS_SNAPSHOT,
     TBL_COMPANY_STORY_QA,
     TBL_COMPANY_STORY_STATE,
     TBL_COMPANY_STORY_UPDATE,
     TBL_COMPANY_STORY_WARMUP_STATE,
+    TBL_MARKET_PRICE_DAILY_SNAPSHOT,
 )
 
 DEFAULT_MODEL = DEFAULT_OPENAI_MODEL
@@ -55,6 +82,9 @@ STORY_WARMUP_CHUNK_SIZE = max(
 )
 COMPANY_DAILY_CLUSTER_MIN = 3
 COMPANY_DAILY_CLUSTER_MAX = 8
+PRICE_ANALYSIS_REPORT_LIMIT = 30
+PRICE_ANALYSIS_RAW_FALLBACK_LIMIT = 30
+PRICE_ANALYSIS_MARKET_SUMMARY_LIMIT = 5
 
 logger = logging.getLogger("uvicorn.error")
 _WARMUP_THREADS: Dict[str, threading.Thread] = {}
@@ -137,6 +167,222 @@ def remove_company_from_watchlist(company_name: str) -> None:
                 (normalized,),
             )
         conn.commit()
+
+
+def create_user_note(
+    *,
+    title: str,
+    body_markdown: str,
+    tags: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    clean_title = str(title or "").strip()
+    clean_body = str(body_markdown or "").strip()
+    if not clean_title:
+        raise ValueError("title is required")
+    if not clean_body:
+        raise ValueError("body is required")
+    tag_rows = _normalize_note_tags(tags)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_note (
+                    title,
+                    body_markdown,
+                    validity_state,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, 'valid', NOW(), NOW())
+                RETURNING id
+                """,
+                (clean_title, clean_body),
+            )
+            row = cur.fetchone()
+            note_id = int(row["id"])
+            _replace_user_note_tags(cur, note_id=note_id, tag_rows=tag_rows)
+        conn.commit()
+    note = get_user_note(note_id)
+    if not note:
+        raise ValueError("failed to create note")
+    return note
+
+
+def update_user_note(
+    note_id: int,
+    *,
+    title: str,
+    body_markdown: str,
+    tags: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    clean_title = str(title or "").strip()
+    clean_body = str(body_markdown or "").strip()
+    if not clean_title:
+        raise ValueError("title is required")
+    if not clean_body:
+        raise ValueError("body is required")
+    tag_rows = _normalize_note_tags(tags)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_note
+                SET title = %s,
+                    body_markdown = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (clean_title, clean_body, int(note_id)),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise KeyError("note not found")
+            _replace_user_note_tags(cur, note_id=int(note_id), tag_rows=tag_rows)
+        conn.commit()
+    note = get_user_note(int(note_id))
+    if not note:
+        raise KeyError("note not found")
+    return note
+
+
+def invalidate_user_note(note_id: int, *, reason: Optional[str] = None) -> Dict[str, Any]:
+    _ensure_news_schema()
+    note = get_user_note(int(note_id))
+    if not note:
+        raise KeyError("note not found")
+    if str(note.get("validity_state") or "valid") == "invalid":
+        return note
+    clean_reason = str(reason or "").strip() or None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_note
+                SET validity_state = 'invalid',
+                    invalidation_reason = %s,
+                    invalidated_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (clean_reason, int(note_id)),
+            )
+        conn.commit()
+    updated = get_user_note(int(note_id))
+    if not updated:
+        raise KeyError("note not found")
+    return updated
+
+
+def get_user_note(note_id: int) -> Optional[Dict[str, Any]]:
+    notes = list_user_notes(note_id=int(note_id))
+    return notes[0] if notes else None
+
+
+def list_user_notes(*, tag: Optional[str] = None, note_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    params: List[Any] = []
+    where = []
+    join = ""
+    if note_id is not None:
+        where.append("n.id = %s")
+        params.append(int(note_id))
+    normalized_tag = _normalize_note_tag(tag)
+    if normalized_tag:
+        join = "JOIN user_note_tag t_filter ON t_filter.note_id = n.id"
+        where.append("t_filter.normalized_tag = %s")
+        params.append(normalized_tag)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    n.id,
+                    n.title,
+                    n.body_markdown,
+                    n.validity_state,
+                    n.invalidation_reason,
+                    n.invalidated_at,
+                    n.created_at,
+                    n.updated_at
+                FROM user_note AS n
+                {join}
+                {where_sql}
+                ORDER BY n.created_at DESC, n.id DESC
+                """
+                ,
+                tuple(params),
+            )
+            note_rows = cur.fetchall()
+            if not note_rows:
+                return []
+            note_ids = [int(row["id"]) for row in note_rows]
+            cur.execute(
+                """
+                SELECT note_id, tag_text, normalized_tag
+                FROM user_note_tag
+                WHERE note_id = ANY(%s)
+                ORDER BY normalized_tag ASC, id ASC
+                """,
+                (note_ids,),
+            )
+            tag_rows = cur.fetchall()
+    tags_by_note: Dict[int, List[Dict[str, str]]] = {}
+    for row in tag_rows:
+        bucket = tags_by_note.setdefault(int(row["note_id"]), [])
+        bucket.append(
+            {
+                "tag": str(row["tag_text"] or "").strip(),
+                "normalized_tag": str(row["normalized_tag"] or "").strip(),
+            }
+        )
+    result: List[Dict[str, Any]] = []
+    for row in note_rows:
+        note_tags = tags_by_note.get(int(row["id"]), [])
+        result.append(
+            {
+                "id": int(row["id"]),
+                "title": str(row["title"] or ""),
+                "body_markdown": str(row["body_markdown"] or ""),
+                "validity_state": str(row["validity_state"] or "valid"),
+                "invalidation_reason": str(row["invalidation_reason"] or ""),
+                "invalidated_at": row["invalidated_at"].isoformat() if row.get("invalidated_at") else "",
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else "",
+                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else "",
+                "tags": [item["tag"] for item in note_tags],
+                "normalized_tags": [item["normalized_tag"] for item in note_tags],
+            }
+        )
+    return result
+
+
+def list_user_note_tags() -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    normalized_tag,
+                    MIN(tag_text) AS display_tag,
+                    COUNT(DISTINCT note_id) AS note_count
+                FROM user_note_tag
+                GROUP BY normalized_tag
+                ORDER BY COUNT(DISTINCT note_id) DESC, MIN(tag_text) ASC
+                """
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "tag": str(row["display_tag"] or ""),
+            "normalized_tag": str(row["normalized_tag"] or ""),
+            "note_count": int(row["note_count"] or 0),
+        }
+        for row in rows
+    ]
 
 
 def get_company_story_warmup_state(
@@ -553,6 +799,7 @@ def get_company_status_snapshot(
                     model,
                     prompt_style,
                     input_payload,
+                    output_json,
                     output_text,
                     created_at
                 FROM company_status_snapshot
@@ -567,7 +814,13 @@ def get_company_status_snapshot(
             row = cur.fetchone()
     if not row:
         return None
-    return {
+    structured = _parse_json_object(row["output_json"] or "") or {}
+    if not structured:
+        structured = _normalize_company_status_payload(
+            {"output_markdown": row["output_text"] or ""},
+            as_of_date=row["as_of_date"],
+        )
+    snapshot = {
         "as_of_date": row["as_of_date"].isoformat(),
         "window_start_date": row["window_start_date"].isoformat(),
         "window_end_date": row["window_end_date"].isoformat(),
@@ -575,9 +828,100 @@ def get_company_status_snapshot(
         "model": row["model"],
         "prompt_style": row["prompt_style"],
         "input_payload": row["input_payload"],
+        "output_json": row["output_json"],
         "output_text": row["output_text"],
         "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
     }
+    snapshot.update(structured)
+    return snapshot
+
+
+def get_company_price_intelligence_run(
+    company_name: str,
+    *,
+    run_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    where_sql = "company_name = %s"
+    params: List[Any] = [company_name]
+    if run_id is not None:
+        where_sql += " AND id = %s"
+        params.append(int(run_id))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, company_name, as_of_date, provider, model, {COL_OUTPUT_LANGUAGE},
+                       context_window_days, focus_window_days, input_payload, output_json, output_text, created_at
+                FROM {TBL_COMPANY_PRICE_INTELLIGENCE_RUN}
+                WHERE {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    structured = _parse_json_object(row["output_json"] or "") or {}
+    payload = {
+        "id": int(row["id"]),
+        "company_name": row["company_name"],
+        "as_of_date": row["as_of_date"].isoformat(),
+        "provider": row["provider"],
+        "model": row["model"],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "context_window_days": int(row["context_window_days"] or 0),
+        "focus_window_days": int(row["focus_window_days"] or 0),
+        "input_payload": _parse_json_object(row["input_payload"] or "") or {},
+        "output_json": row["output_json"] or "",
+        "output_text": row["output_text"] or "",
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    payload.update(structured)
+    return payload
+
+
+def list_company_price_intelligence_runs(company_name: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    safe_limit = max(1, min(int(limit), 100))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, company_name, as_of_date, provider, model, {COL_OUTPUT_LANGUAGE},
+                       context_window_days, focus_window_days, output_json, output_text, created_at
+                FROM {TBL_COMPANY_PRICE_INTELLIGENCE_RUN}
+                WHERE company_name = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (company_name, safe_limit),
+            )
+            rows = cur.fetchall()
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        structured = _parse_json_object(row["output_json"] or "") or {}
+        result.append(
+            {
+                "id": int(row["id"]),
+                "company_name": row["company_name"],
+                "as_of_date": row["as_of_date"].isoformat(),
+                "provider": row["provider"],
+                "model": row["model"],
+                "output_language": row[COL_OUTPUT_LANGUAGE],
+                "context_window_days": int(row["context_window_days"] or 0),
+                "focus_window_days": int(row["focus_window_days"] or 0),
+                "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                "bottom_line": str(structured.get("bottom_line") or ""),
+                "current_price": structured.get("current_price"),
+                "fair_price_zone": structured.get("fair_price_zone") if isinstance(structured.get("fair_price_zone"), dict) else {},
+                "price_position": structured.get("price_position") if isinstance(structured.get("price_position"), dict) else {},
+            }
+        )
+    return result
 
 
 def get_company_news_for_range(
@@ -853,7 +1197,7 @@ def generate_company_status_snapshot(
     company_name: str,
     *,
     as_of_date: Optional[date] = None,
-    window_days: int = 21,
+    window_days: int = 90,
     provider_name: str = DEFAULT_PROVIDER,
     model: str = DEFAULT_MODEL,
     prompt_style: str = "simple",
@@ -865,24 +1209,27 @@ def generate_company_status_snapshot(
     started_at = pytime.perf_counter()
     company_name = _normalize_company_name(company_name)
     if not company_name:
-        return {"generated": False, "daily_report_count": 0, "weekly_report_count": 0, "elapsed_sec": 0.0}
+        return {"generated": False, "daily_report_count": 0, "weekly_report_count": 0, "elapsed_sec": 0.0, "input_item_count": 0, "prompt_char_count": 0, "output_char_count": 0}
 
     end_date = as_of_date or datetime.now(timezone.utc).date()
     safe_window_days = max(7, min(int(window_days), 90))
     start_date = end_date - timedelta(days=safe_window_days - 1)
-    status_input = _build_company_status_input(
+    status_input = _build_company_price_intelligence_input(
         company_name,
         start_date=start_date,
         end_date=end_date,
         provider_name=provider_name,
+        output_language=output_language,
     )
-    if not status_input["daily_reports"] and not status_input["weekly_reports"] and not status_input["raw_news"]:
+    if not status_input["daily_reports"] and not status_input["raw_news_fallback"]:
         return {
             "generated": False,
             "daily_report_count": 0,
-            "weekly_report_count": 0,
-            "raw_news_count": 0,
+            "raw_news_count": len(status_input["raw_news_fallback"]),
             "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+            "input_item_count": len(status_input.get("raw_news_fallback") or []),
+            "prompt_char_count": 0,
+            "output_char_count": 0,
         }
 
     provider = get_news_provider(
@@ -891,14 +1238,16 @@ def generate_company_status_snapshot(
         temperature=temperature,
         timeout_sec=timeout_sec,
     )
-    prompt = _build_company_status_prompt(
+    prompt = _build_company_price_intelligence_prompt(
         company_name,
         as_of_date=end_date,
-        prompt_style=prompt_style,
         status_input=status_input,
         output_language=output_language,
     )
-    output_text = provider.generate_text(prompt=prompt)
+    raw_output = provider.generate_text(prompt=prompt)
+    payload = _parse_json_object(raw_output) or {}
+    normalized_output = _normalize_company_status_payload(payload, as_of_date=end_date)
+    output_text = str(normalized_output.get("output_markdown") or "").strip() or raw_output
     _upsert_company_status_snapshot(
         company_name=company_name,
         as_of_date=end_date,
@@ -906,16 +1255,96 @@ def generate_company_status_snapshot(
         window_end_date=end_date,
         provider=provider_name,
         model=model,
-        prompt_style=prompt_style,
+        prompt_style="simple",
         input_payload={"prompt": prompt, **status_input},
+        output_json=normalized_output,
         output_text=output_text,
     )
     return {
         "generated": True,
         "daily_report_count": len(status_input["daily_reports"]),
-        "weekly_report_count": len(status_input["weekly_reports"]),
-        "raw_news_count": len(status_input["raw_news"]),
+        "raw_news_count": len(status_input["raw_news_fallback"]),
         "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+        "input_item_count": len(status_input["daily_reports"]) + len(status_input["raw_news_fallback"]) + len(status_input.get("active_stories") or []) + len(status_input.get("market_stories") or []),
+        "prompt_char_count": len(prompt),
+        "output_char_count": len(output_text or ""),
+    }
+
+
+def generate_company_price_intelligence_run(
+    company_name: str,
+    *,
+    as_of_date: Optional[date] = None,
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    output_language: str = "zh-CN",
+    temperature: float = 0.2,
+    timeout_sec: int = 120,
+    context_window_days: int = 365,
+    focus_window_days: int = 60,
+) -> Dict[str, Any]:
+    _ensure_news_schema()
+    started_at = pytime.perf_counter()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return {"generated": False, "elapsed_sec": 0.0, "input_item_count": 0, "prompt_char_count": 0, "output_char_count": 0}
+    end_date = as_of_date or datetime.now(timezone.utc).date()
+    safe_context_days = max(180, min(int(context_window_days), 365))
+    safe_focus_days = max(14, min(int(focus_window_days), 90))
+    context_start = end_date - timedelta(days=safe_context_days - 1)
+    focus_start = end_date - timedelta(days=safe_focus_days - 1)
+    previous_run = get_company_price_intelligence_run(company_name)
+    pi_input = _build_company_quick_price_intelligence_input(
+        company_name,
+        context_start=context_start,
+        focus_start=focus_start,
+        end_date=end_date,
+        provider_name=provider_name,
+        output_language=output_language,
+    )
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    prompt = _build_company_quick_price_intelligence_prompt(
+        company_name=company_name,
+        as_of_date=end_date,
+        quick_input=pi_input,
+        previous_run=previous_run,
+        output_language=output_language,
+    )
+    raw_output = provider.generate_text(prompt=prompt)
+    payload = _parse_json_object(raw_output) or {}
+    normalized_output = _normalize_company_quick_price_intelligence_payload(
+        payload,
+        as_of_date=end_date,
+        current_price=pi_input.get("latest_price"),
+        previous_run=previous_run,
+    )
+    output_text = str(normalized_output.get("output_markdown") or "").strip() or raw_output
+    run_id = _insert_company_price_intelligence_run(
+        company_name=company_name,
+        as_of_date=end_date,
+        provider=provider_name,
+        model=model,
+        output_language=output_language,
+        context_window_days=safe_context_days,
+        focus_window_days=safe_focus_days,
+        input_payload={"prompt": prompt, **pi_input},
+        output_json=normalized_output,
+        output_text=output_text,
+    )
+    return {
+        "generated": True,
+        "run_id": run_id,
+        "daily_report_count": len(pi_input.get("daily_reports") or []),
+        "raw_news_count": len(pi_input.get("raw_news_fallback") or []),
+        "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
+        "input_item_count": int(pi_input.get("input_coverage", {}).get("input_item_count", 0)),
+        "prompt_char_count": len(prompt),
+        "output_char_count": len(output_text or ""),
     }
 
 
@@ -3496,6 +3925,7 @@ def _upsert_company_status_snapshot(
     model: str,
     prompt_style: str,
     input_payload: Dict[str, Any],
+    output_json: Dict[str, Any],
     output_text: str,
 ) -> None:
     with get_connection() as conn:
@@ -3522,6 +3952,7 @@ def _upsert_company_status_snapshot(
                         window_end_date = %s,
                         model = %s,
                         input_payload = %s,
+                        output_json = %s,
                         output_text = %s,
                         created_at = NOW()
                     WHERE id = %s
@@ -3532,6 +3963,7 @@ def _upsert_company_status_snapshot(
                         window_end_date,
                         model,
                         json.dumps(input_payload),
+                        json.dumps(output_json, ensure_ascii=False),
                         output_text,
                         existing["id"],
                     ),
@@ -3558,9 +3990,10 @@ def _upsert_company_status_snapshot(
                         model,
                         prompt_style,
                         input_payload,
+                        output_json,
                         output_text
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         company_name,
@@ -3571,10 +4004,61 @@ def _upsert_company_status_snapshot(
                         model,
                         prompt_style,
                         json.dumps(input_payload),
+                        json.dumps(output_json, ensure_ascii=False),
                         output_text,
                     ),
                 )
         conn.commit()
+
+
+def _insert_company_price_intelligence_run(
+    *,
+    company_name: str,
+    as_of_date: date,
+    provider: str,
+    model: str,
+    output_language: str,
+    context_window_days: int,
+    focus_window_days: int,
+    input_payload: Dict[str, Any],
+    output_json: Dict[str, Any],
+    output_text: str,
+) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {TBL_COMPANY_PRICE_INTELLIGENCE_RUN} (
+                    company_name,
+                    as_of_date,
+                    provider,
+                    model,
+                    {COL_OUTPUT_LANGUAGE},
+                    context_window_days,
+                    focus_window_days,
+                    input_payload,
+                    output_json,
+                    output_text
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    company_name,
+                    as_of_date,
+                    provider,
+                    model,
+                    output_language,
+                    int(context_window_days),
+                    int(focus_window_days),
+                    json.dumps(input_payload, ensure_ascii=False),
+                    json.dumps(output_json, ensure_ascii=False),
+                    output_text,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return int(row["id"])
 
 
 def _persist_story_refresh(
@@ -3910,35 +4394,6 @@ def _build_company_daily_report_input_items(
     return items
 
 
-def _build_company_daily_report_prompt(
-    company_name: str,
-    *,
-    target_date: date,
-    items: List[Dict[str, Any]],
-    prompt_style: str,
-    output_language: str = "zh-CN",
-) -> str:
-    items_json = json.dumps(items, ensure_ascii=False, indent=2)
-    language_line = _build_output_language_line(output_language)
-    return (
-        f"Please summarize all {company_name} news for {target_date.isoformat()}.\n"
-        "Goal: help me quickly understand what happened to the company today, why it matters, and what to watch next.\n"
-        "Requirements:\n"
-        "- Ignore duplicate or near-duplicate news items.\n"
-        "- Keep all material points and do not omit important company-related information.\n"
-        "- Ignore points not related to this company or its market/investor outlook.\n"
-        "- Rank information by importance to this company (most important first).\n"
-        "- Try to open links first for fuller context. If inaccessible, use available content and best available information.\n"
-        "- Use a clear layered structure that is easy to read.\n"
-        "- Start with a short top summary.\n"
-        "- Then list the important news items in importance order.\n"
-        "- For each important news item, include exactly two bullet labels: Facts and Impact.\n"
-        "- Do not add a separate watch or follow-up subsection for each item.\n"
-        "- End with one final section for what investors should watch next.\n"
-        "- In that final section, include concise bullet points on upcoming catalysts, risks, confirmations, or developments that may matter next.\n"
-        f"{language_line}"
-        f"News items JSON:\n{items_json}\n"
-    )
 
 
 def _build_weekly_report_input_items(
@@ -3949,13 +4404,14 @@ def _build_weekly_report_input_items(
     llm_model: str,
     provider_name: str,
 ) -> List[Dict[str, Any]]:
-    daily_reports = get_company_daily_reports_for_range(
+    all_daily_reports = get_company_daily_reports_for_range(
         company_name,
         start_date=start_date,
         end_date=end_date,
         provider_name=provider_name,
         prompt_style="simple",
     )
+    daily_reports = all_daily_reports[:PRICE_ANALYSIS_REPORT_LIMIT]
     if daily_reports:
         items: List[Dict[str, Any]] = []
         for report in sorted(daily_reports, key=lambda x: x["report_date"]):
@@ -4006,12 +4462,13 @@ def _build_weekly_report_input_items(
     return items
 
 
-def _build_company_status_input(
+def _build_company_price_intelligence_input(
     company_name: str,
     *,
     start_date: date,
     end_date: date,
     provider_name: str,
+    output_language: str,
 ) -> Dict[str, Any]:
     daily_reports = get_company_daily_reports_for_range(
         company_name,
@@ -4020,67 +4477,151 @@ def _build_company_status_input(
         provider_name=provider_name,
         prompt_style="simple",
     )
-
-    weekly_reports: List[Dict[str, Any]] = []
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT beginning_date, end_date, content
-                FROM news_report
-                WHERE company_name = %s
-                  AND end_date >= %s
-                  AND beginning_date <= %s
-                ORDER BY end_date DESC, beginning_date DESC
-                LIMIT 8
-                """,
-                (company_name, start_date, end_date),
-            )
-            rows = cur.fetchall()
-    for row in rows:
-        content = row["content"]
-        try:
-            parsed = json.loads(content) if isinstance(content, str) else content
-        except json.JSONDecodeError:
-            parsed = {"summary": content}
-        weekly_reports.append(
-            {
-                "beginning_date": row["beginning_date"].isoformat(),
-                "end_date": row["end_date"].isoformat(),
-                "report": parsed,
-            }
-        )
-
-    raw_news: List[Dict[str, Any]] = []
-    if not daily_reports:
-        for article in get_company_news_for_range(
-            company_name,
-            start_date=start_date,
-            end_date=end_date,
-        )[:60]:
-            raw_news.append(
-                {
-                    "news_date_time": article.news_date_time.isoformat(),
-                    "news_title": article.news_title,
-                    "news_source": article.news_source,
-                    "news_source_link": article.news_source_link,
-                    "summary": _decode_llm_content(
-                        article.llm_analyzed_content,
-                        article.original_content,
-                    ).get("summary"),
-                }
-            )
-
+    daily_report_dates = {
+        str(item.get("report_date") or "").strip()
+        for item in daily_reports
+        if str(item.get("report_date") or "").strip()
+    }
+    raw_news_fallback = _build_company_status_raw_news_fallback(
+        company_name,
+        start_date=start_date,
+        end_date=end_date,
+        covered_dates=daily_report_dates,
+    )[:PRICE_ANALYSIS_RAW_FALLBACK_LIMIT]
     price_context = _build_company_status_price_context(company_name, start_date=start_date, end_date=end_date)
-    market_stories = _build_company_status_market_story_context(limit=5)
-
+    market_daily_summaries = _build_company_status_market_daily_summary_context(
+        start_date=start_date,
+        end_date=end_date,
+    )[:PRICE_ANALYSIS_MARKET_SUMMARY_LIMIT]
     return {
         "daily_reports": daily_reports,
-        "weekly_reports": weekly_reports,
-        "raw_news": raw_news,
+        "raw_news_fallback": raw_news_fallback,
         "price_context": price_context,
-        "market_stories": market_stories,
+        "market_stories": _build_company_status_market_story_context(limit=6),
+        "market_daily_summaries": market_daily_summaries,
+        "input_coverage": _build_company_status_input_coverage(
+            daily_reports=daily_reports,
+            raw_news_fallback=raw_news_fallback,
+            start_date=start_date,
+            end_date=end_date,
+            market_daily_summaries=market_daily_summaries,
+            price_context=price_context,
+        ),
+        "output_language": output_language,
     }
+
+
+def _build_company_quick_price_intelligence_input(
+    company_name: str,
+    *,
+    context_start: date,
+    focus_start: date,
+    end_date: date,
+    provider_name: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    all_daily_reports = get_company_daily_reports_for_range(
+        company_name,
+        start_date=context_start,
+        end_date=end_date,
+        provider_name=provider_name,
+        prompt_style="simple",
+    )
+    daily_reports = all_daily_reports[:PRICE_ANALYSIS_REPORT_LIMIT]
+    daily_report_dates = {
+        str(item.get("report_date") or "").strip()
+        for item in daily_reports
+        if str(item.get("report_date") or "").strip()
+    }
+    raw_news_fallback = _build_company_status_raw_news_fallback(
+        company_name,
+        start_date=focus_start,
+        end_date=end_date,
+        covered_dates=daily_report_dates,
+    )[:PRICE_ANALYSIS_RAW_FALLBACK_LIMIT]
+    price_context = _build_company_status_price_context(company_name, start_date=context_start, end_date=end_date)
+    focus_price_context = _build_company_status_price_context(company_name, start_date=focus_start, end_date=end_date)
+    technical_focus_points = (focus_price_context.get("recent_points") or [])[-10:]
+    market_stories = _build_company_status_market_story_context(limit=6)
+    market_daily_summaries = _build_company_status_market_daily_summary_context(
+        start_date=focus_start,
+        end_date=end_date,
+    )[:PRICE_ANALYSIS_MARKET_SUMMARY_LIMIT]
+    latest_price = price_context.get("latest_close")
+    coverage = {
+        "context_window_start": context_start.isoformat(),
+        "focus_window_start": focus_start.isoformat(),
+        "window_end": end_date.isoformat(),
+        "daily_report_count": len(daily_reports),
+        "raw_news_fallback_count": len(raw_news_fallback),
+        "market_story_count": len(market_stories),
+        "market_summary_count": len(market_daily_summaries),
+        "price_point_count": int(price_context.get("point_count") or 0),
+        "input_item_count": len(daily_reports) + len(raw_news_fallback) + len(market_stories) + len(market_daily_summaries) + len(technical_focus_points),
+    }
+    return {
+        "daily_reports": daily_reports,
+        "raw_news_fallback": raw_news_fallback,
+        "price_context": price_context,
+        "focus_price_context": focus_price_context,
+        "technical_focus_points": technical_focus_points,
+        "market_stories": market_stories,
+        "market_daily_summaries": market_daily_summaries,
+        "latest_price": latest_price,
+        "input_coverage": coverage,
+        "output_language": output_language,
+    }
+
+
+def _build_company_status_input_coverage(
+    *,
+    daily_reports: List[Dict[str, Any]],
+    raw_news_fallback: List[Dict[str, Any]],
+    start_date: date,
+    end_date: date,
+    market_daily_summaries: List[Dict[str, Any]],
+    price_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    report_dates = {
+        str(item.get("report_date") or "").strip()
+        for item in daily_reports
+        if str(item.get("report_date") or "").strip()
+    }
+    total_days = max(1, (end_date - start_date).days + 1)
+    return {
+        "window_start": start_date.isoformat(),
+        "window_end": end_date.isoformat(),
+        "window_days": total_days,
+        "daily_report_count": len(daily_reports),
+        "daily_report_coverage_days": len(report_dates),
+        "raw_news_fallback_count": len(raw_news_fallback),
+        "market_summary_count": len(market_daily_summaries),
+        "price_point_count": int(price_context.get("point_count") or 0),
+    }
+
+
+def _build_company_status_raw_news_fallback(
+    company_name: str,
+    *,
+    start_date: date,
+    end_date: date,
+    covered_dates: set[str],
+) -> List[Dict[str, Any]]:
+    fallback: List[Dict[str, Any]] = []
+    for article in get_company_news_for_range(company_name, start_date=start_date, end_date=end_date)[:80]:
+        article_date = article.news_date_time.date().isoformat()
+        if article_date in covered_dates:
+            continue
+        fallback.append(
+            {
+                "news_date_time": article.news_date_time.isoformat(),
+                "news_title": article.news_title,
+                "news_source": article.news_source,
+                "news_source_link": article.news_source_link,
+                "summary": _decode_llm_content(article.llm_analyzed_content, article.original_content).get("summary"),
+            }
+        )
+    return fallback
 
 
 def _build_company_status_price_context(
@@ -4093,7 +4634,7 @@ def _build_company_status_price_context(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ticker, trade_date, close_price, volume
+                SELECT ticker, trade_date, open, high, low, close, adj_close, volume
                 FROM company_price_daily
                 WHERE company_name = %s
                   AND trade_date >= %s
@@ -4105,39 +4646,106 @@ def _build_company_status_price_context(
             rows = cur.fetchall()
     if not rows:
         return {}
-    closes = [float(row["close_price"]) for row in rows if row["close_price"] is not None]
-    latest = rows[-1]
-    first_close = closes[0] if closes else None
-    last_close = closes[-1] if closes else None
-    pct_change = None
-    if first_close not in (None, 0) and last_close is not None:
-        pct_change = ((last_close - first_close) / first_close) * 100.0
+    closes = [float(row["close"] if row["close"] is not None else row["adj_close"]) for row in rows if row["close"] is not None or row["adj_close"] is not None]
+    if not closes:
+        return {}
+    latest_close = closes[-1]
+    first_close = closes[0]
+    highs = [float(row["high"]) for row in rows if row["high"] is not None]
+    lows = [float(row["low"]) for row in rows if row["low"] is not None]
+    volumes = [int(row["volume"]) for row in rows if row["volume"] is not None]
+
+    def _pct_change(points_back: int) -> Optional[float]:
+        if len(closes) <= points_back:
+            return None
+        base = closes[-(points_back + 1)]
+        if base in (None, 0):
+            return None
+        return round(((latest_close - base) / base) * 100.0, 2)
+
+    returns = []
+    for idx in range(1, len(closes)):
+        prev = closes[idx - 1]
+        curr = closes[idx]
+        if prev:
+            returns.append((curr - prev) / prev)
+    volatility = round((math.sqrt(sum(r * r for r in returns) / len(returns)) * 100.0), 2) if returns else None
+    window_high = max(highs) if highs else max(closes)
+    window_low = min(lows) if lows else min(closes)
+    recent_20 = closes[-20:]
+    recent_50 = closes[-50:]
+    recent_200 = closes[-200:]
+    avg_volume_20 = round(sum(volumes[-20:]) / len(volumes[-20:])) if volumes[-20:] else None
+
+    move_analyses = _build_company_status_price_move_context(company_name, ticker=str(rows[-1]["ticker"] or "").strip().upper())
     return {
-        "ticker": rows[-1]["ticker"],
+        "ticker": str(rows[-1]["ticker"] or "").strip().upper(),
         "point_count": len(rows),
         "window_start": rows[0]["trade_date"].isoformat(),
         "window_end": rows[-1]["trade_date"].isoformat(),
-        "latest_close": last_close,
-        "window_high": max(closes) if closes else None,
-        "window_low": min(closes) if closes else None,
-        "window_change_pct": round(pct_change, 2) if pct_change is not None else None,
+        "latest_close": round(latest_close, 4),
+        "window_high": round(window_high, 4) if window_high is not None else None,
+        "window_low": round(window_low, 4) if window_low is not None else None,
+        "window_change_pct": round(((latest_close - first_close) / first_close) * 100.0, 2) if first_close else None,
+        "return_5d_pct": _pct_change(5),
+        "return_20d_pct": _pct_change(20),
+        "return_60d_pct": _pct_change(60),
+        "distance_to_window_high_pct": round(((latest_close - window_high) / window_high) * 100.0, 2) if window_high else None,
+        "distance_to_window_low_pct": round(((latest_close - window_low) / window_low) * 100.0, 2) if window_low else None,
+        "ma_20": round(sum(recent_20) / len(recent_20), 4) if recent_20 else None,
+        "ma_50": round(sum(recent_50) / len(recent_50), 4) if recent_50 else None,
+        "ma_200": round(sum(recent_200) / len(recent_200), 4) if recent_200 else None,
+        "realized_volatility_pct": volatility,
+        "latest_volume": volumes[-1] if volumes else None,
+        "avg_volume_20": avg_volume_20,
         "recent_points": [
             {
                 "trade_date": row["trade_date"].isoformat(),
-                "close_price": float(row["close_price"]) if row["close_price"] is not None else None,
+                "close": float(row["close"] if row["close"] is not None else row["adj_close"]) if row["close"] is not None or row["adj_close"] is not None else None,
+                "high": float(row["high"]) if row["high"] is not None else None,
+                "low": float(row["low"]) if row["low"] is not None else None,
                 "volume": int(row["volume"]) if row["volume"] is not None else None,
             }
             for row in rows[-10:]
         ],
+        "move_analyses": move_analyses,
     }
 
 
-def _build_company_status_market_story_context(*, limit: int = 5) -> List[Dict[str, Any]]:
+def _build_company_status_price_move_context(company_name: str, *, ticker: str) -> List[Dict[str, Any]]:
+    if not ticker:
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {COL_RANGE_KEY}, {COL_POINT_DATE_TIME}, output_text, updated_at
+                FROM {TBL_COMPANY_PRICE_MOVE_ANALYSIS}
+                WHERE company_name = %s
+                  AND ticker = %s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 6
+                """,
+                (company_name, ticker),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "range_key": row[COL_RANGE_KEY],
+            "point_date_time": row[COL_POINT_DATE_TIME].isoformat() if row[COL_POINT_DATE_TIME] else None,
+            "output_text": row["output_text"] or "",
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+        for row in rows
+    ]
+
+
+def _build_company_status_market_story_context(*, limit: int = 6) -> List[Dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT story_title, happened_text, happening_text, next_text, importance_rank, updated_at
+                SELECT story_title, story_summary, priority, importance_rank, updated_at
                 FROM market_story_state
                 WHERE is_active = TRUE
                 ORDER BY importance_rank ASC, updated_at DESC
@@ -4149,9 +4757,8 @@ def _build_company_status_market_story_context(*, limit: int = 5) -> List[Dict[s
     return [
         {
             "story_title": row["story_title"],
-            "past": row["happened_text"] or "",
-            "now": row["happening_text"] or "",
-            "next": row["next_text"] or "",
+            "story_summary": row["story_summary"] or "",
+            "priority": row["priority"] or "normal",
             "importance_rank": int(row["importance_rank"] or 999),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
@@ -4159,53 +4766,324 @@ def _build_company_status_market_story_context(*, limit: int = 5) -> List[Dict[s
     ]
 
 
-def _build_company_status_prompt(
-    company_name: str,
+def _build_company_status_market_daily_summary_context(
+    *,
+    start_date: date,
+    end_date: date,
+) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT summary_date, output_text, provider, model, prompt_style, created_at
+                FROM market_news_daily_summary
+                WHERE summary_date >= %s
+                  AND summary_date <= %s
+                ORDER BY summary_date DESC, created_at DESC
+                LIMIT 10
+                """,
+                (start_date, end_date),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "summary_date": row["summary_date"].isoformat(),
+            "output_text": row["output_text"] or "",
+            "provider": row["provider"],
+            "model": row["model"],
+            "prompt_style": row["prompt_style"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        }
+        for row in rows
+    ]
+
+
+def _build_company_status_macro_context(*, as_of_date: date) -> Dict[str, Any]:
+    recent_events: List[Dict[str, Any]] = []
+    upcoming_events: List[Dict[str, Any]] = []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT event_name, event_date_time, category, importance, impact_summary, country, event_code
+                FROM market_macro_event
+                WHERE event_date_time >= %s
+                  AND event_date_time < %s
+                ORDER BY event_date_time ASC
+                LIMIT 12
+                """,
+                (
+                    datetime.combine(as_of_date - timedelta(days=7), time.min, tzinfo=timezone.utc),
+                    datetime.combine(as_of_date + timedelta(days=14), time.min, tzinfo=timezone.utc),
+                ),
+            )
+            rows = cur.fetchall()
+    for row in rows:
+        entry = {
+            "event_name": row["event_name"],
+            "event_date_time": row["event_date_time"].isoformat() if row["event_date_time"] else None,
+            "category": row["category"] or "",
+            "importance": row["importance"] or "",
+            "impact_summary": row["impact_summary"] or "",
+            "country": row["country"] or "",
+            "event_code": row["event_code"] or "",
+        }
+        if row["event_date_time"] and row["event_date_time"].date() < as_of_date:
+            recent_events.append(entry)
+        else:
+            upcoming_events.append(entry)
+
+    market_snapshot = _build_company_status_market_snapshot_context(as_of_date=as_of_date)
+    return {
+        "recent_macro_events": recent_events[:6],
+        "upcoming_macro_events": upcoming_events[:6],
+        "market_price_snapshot": market_snapshot,
+    }
+
+
+def _build_company_status_market_snapshot_context(*, as_of_date: date) -> Dict[str, Any]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {COL_PAYLOAD}
+                FROM {TBL_MARKET_PRICE_DAILY_SNAPSHOT}
+                WHERE {COL_SNAPSHOT_DATE} <= %s
+                ORDER BY {COL_SNAPSHOT_DATE} DESC
+                LIMIT 1
+                """,
+                (as_of_date,),
+            )
+            row = cur.fetchone()
+    if not row or not isinstance(row[COL_PAYLOAD], str):
+        return {}
+    try:
+        payload = json.loads(row[COL_PAYLOAD])
+    except json.JSONDecodeError:
+        return {}
+    sections = payload.get("sections") if isinstance(payload, dict) else None
+    if not isinstance(sections, list):
+        return {}
+    return {
+        "snapshot_date": payload.get("date"),
+        "price_date": payload.get("price_date"),
+        "sections": sections[:6],
+    }
+
+
+
+
+
+
+def _normalize_company_quick_price_intelligence_payload(
+    payload: Dict[str, Any],
     *,
     as_of_date: date,
-    prompt_style: str,
-    status_input: Dict[str, Any],
-    output_language: str = "zh-CN",
-) -> str:
-    normalized_prompt = str(prompt_style or "simple").strip().lower()
-    payload_json = json.dumps(status_input, ensure_ascii=False, indent=2)
-    language_line = _build_output_language_line(output_language)
-    if normalized_prompt == "structured":
-        return (
-            f"You are building a rolling company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
-            "Use the provided daily reports and weekly reports as the primary source, and raw news only as fallback context.\n"
-            "Also use the price context and broader market stories to judge positioning and plausible future paths.\n"
-            "Goals:\n"
-            "- Help me quickly catch up on what happened, what is happening now, and what may happen next.\n"
-            "- Explain where the current price seems to sit in context: stretched, compressed, stable, volatile, risky, or relatively steady.\n"
-            "- Identify plausible next paths, what may trigger them, and how likely they look.\n"
-            "- Merge duplicates and repeated coverage.\n"
-            "- Preserve all material company-related developments.\n"
-            "- Rank storylines by importance to this company.\n"
-            "- Use layered structure and clear bullet points.\n"
-            f"{language_line}"
-            "Sections:\n"
-            "1. Price Position\n"
-            "2. Company Status (current state)\n"
-            "3. Active Storylines (ranked)\n"
-            "4. What Changed Recently\n"
-            "5. What To Watch Next\n"
-            "6. Trigger Map and Uncertainties\n"
-            f"Inputs JSON:\n{payload_json}\n"
-        )
+    current_price: Any,
+    previous_run: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    def _to_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    def _to_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = _to_text(value)
+        return [text] if text else []
+
+    def _to_number(value: Any, fallback: Optional[float] = None) -> Optional[float]:
+        try:
+            if value is None or value == "":
+                return fallback
+            return round(float(value), 4)
+        except Exception:
+            return fallback
+
+    def _normalize_zone(value: Any) -> Dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        low = _to_number(data.get("low"), _to_number(current_price))
+        mid = _to_number(data.get("mid"), low)
+        high = _to_number(data.get("high"), mid)
+        return {
+            "low": low,
+            "mid": mid,
+            "high": high,
+            "basis": _to_text(data.get("basis")),
+        }
+
+    def _normalize_method(value: Any) -> Dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        return {
+            "summary": _to_text(data.get("summary")),
+            "fair_price_read": _to_text(data.get("fair_price_read")),
+            "signals": _to_list(data.get("signals")),
+            "risks": _to_list(data.get("risks")),
+        }
+
+    normalized = {
+        "as_of_date": as_of_date.isoformat(),
+        "current_price": _to_number(payload.get("current_price"), _to_number(current_price)),
+        "fair_price_zone": _normalize_zone(payload.get("fair_price_zone")),
+        "price_position": payload.get("price_position") if isinstance(payload.get("price_position"), dict) else {
+            "label": "near_fair",
+            "explanation": "",
+        },
+        "bottom_line": _to_text(payload.get("bottom_line")),
+        "technical_view": _normalize_method(payload.get("technical_view")),
+        "fundamental_market_view": _normalize_method(payload.get("fundamental_market_view")),
+        "synthesis_view": {
+            "summary": _to_text((payload.get("synthesis_view") or {}).get("summary") if isinstance(payload.get("synthesis_view"), dict) else ""),
+            "dominant_method": _to_text((payload.get("synthesis_view") or {}).get("dominant_method") if isinstance(payload.get("synthesis_view"), dict) else ""),
+            "triggers": _to_list((payload.get("synthesis_view") or {}).get("triggers") if isinstance(payload.get("synthesis_view"), dict) else []),
+            "invalidations": _to_list((payload.get("synthesis_view") or {}).get("invalidations") if isinstance(payload.get("synthesis_view"), dict) else []),
+        },
+    }
+    normalized["output_markdown"] = _render_company_quick_price_intelligence_markdown(normalized)
+    return normalized
+
+
+def _render_company_quick_price_intelligence_markdown(payload: Dict[str, Any]) -> str:
+    def _bullet(items: List[str]) -> str:
+        rows = [f"- {item}" for item in items if str(item).strip()]
+        return "\n".join(rows) if rows else "- —"
+
+    zone = payload.get("fair_price_zone") or {}
+    position = payload.get("price_position") or {}
+    synthesis = payload.get("synthesis_view") or {}
     return (
-        f"Please build a company status snapshot for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Goal: help me quickly catch up on what happened to the company, what is happening now, what may happen next, and where the current stock price seems to sit in context.\n"
-        "Requirements:\n"
-        "- Use daily reports and weekly reports as primary sources; use raw news only as fallback context.\n"
-        "- Use price context and broader market stories when judging whether the stock looks stretched, compressed, stable, volatile, risky, or relatively steady.\n"
-        "- Ignore duplicate or near-duplicate information.\n"
-        "- Keep all material company-related points and do not omit important developments.\n"
-        "- Include plausible next paths, the triggers for those paths, and your probability/confidence view.\n"
-        "- Rank information by importance to this company.\n"
-        "- Use layered structure for output which is easy for reading.\n"
-        f"{language_line}"
-        f"Inputs JSON:\n{payload_json}\n"
+        "## Price Intelligence\n"
+        f"- Current Price: {payload.get('current_price') or '—'}\n"
+        f"- Fair Price Zone: {zone.get('low') or '—'} / {zone.get('mid') or '—'} / {zone.get('high') or '—'}\n"
+        f"- Price Position: {position.get('label') or '—'} · {position.get('explanation') or '—'}\n"
+        f"- Bottom Line: {payload.get('bottom_line') or '—'}\n"
+        "\n### Technical View\n"
+        f"- Summary: {(payload.get('technical_view') or {}).get('summary') or '—'}\n"
+        f"- Fair Price Read: {(payload.get('technical_view') or {}).get('fair_price_read') or '—'}\n"
+        f"- Signals:\n{_bullet((payload.get('technical_view') or {}).get('signals') or [])}\n"
+        f"- Risks:\n{_bullet((payload.get('technical_view') or {}).get('risks') or [])}\n"
+        "\n### Fundamental / Market View\n"
+        f"- Summary: {(payload.get('fundamental_market_view') or {}).get('summary') or '—'}\n"
+        f"- Fair Price Read: {(payload.get('fundamental_market_view') or {}).get('fair_price_read') or '—'}\n"
+        f"- Signals:\n{_bullet((payload.get('fundamental_market_view') or {}).get('signals') or [])}\n"
+        f"- Risks:\n{_bullet((payload.get('fundamental_market_view') or {}).get('risks') or [])}\n"
+        "\n### Synthesis\n"
+        f"- Summary: {synthesis.get('summary') or '—'}\n"
+        f"- Dominant Method: {synthesis.get('dominant_method') or '—'}\n"
+        f"- Triggers:\n{_bullet(synthesis.get('triggers') or [])}\n"
+        f"- Invalidations:\n{_bullet(synthesis.get('invalidations') or [])}\n"
+    )
+
+
+def _normalize_company_status_payload(payload: Dict[str, Any], *, as_of_date: date) -> Dict[str, Any]:
+    def _to_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    def _to_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    def _normalize_horizon(name: str, value: Any) -> Dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        confidence = data.get("confidence")
+        try:
+            confidence_value = max(0.0, min(float(confidence), 1.0))
+        except Exception:
+            confidence_value = 0.5
+        return {
+            "horizon": name,
+            "confidence": round(confidence_value, 2),
+            "price_judgment": _to_text(data.get("price_judgment")),
+            "rationale": _to_list(data.get("rationale")),
+            "watch_signals": _to_list(data.get("watch_signals")),
+            "invalidations": _to_list(data.get("invalidations")),
+        }
+
+    normalized = {
+        "as_of_date": as_of_date.isoformat(),
+        "company_summary": _to_text(payload.get("company_summary")),
+        "dominant_personality": payload.get("dominant_personality") if isinstance(payload.get("dominant_personality"), dict) else {
+            "label": "",
+            "dominant_horizon": "balanced",
+            "why": "",
+        },
+        "price_position_summary": _to_text(payload.get("price_position_summary")),
+        "market_regime_context": _to_text(payload.get("market_regime_context")),
+        "decision_brief": payload.get("decision_brief") if isinstance(payload.get("decision_brief"), dict) else {},
+        "research_memo": payload.get("research_memo") if isinstance(payload.get("research_memo"), dict) else {},
+        "trader_view": payload.get("trader_view") if isinstance(payload.get("trader_view"), dict) else {},
+        "short_horizon_view": _normalize_horizon("short", payload.get("short_horizon_view")),
+        "medium_horizon_view": _normalize_horizon("medium", payload.get("medium_horizon_view")),
+        "long_horizon_view": _normalize_horizon("long", payload.get("long_horizon_view")),
+        "signals_to_watch": _to_list(payload.get("signals_to_watch")),
+        "risk_map": _to_list(payload.get("risk_map")),
+        "uncertainty_map": _to_list(payload.get("uncertainty_map")),
+        "trading_style_fit": _to_list(payload.get("trading_style_fit")),
+        "supporting_reasoning": _to_list(payload.get("supporting_reasoning")),
+    }
+    markdown = _to_text(payload.get("output_markdown"))
+    if not markdown:
+        markdown = _render_company_status_markdown(normalized)
+    normalized["output_markdown"] = markdown
+    return normalized
+
+
+def _render_company_status_markdown(payload: Dict[str, Any]) -> str:
+    def _bullet_block(items: List[str]) -> str:
+        rows = [f"- {item}" for item in items if str(item).strip()]
+        return "\n".join(rows) if rows else "- —"
+
+    def _render_horizon(section: Dict[str, Any]) -> str:
+        return (
+            f"- Confidence: {section.get('confidence', 0.5)}\n"
+            f"- Price Judgment: {section.get('price_judgment') or '—'}\n"
+            f"- Rationale:\n{_bullet_block(section.get('rationale') or [])}\n"
+            f"- Watch Signals:\n{_bullet_block(section.get('watch_signals') or [])}\n"
+            f"- Invalidations:\n{_bullet_block(section.get('invalidations') or [])}"
+        )
+
+    decision = payload.get("decision_brief") if isinstance(payload.get("decision_brief"), dict) else {}
+    research = payload.get("research_memo") if isinstance(payload.get("research_memo"), dict) else {}
+    trader = payload.get("trader_view") if isinstance(payload.get("trader_view"), dict) else {}
+    personality = payload.get("dominant_personality") if isinstance(payload.get("dominant_personality"), dict) else {}
+    return (
+        "## Decision Brief\n"
+        f"- Company Summary: {payload.get('company_summary') or '—'}\n"
+        f"- Price Position: {payload.get('price_position_summary') or '—'}\n"
+        f"- Market Regime: {payload.get('market_regime_context') or '—'}\n"
+        f"- Dominant Personality: {personality.get('label') or '—'}\n"
+        f"- Dominant Horizon: {personality.get('dominant_horizon') or 'balanced'}\n"
+        f"- Why Dominant: {personality.get('why') or '—'}\n"
+        f"- Summary: {decision.get('summary') or '—'}\n"
+        f"- Key Reasons:\n{_bullet_block(decision.get('key_reasons') or [])}\n"
+        f"- Top Watch Signals:\n{_bullet_block(decision.get('top_watch_signals') or [])}\n"
+        "\n### Short Horizon\n"
+        f"{_render_horizon(payload.get('short_horizon_view') or {})}\n"
+        "\n### Medium Horizon\n"
+        f"{_render_horizon(payload.get('medium_horizon_view') or {})}\n"
+        "\n### Long Horizon\n"
+        f"{_render_horizon(payload.get('long_horizon_view') or {})}\n"
+        "\n## Research Memo\n"
+        f"- Company State: {research.get('company_state') or '—'}\n"
+        f"- Market Belief: {research.get('market_belief') or '—'}\n"
+        f"- Valuation vs Expectations: {research.get('valuation_vs_expectations') or '—'}\n"
+        f"- Advantages:\n{_bullet_block(research.get('advantages') or [])}\n"
+        f"- Disadvantages:\n{_bullet_block(research.get('disadvantages') or [])}\n"
+        f"- Certainties:\n{_bullet_block(research.get('certainties') or [])}\n"
+        f"- Uncertainties:\n{_bullet_block(research.get('uncertainties') or [])}\n"
+        "\n## Trader View\n"
+        f"- Behavior Driver: {trader.get('behavior_driver') or '—'}\n"
+        f"- Short-term Notes: {trader.get('short_term_notes') or '—'}\n"
+        f"- Setup Fit:\n{_bullet_block(trader.get('setup_fit') or [])}\n"
+        f"- Entry Signals:\n{_bullet_block(trader.get('entry_signals') or [])}\n"
+        f"- Exit Signals:\n{_bullet_block(trader.get('exit_signals') or [])}\n"
+        f"- Wait Signals:\n{_bullet_block(trader.get('wait_signals') or [])}\n"
+        f"\n## Signals To Watch\n{_bullet_block(payload.get('signals_to_watch') or [])}\n"
+        f"\n## Risk Map\n{_bullet_block(payload.get('risk_map') or [])}\n"
+        f"\n## Uncertainty Map\n{_bullet_block(payload.get('uncertainty_map') or [])}\n"
+        f"\n## Trading Style Fit\n{_bullet_block(payload.get('trading_style_fit') or [])}\n"
+        f"\n## Supporting Reasoning\n{_bullet_block(payload.get('supporting_reasoning') or [])}\n"
     )
 
 
@@ -4247,80 +5125,8 @@ def _build_company_story_warmup_input_items(
     return items
 
 
-def _build_company_story_warmup_prompt(
-    company_name: str,
-    *,
-    start_date: date,
-    end_date: date,
-    output_language: str,
-    items: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    items_json = json.dumps(items, ensure_ascii=False, indent=2)
-    return (
-        f"You are building a {company_name} story map from company news between {start_date.isoformat()} and {end_date.isoformat()}.\n"
-        "Find all material storylines for this company.\n"
-        "Do not miss important storylines.\n"
-        "Merge duplicate or overlapping coverage.\n"
-        "Separate ongoing stories from finished stories.\n"
-        "Use the timeline across all news to connect related events into storylines.\n"
-        "Mark a story as finished only if the main event is resolved or no longer actively developing.\n"
-        "Rules:\n"
-        "- Focus on company-specific and investor-relevant developments.\n"
-        "- Past and Now must be bullet points.\n"
-        "- Next must be bullet points, and each bullet must include expected scenario, impact, probability/confidence, and sentiment.\n"
-        "- Keep evidence references so we know which news supports each storyline.\n"
-        "- Return JSON only.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "ongoing_stories": [\n'
-        "    {\n"
-        '      "story_key": "stable_key",\n'
-        '      "story_title": "short title",\n'
-        '      "importance_rank": 1,\n'
-        '      "past": ["..."],\n'
-        '      "now": ["..."],\n'
-        '      "next": ["Scenario: ... | Impact: ... | Probability: ... | Sentiment: ..."],\n'
-        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}]\n'
-        "    }\n"
-        "  ],\n"
-        '  "finished_stories": [\n'
-        "    {\n"
-        '      "story_key": "stable_key",\n'
-        '      "story_title": "short title",\n'
-        '      "importance_rank": 1,\n'
-        '      "past": ["..."],\n'
-        '      "now": ["Final state / resolution ..."],\n'
-        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        f"News corpus JSON:\n{items_json}\n"
-    )
 
 
-def _build_company_story_warmup_consolidation_prompt(
-    company_name: str,
-    *,
-    start_date: date,
-    end_date: date,
-    output_language: str,
-    chunk_results: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(chunk_results, ensure_ascii=False, indent=2)
-    return (
-        f"Merge chunk-level story drafts for {company_name} between {start_date.isoformat()} and {end_date.isoformat()}.\n"
-        "Goal:\n"
-        "- Merge duplicate or overlapping stories.\n"
-        "- Keep all material company storylines.\n"
-        "- Separate ongoing stories from finished stories.\n"
-        "- Preserve timeline continuity.\n"
-        "- Return JSON only with keys ongoing_stories and finished_stories.\n"
-        f"{language_line}"
-        f"Chunk story drafts JSON:\n{payload_json}\n"
-    )
 
 
 def _normalize_story_warmup_groups(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
@@ -4445,67 +5251,6 @@ def _generate_company_story_warmup_story_map(
     }
 
 
-def _build_company_story_update_prompt(
-    company_name: str,
-    *,
-    as_of_date: date,
-    prompt_style: str,
-    output_language: str,
-    existing_stories: List[Dict[str, Any]],
-    status_input: Dict[str, Any],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload = {
-        "existing_stories": existing_stories,
-        "new_evidence": status_input,
-    }
-    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    normalized_prompt = str(prompt_style or "simple").strip().lower()
-    if normalized_prompt == "structured":
-        return (
-            f"You maintain a rolling story map for {company_name} as of {as_of_date.isoformat()}.\n"
-            "Update the existing stories with new evidence.\n"
-            "Rules:\n"
-            "- Keep story continuity across time; move points between happened/happening/next when state changes.\n"
-            "- Merge duplicate or near-duplicate stories.\n"
-            "- Preserve material company-related developments.\n"
-            "- Rank stories by importance.\n"
-            "- Return JSON only.\n"
-            f"{language_line}"
-            "Output JSON schema:\n"
-            "{\n"
-            '  "stories": [\n'
-            "    {\n"
-            '      "story_key": "stable_slug_key",\n'
-            '      "story_title": "short title",\n'
-            '      "importance_rank": 1,\n'
-            '      "story_status": "rising|stable|fading|resolved",\n'
-            '      "confidence": 0.0,\n'
-            '      "happened_text": "what happened",\n'
-            '      "happening_text": "what is happening now",\n'
-            '      "next_text": "what may happen next",\n'
-            '      "open_questions": ["..."],\n'
-            '      "evidence": ["..."],\n'
-            '      "change_log": ["..."]\n'
-            "    }\n"
-            "  ]\n"
-            "}\n"
-            f"Inputs JSON:\n{payload_json}\n"
-        )
-    return (
-        f"Update the company stories for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Use existing stories + new evidence to update story progression.\n"
-        "Rules:\n"
-        "- Keep continuity over time.\n"
-        "- If a predicted item is now happening or happened, move it to the right section.\n"
-        "- Ignore duplicates.\n"
-        "- Rank stories by importance.\n"
-        "- Return JSON only with key `stories`.\n"
-        f"{language_line}"
-        "Each story object fields:\n"
-        "story_key, story_title, importance_rank, story_status, confidence, happened_text, happening_text, next_text, open_questions, evidence, change_log.\n"
-        f"Inputs JSON:\n{payload_json}\n"
-    )
 
 
 # Build a compact daily delta payload so incremental story update works on today's
@@ -4540,51 +5285,8 @@ def _build_company_story_incremental_news_items(
     return items
 
 
-def _build_company_story_context(existing_stories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "story_key": item.get("story_key"),
-            "story_title": item.get("story_title"),
-            "story_summary": item.get("story_summary") or "",
-            "story_status": item.get("story_status") or "ongoing",
-            "importance_rank": item.get("importance_rank") or 999,
-            "priority": item.get("priority") or "normal",
-        }
-        for item in existing_stories
-        if isinstance(item, dict)
-    ]
 
 
-def _build_company_daily_cluster_prompt(
-    company_name: str,
-    *,
-    target_date: date,
-    items: List[Dict[str, Any]],
-    output_language: str,
-) -> str:
-    items_json = json.dumps(items, ensure_ascii=False, indent=2)
-    language_line = _build_output_language_line(output_language)
-    return (
-        f"Cluster the company news for {company_name} on {target_date.isoformat()} into a small set of distinct daily company narratives.\n"
-        "Goal:\n"
-        f"- Produce {COMPANY_DAILY_CLUSTER_MIN} to {COMPANY_DAILY_CLUSTER_MAX} meaningful clusters when possible.\n"
-        "- Group duplicate or overlapping coverage into one cluster.\n"
-        "- Each cluster should have a short title and a compact summary.\n"
-        "- Return JSON only.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "clusters": [\n'
-        "    {\n"
-        '      "cluster_key": "short-stable-key",\n'
-        '      "cluster_title": "short title",\n'
-        '      "cluster_summary": "one compact summary paragraph",\n'
-        '      "source_news": [{"news_id": 123, "headline": "...", "url": "...", "datetime_text": "..."}]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        f"News items JSON:\n{items_json}\n"
-    )
 
 
 def _normalize_company_cluster_rows(
@@ -4710,91 +5412,8 @@ def _build_company_story_cluster_input_items(
     ]
 
 
-def _build_company_story_warmup_cluster_prompt(
-    company_name: str,
-    *,
-    start_date: date,
-    end_date: date,
-    output_language: str,
-    items: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    items_json = json.dumps(items, ensure_ascii=False, indent=2)
-    return (
-        f"You are building the initial company story map for {company_name} from daily clusters between {start_date.isoformat()} and {end_date.isoformat()}.\n"
-        "Find the distinct company storylines across the period.\n"
-        "Each story must include a title, a compact summary, an ordered timeline_items list, and a future_and_impact list.\n"
-        "Timeline items should reflect meaningful developments in chronological order.\n"
-        "Future and impact items should describe plausible forward scenarios with probability and impact.\n"
-        "Return JSON only as an object with key stories.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "stories": [\n'
-        "    {\n"
-        '      "story_key": "stable-key",\n'
-        '      "story_title": "short title",\n'
-        '      "story_summary": "compact summary",\n'
-        '      "importance_rank": 1,\n'
-        '      "story_status": "ongoing|finished|resolved|closed",\n'
-        '      "priority": "normal|high",\n'
-        '      "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
-        '      "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
-        '      "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
-        '      "change_log": ["..."]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        f"Daily company clusters JSON:\n{items_json}\n"
-    )
 
 
-def _build_company_story_routing_prompt(
-    company_name: str,
-    *,
-    as_of_date: date,
-    prompt_style: str,
-    output_language: str,
-    existing_stories: List[Dict[str, Any]],
-    clusters: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(
-        {
-            "existing_stories": _build_company_story_context(existing_stories),
-            "daily_clusters": clusters,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"You are routing daily company clusters into the live story map for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Goal:\n"
-        "- Assign each cluster to exactly one outcome.\n"
-        "- Prefer an existing story if the cluster clearly belongs there.\n"
-        "- Create a new story only if the cluster introduces a distinct new storyline.\n"
-        "- Ignore only if the cluster is duplicate or not materially useful.\n"
-        "Rules:\n"
-        "- One cluster can belong to only one story bucket.\n"
-        "- Do not assign the same cluster to multiple stories.\n"
-        "- Use story title, story summary, and priority as the routing context.\n"
-        "- If the match is ambiguous, choose the best-fit story and keep story boundaries clean.\n"
-        "- Return JSON only.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "decisions": [\n'
-        "    {\n"
-        '      "cluster_key": "cluster-key",\n'
-        '      "action": "existing_story|new_story|ignore",\n'
-        '      "story_key": "existing_story_key",\n'
-        '      "new_story_title": "title only when action=new_story",\n'
-        '      "reason": "not_related|duplicate|best_fit note"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        f"Inputs JSON:\n{payload_json}\n"
-    )
 
 
 def _normalize_story_routing_result(
@@ -4868,94 +5487,8 @@ def _normalize_story_routing_result(
     }
 
 
-def _build_incremental_existing_story_prompt(
-    company_name: str,
-    *,
-    as_of_date: date,
-    output_language: str,
-    story: Dict[str, Any],
-    clusters: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(
-        {
-            "existing_story": _build_company_story_context([story])[0],
-            "daily_clusters": clusters,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"Update one existing company story for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Goal:\n"
-        "- Use the assigned daily clusters to update this single story only.\n"
-        "- Preserve continuity and keep the same story_key.\n"
-        "- Update story_summary, timeline_items, and future_and_impact.\n"
-        "- Timeline items must be ordered chronologically.\n"
-        "- Return JSON only.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "story": {\n'
-        '    "story_key": "same_existing_key",\n'
-        '    "story_title": "short title",\n'
-        '    "importance_rank": 1,\n'
-        '    "story_status": "ongoing|stable|rising|fading|resolved|finished|closed",\n'
-        '    "priority": "normal|high",\n'
-        '    "story_summary": "compact summary",\n'
-        '    "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
-        '    "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
-        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
-        '    "change_log": ["..."]\n'
-        "  }\n"
-        "}\n"
-        f"Inputs JSON:\n{payload_json}\n"
-    )
 
 
-def _build_incremental_new_story_prompt(
-    company_name: str,
-    *,
-    as_of_date: date,
-    output_language: str,
-    story_key: str,
-    story_title: str,
-    clusters: List[Dict[str, Any]],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(
-        {
-            "new_story_key": story_key,
-            "new_story_title": story_title,
-            "daily_clusters": clusters,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"Create one new company story for {company_name} as of {as_of_date.isoformat()}.\n"
-        "Goal:\n"
-        "- Build exactly one distinct new story from the assigned daily clusters.\n"
-        "- Provide a compact summary, timeline_items, and future_and_impact.\n"
-        "- Return JSON only.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "story": {\n'
-        '    "story_key": "provided_key",\n'
-        '    "story_title": "short title",\n'
-        '    "importance_rank": 1,\n'
-        '    "story_status": "ongoing|stable|rising|fading|resolved|finished|closed",\n'
-        '    "priority": "normal|high",\n'
-        '    "story_summary": "compact summary",\n'
-        '    "timeline_items": [{"date": "2026-03-10", "label": "event", "summary": "..."}],\n'
-        '    "future_and_impact": [{"scenario": "...", "probability": "low|medium|high", "impact": "..."}],\n'
-        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
-        '    "change_log": ["..."]\n'
-        "  }\n"
-        "}\n"
-        f"Inputs JSON:\n{payload_json}\n"
-    )
 
 
 def _normalize_incremental_story_item(
@@ -5082,83 +5615,10 @@ def _apply_incremental_story_updates(
     }
 
 
-def _build_company_story_qa_prompt(
-    *,
-    company_name: str,
-    output_language: str,
-    story: Dict[str, Any],
-    recent_updates: List[Dict[str, Any]],
-    question: str,
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(
-        {"story": story, "recent_updates": recent_updates},
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"You are answering a deep-dive question for company {company_name}.\n"
-        "Use the story state and recent updates as the primary context.\n"
-        "If evidence is insufficient, say what is missing.\n"
-        "Use concise layered structure.\n"
-        f"{language_line}"
-        f"Question:\n{question}\n\n"
-        f"Context JSON:\n{payload_json}\n"
-    )
 
 
-def _build_company_story_qa_merge_prompt(
-    *,
-    company_name: str,
-    output_language: str,
-    story: Dict[str, Any],
-    recent_updates: List[Dict[str, Any]],
-    qa_row: Dict[str, Any],
-) -> str:
-    language_line = _build_output_language_line(output_language)
-    payload_json = json.dumps(
-        {
-            "story": story,
-            "recent_updates": recent_updates,
-            "qa": qa_row,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    return (
-        f"You are merging a story deep-dive answer back into the live story state for {company_name}.\n"
-        "Use the existing story as the base.\n"
-        "Use the Q&A answer only if it adds material clarification, context, or updated understanding.\n"
-        "Do not drift away from the current storyline.\n"
-        "Keep the same story_key.\n"
-        "Past and Now should remain bullet-oriented.\n"
-        "Next should remain concise bullet lines including scenario, impact, probability/confidence, and sentiment.\n"
-        "Return JSON only with key story.\n"
-        f"{language_line}"
-        "Output JSON schema:\n"
-        "{\n"
-        '  "story": {\n'
-        '    "story_key": "same_existing_key",\n'
-        '    "story_title": "short title",\n'
-        '    "importance_rank": 1,\n'
-        '    "story_status": "stable|rising|fading|resolved|finished|closed",\n'
-        '    "happened_text": "- ...",\n'
-        '    "happening_text": "- ...",\n'
-        '    "next_text": "- Scenario: ... | Impact: ... | Probability: ... | Sentiment: ...",\n'
-        '    "open_questions": ["..."],\n'
-        '    "evidence": [{"news_title": "...", "news_date_time": "...", "news_source_link": "..."}],\n'
-        '    "change_log": ["Merged clarification from story Q&A ..."]\n'
-        "  }\n"
-        "}\n"
-        f"Context JSON:\n{payload_json}\n"
-    )
 
 
-def _build_output_language_line(output_language: str) -> str:
-    normalized = str(output_language or "").strip().lower()
-    if normalized in {"zh", "zh-cn", "zh_hans", "chinese", "simplified chinese"}:
-        return "- Output should be written in Simplified Chinese.\n"
-    return ""
 
 
 def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -5368,6 +5828,48 @@ def _normalize_ticker(ticker: Optional[str]) -> Optional[str]:
         return None
     normalized = str(ticker).strip().upper()
     return normalized or None
+
+
+def _normalize_note_tag(tag: Optional[str]) -> str:
+    normalized = str(tag or "").strip().lower()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized[:80]
+
+
+def _normalize_note_tags(tags: Optional[Iterable[str]]) -> List[Dict[str, str]]:
+    values: List[str] = []
+    if tags is None:
+        values = []
+    elif isinstance(tags, str):
+        raw = re.split(r"[,#\n]+", tags)
+        values = [part.strip() for part in raw if str(part or "").strip()]
+    else:
+        values = [str(part or "").strip() for part in tags if str(part or "").strip()]
+    dedup: Dict[str, str] = {}
+    for value in values:
+        clean = re.sub(r"\s+", " ", value).strip()
+        normalized = _normalize_note_tag(clean)
+        if not clean or not normalized:
+            continue
+        dedup.setdefault(normalized, clean[:80])
+    return [
+        {"tag_text": display, "normalized_tag": normalized}
+        for normalized, display in dedup.items()
+    ]
+
+
+def _replace_user_note_tags(cur: Any, *, note_id: int, tag_rows: List[Dict[str, str]]) -> None:
+    cur.execute("DELETE FROM user_note_tag WHERE note_id = %s", (int(note_id),))
+    for row in tag_rows:
+        cur.execute(
+            """
+            INSERT INTO user_note_tag (note_id, tag_text, normalized_tag)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (note_id, normalized_tag) DO UPDATE
+            SET tag_text = EXCLUDED.tag_text
+            """,
+            (int(note_id), row["tag_text"], row["normalized_tag"]),
+        )
 
 
 def _story_warmup_key(

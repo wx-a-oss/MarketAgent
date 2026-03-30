@@ -111,6 +111,7 @@ def render_nav(active: str) -> str:
         ("market", "/market", "Market"),
         ("calendar", "/calendar", "Calendar"),
         ("company", "/company", "Company"),
+        ("notes", "/notes", "Notes"),
         ("person", "/person", "Person"),
     ]
     links = "".join(

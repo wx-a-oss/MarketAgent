@@ -35,6 +35,11 @@ TBL_MARKET_PRICE_DAILY_SNAPSHOT = "market_price_daily_snapshot"
 COL_SNAPSHOT_DATE = "snapshot_date"
 COL_PAYLOAD = "payload"
 
+# Company status snapshot storage
+TBL_COMPANY_STATUS_SNAPSHOT = "company_status_snapshot"
+TBL_COMPANY_PRICE_INTELLIGENCE_RUN = "company_price_intelligence_run"
+COL_OUTPUT_JSON = "output_json"
+
 # Market story storage
 TBL_MARKET_STORY_STATE = "market_story_state"
 TBL_MARKET_STORY_UPDATE = "market_story_update"

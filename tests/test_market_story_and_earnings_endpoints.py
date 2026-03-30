@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from frontend.web.calendar_page import render_calendar_page  # noqa: E402
 from frontend.web.company_detail_page import render_company_detail_page  # noqa: E402
 from frontend.web.market_page import render_market_page  # noqa: E402
+from frontend.web.notes_page import render_notes_page  # noqa: E402
 from frontend.web.server import app  # noqa: E402
 from market_agent.app.company_updates import run_daily_updates_for_watchlist  # noqa: E402
 from market_agent.app import market_updates  # noqa: E402
 from market_agent.analysis.company.news import service as company_news_service  # noqa: E402
+from market_agent.analysis.stock.single_stock import analyze_single_stock_sections  # noqa: E402
 
 
 def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
@@ -59,8 +61,11 @@ def test_market_stories_warmup_endpoint_returns_status(monkeypatch) -> None:
 
 def test_market_stories_refresh_endpoint_returns_updated_overview(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server.run_market_daily_update",
-        lambda **kwargs: {"updated": True, "story_count": 2},
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "started",
+            "job": {"job_id": 11, "status": "running", "current_stage": "routing_backlog"},
+        },
     )
     monkeypatch.setattr(
         "frontend.web.server.get_market_story_overview",
@@ -71,22 +76,20 @@ def test_market_stories_refresh_endpoint_returns_updated_overview(monkeypatch) -
         },
     )
     client = TestClient(app)
-    response = client.post("/api/market/stories/refresh", params={"date": "2026-03-12"})
+    response = client.post("/api/market/stories/refresh")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["updated"] is True
+    assert payload["mode"] == "started"
+    assert payload["job"]["job_id"] == 11
     assert payload["ongoing_stories"][0]["story_title"] == "Oil shock"
 
 
 def test_market_macro_refresh_endpoint_returns_events(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server.refresh_market_macro_events",
-        lambda provider_name="openai", model="gpt-5-mini", output_language="zh-CN", extend_window=False: {
-            "updated": 2,
-            "event_count": 2,
-            "window_start": "2026-03-13",
-            "window_end": "2026-04-11",
-            "action": "extend_calendar_by_1_month",
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "started",
+            "job": {"job_id": 12, "status": "running", "current_stage": "extending_calendar"},
         },
     )
     monkeypatch.setattr(
@@ -100,21 +103,32 @@ def test_market_macro_refresh_endpoint_returns_events(monkeypatch) -> None:
     response = client.post("/api/market/macro/refresh")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["updated"] == 2
+    assert payload["mode"] == "started"
+    assert payload["job"]["job_id"] == 12
     assert len(payload["events"]) == 2
-    assert payload["description"] == "Extend calendar by 1 more month."
+    assert payload["description"] == "Refresh the stored calendar for the next 3 months."
 
 
 def test_market_macro_endpoint_returns_date_window(monkeypatch) -> None:
+    captured = {}
+
+    def fake_list(start_date=None, end_date=None, limit=80):
+        captured["start_date"] = start_date
+        captured["end_date"] = end_date
+        captured["limit"] = limit
+        return [{"event_name": "CPI", "event_date_time": "2026-03-12T12:30:00+00:00"}]
+
     monkeypatch.setattr(
         "frontend.web.server.list_market_macro_events",
-        lambda start_date=None, end_date=None, limit=80: [{"event_name": "CPI"}],
+        fake_list,
     )
     client = TestClient(app)
     response = client.get("/api/market/macro")
     assert response.status_code == 200
     payload = response.json()
     assert payload["events"][0]["event_name"] == "CPI"
+    assert captured["start_date"] is None
+    assert captured["end_date"] is None
     assert "start_date" in payload
     assert "end_date" in payload
 
@@ -156,27 +170,182 @@ def test_company_earnings_refresh_endpoint_returns_stats(monkeypatch) -> None:
     assert payload["updated"] == 4
 
 
-def test_company_price_intelligence_generate_endpoint_returns_status(monkeypatch) -> None:
+def test_company_price_intelligence_generate_endpoint_returns_run(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server.generate_company_status_snapshot",
-        lambda company_name, provider_name="openai", model="gpt-5-mini", prompt_style="simple", output_language="zh-CN", window_days=90: {"generated": True},
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "started",
+            "job": {"job_id": 13, "status": "running", "current_stage": "building_price_intelligence"},
+        },
     )
     monkeypatch.setattr(
-        "frontend.web.server.get_company_status_snapshot",
-        lambda company_name, provider_name="openai", prompt_style="simple": {
+        "frontend.web.server.get_company_price_intelligence_run",
+        lambda company_name, run_id=None: {
+            "id": 7,
             "company_name": company_name,
-            "output_text": "price intelligence",
-            "window_start_date": "2026-01-01",
-            "window_end_date": "2026-03-12",
-            "provider": provider_name,
+            "as_of_date": "2026-03-12",
+            "provider": "openai",
             "model": "gpt-5-mini",
+            "context_window_days": 730,
+            "focus_window_days": 60,
+            "bottom_line": "Near fair with improving fundamentals",
+            "fair_price_zone": {"low": 110, "mid": 120, "high": 130, "basis": "blend"},
+            "price_position": {"label": "near_fair", "explanation": "Trading near fair zone midpoint"},
+            "technical_view": {"summary": "Trend intact"},
+            "fundamental_market_view": {"summary": "Demand remains strong"},
+            "synthesis_view": {"summary": "Constructive but not cheap"},
+            "short_horizon": {"stance": "hold", "confidence": 0.6, "rationale": ["momentum remains positive"]},
+            "medium_horizon": {"stance": "buy", "confidence": 0.7, "rationale": ["earnings support"]},
+            "long_horizon": {"stance": "buy", "confidence": 0.8, "rationale": ["AI leadership"]},
         },
+    )
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_price_intelligence_runs",
+        lambda company_name, limit=10: [
+            {"id": 7, "company_name": company_name, "created_at": "2026-03-12T10:00:00+00:00"},
+            {"id": 6, "company_name": company_name, "created_at": "2026-03-11T10:00:00+00:00"},
+        ],
     )
     client = TestClient(app)
     response = client.post("/api/company/Google/price-intelligence/generate")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"]["output_text"] == "price intelligence"
+    assert payload["mode"] == "started"
+    assert payload["job"]["job_id"] == 13
+    assert payload["run"]["bottom_line"] == "Near fair with improving fundamentals"
+    assert payload["run"]["medium_horizon"]["stance"] == "buy"
+    assert payload["history_preview"][0]["id"] == 7
+
+
+def test_company_price_intelligence_history_endpoint_returns_runs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_price_intelligence_runs",
+        lambda company_name, limit=20: [
+            {"id": 7, "company_name": company_name, "created_at": "2026-03-12T10:00:00+00:00"},
+            {"id": 6, "company_name": company_name, "created_at": "2026-03-11T10:00:00+00:00"},
+        ],
+    )
+    client = TestClient(app)
+    response = client.get("/api/company/Google/price-intelligence/history")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["company"] == "Google"
+    assert len(payload["runs"]) == 2
+    assert payload["runs"][0]["id"] == 7
+
+
+def test_company_indicators_analyze_endpoint_no_longer_depends_on_output_language(monkeypatch) -> None:
+    class _FakeSnapshot:
+        symbol = "NVDA"
+
+    monkeypatch.setattr("frontend.web.server.get_company_profile", lambda company_name: {"ticker": "NVDA"})
+    monkeypatch.setattr("frontend.web.server.client.query", lambda ticker: _FakeSnapshot())
+    monkeypatch.setattr("frontend.web.server.get_provider", lambda provider, model="gpt-4o-mini": object())
+
+    captured: dict[str, object] = {}
+
+    def _fake_analyze(snapshot, provider=None, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"sections": {"Quote": {"summary": "中文", "highlights": [], "risks": [], "questions": []}}}
+
+    monkeypatch.setattr("frontend.web.server.analyze_single_stock_sections", _fake_analyze)
+
+    client = TestClient(app)
+    response = client.post("/api/company/Nvidia/indicators/analyze")
+    assert response.status_code == 200
+    assert "output_language" not in captured["kwargs"]
+
+
+def test_indicator_analysis_skips_quote_section() -> None:
+    class _Base:
+        def as_dict(self):
+            return {
+                "symbol": "NVDA",
+                "quote_timestamp": "2026-03-29T12:00:00Z",
+                "previous_close": 120.0,
+                "rsi": 58.0,
+            }
+
+    class _Snapshot:
+        symbol = "NVDA"
+        base = _Base()
+
+    class _Provider:
+        name = "fake"
+
+        def __init__(self):
+            self.sections = []
+
+        def analyze_section(self, payload):
+            self.sections.append(payload["section"])
+            return {"summary": "x", "highlights": [], "risks": [], "questions": []}
+
+    provider = _Provider()
+    result = analyze_single_stock_sections(_Snapshot(), provider=provider)
+
+    assert "Quote" not in provider.sections
+    assert "Quote" not in result["sections"]
+    assert "Price & Returns" in result["sections"]
+
+
+def test_company_analysis_inputs_drop_story_and_earnings_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        company_news_service,
+        "get_company_daily_reports_for_range",
+        lambda *args, **kwargs: [
+            {"report_date": "2026-03-10", "output_text": "Report 1"},
+            {"report_date": "2026-03-11", "output_text": "Report 2"},
+        ],
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "_build_company_status_raw_news_fallback",
+        lambda *args, **kwargs: [{"news_title": "Fallback"}],
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "_build_company_status_price_context",
+        lambda *args, **kwargs: {"point_count": 12, "latest_close": 123.4, "recent_points": [{"trade_date": "2026-03-11", "close": 123.4}]},
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "_build_company_status_market_story_context",
+        lambda *args, **kwargs: [{"story_title": "Rates repricing"}],
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "_build_company_status_market_daily_summary_context",
+        lambda *args, **kwargs: [{"summary_date": "2026-03-11", "output_text": "Market summary"}],
+    )
+    detailed = company_news_service._build_company_price_intelligence_input(
+        "Nvidia",
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 11),
+        provider_name="openai",
+        output_language="zh-CN",
+    )
+    quick = company_news_service._build_company_quick_price_intelligence_input(
+        "Nvidia",
+        context_start=date(2025, 3, 12),
+        focus_start=date(2026, 1, 11),
+        end_date=date(2026, 3, 11),
+        provider_name="openai",
+        output_language="zh-CN",
+    )
+
+    for payload in (detailed, quick):
+        assert "active_company_stories" not in payload
+        assert "recent_story_updates" not in payload
+        assert "earnings_context" not in payload
+        assert "macro_context" not in payload
+        assert payload["daily_reports"]
+        assert payload["raw_news_fallback"]
+        assert payload["market_daily_summaries"]
+        assert payload["price_context"]["point_count"] == 12
+        assert payload["input_coverage"]["daily_report_count"] == 2
+        assert payload["input_coverage"]["raw_news_fallback_count"] == 1
+        assert payload["input_coverage"]["market_summary_count"] == 1
+        assert payload["input_coverage"]["price_point_count"] == 12
 
 
 def test_market_page_renders_overview_and_stories_subviews() -> None:
@@ -188,7 +357,70 @@ def test_market_page_renders_overview_and_stories_subviews() -> None:
     assert "Stories" in html
     assert "market-stories-view" in html
     assert "refresh-market-stories" in html
+    assert "market-date-stories" not in html
     assert "Macro Calendar" not in html
+
+
+def test_notes_page_renders_notes_ui() -> None:
+    html = render_notes_page()
+    assert ">Notes<" in html
+    assert "Save Note" in html
+    assert "/api/notes" in html
+
+
+def test_notes_list_endpoint_returns_notes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.list_user_notes",
+        lambda tag=None: [
+            {
+                "id": 1,
+                "title": "Nvidia setup",
+                "body_markdown": "- Watch **AI** spending",
+                "validity_state": "valid",
+                "tags": ["Nvidia", "AI"],
+            }
+        ],
+    )
+    client = TestClient(app)
+    response = client.get("/api/notes", params={"tag": "nvidia"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["notes"][0]["title"] == "Nvidia setup"
+
+
+def test_notes_create_endpoint_returns_note(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.create_user_note",
+        lambda title, body_markdown, tags=None: {
+            "id": 2,
+            "title": title,
+            "body_markdown": body_markdown,
+            "tags": ["Fed"],
+            "validity_state": "valid",
+        },
+    )
+    client = TestClient(app)
+    response = client.post("/api/notes", json={"title": "Macro", "body": "- Watch rates", "tags": "Fed"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["note"]["title"] == "Macro"
+
+
+def test_notes_invalidate_endpoint_is_idempotent(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.invalidate_user_note",
+        lambda note_id, reason=None: {
+            "id": note_id,
+            "title": "Wrong thesis",
+            "validity_state": "invalid",
+            "invalidation_reason": reason or "",
+        },
+    )
+    client = TestClient(app)
+    response = client.post("/api/notes/7/invalidate", json={"reason": "Thesis broken"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["note"]["validity_state"] == "invalid"
 
 
 def test_calendar_page_renders_calendar_controls() -> None:
@@ -196,7 +428,7 @@ def test_calendar_page_renders_calendar_controls() -> None:
     assert ">Calendar<" in html
     assert "macro releases" in html
     assert "refresh-market-macro" in html
-    assert "Extend 1 Month" in html
+    assert "Refresh 3 Months" in html
 
 
 def test_update_company_ticker_returns_user_error_when_data_exists(monkeypatch) -> None:
@@ -215,8 +447,11 @@ def test_update_company_ticker_returns_user_error_when_data_exists(monkeypatch) 
 
 def test_company_story_rebuild_warmup_endpoint_returns_status(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server.rebuild_company_warmup",
-        lambda company_name, **kwargs: {"job_state": "running", "current_stage": "fetching_raw"},
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "started",
+            "job": {"job_id": 14, "status": "running", "current_stage": "fetching_raw"},
+        },
     )
     monkeypatch.setattr(
         "frontend.web.server.get_company_story_overview",
@@ -231,18 +466,16 @@ def test_company_story_rebuild_warmup_endpoint_returns_status(monkeypatch) -> No
     response = client.post("/api/company/Nvidia/stories/rebuild-warmup")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mode"] == "warmup_rebuilt"
-    assert payload["warmup"]["job_state"] == "running"
+    assert payload["mode"] == "started"
+    assert payload["job"]["job_id"] == 14
 
 
 def test_company_story_refresh_endpoint_returns_warmup_started(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server.start_company_daily_update",
-        lambda company_name, **kwargs: {
-            "company_name": company_name,
-            "target_date": "2026-03-16",
-            "mode": "warmup_started",
-            "warmup": {"job_state": "running", "current_stage": "fetching_raw"},
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "already_running",
+            "job": {"job_id": 15, "status": "running", "current_stage": "fetching_raw"},
         },
     )
     monkeypatch.setattr(
@@ -258,7 +491,8 @@ def test_company_story_refresh_endpoint_returns_warmup_started(monkeypatch) -> N
     response = client.post("/api/company/Nvidia/stories/refresh")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mode"] == "warmup_started"
+    assert payload["mode"] == "already_running"
+    assert payload["job"]["job_id"] == 15
 
 
 def test_build_fetch_ranges_for_slice_skips_covered_past_days() -> None:
@@ -328,7 +562,10 @@ def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> N
     assert ">Weekly Report<" in html
     assert ">Earnings<" in html
     assert "Price Intelligence" in html
-    assert "Analyze Position" in html
+    assert "Generate Price Intelligence" in html
+    assert "Detailed Report" in html
+    assert "Generate Detailed Report" in html
+    assert "price-intelligence-style" not in html
     assert "Rebuild Warm-up" in html
 
 
@@ -414,33 +651,40 @@ def test_refresh_market_news_for_range_skips_existing_past_days(monkeypatch) -> 
     assert stats["skipped_existing_days"] == 1
 
 
-def test_market_daily_news_refresh_reuses_existing_past_day_even_when_forced(monkeypatch) -> None:
+def test_market_daily_news_refresh_job_reuses_existing_past_day_even_when_forced(monkeypatch) -> None:
     monkeypatch.setattr(
         "frontend.web.server.get_market_daily_news_overview",
         lambda **kwargs: {"date": "2026-03-10", "raw_news": [{"headline": "A"}], "summaries": [], "clusters": []},
     )
     monkeypatch.setattr(
         "frontend.web.server.market_updates_module.refresh_market_news_for_range",
-        lambda **kwargs: {"mode": "fetched"},
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("past-day raw fetch should be skipped")),
     )
     monkeypatch.setattr(
         "frontend.web.server.generate_market_daily_report",
-        lambda **kwargs: {"generated": True},
+        lambda **kwargs: {"generated": True, "report_count": 1, "prompt_char_count": 100, "input_item_count": 5, "output_char_count": 50},
     )
     monkeypatch.setattr(
         "frontend.web.server.refresh_market_daily_clusters",
-        lambda **kwargs: {"cluster_count": 0},
+        lambda **kwargs: {"cluster_count": 0, "prompt_char_count": 80, "input_item_count": 5, "output_char_count": 40},
     )
 
-    client = TestClient(app)
-    response = client.post(
-        "/api/market/daily-news/refresh",
-        params={"date": "2026-03-10", "force_fetch": "true"},
+    class DummyTracker:
+        def mark_running(self, *_args, **_kwargs):
+            return None
+
+    result = __import__("frontend.web.server", fromlist=["_run_market_daily_news_job"])._run_market_daily_news_job(
+        DummyTracker(),
+        target_date=date(2026, 3, 10),
+        provider_name="openai",
+        model="gpt-5-mini",
+        prompt_style="simple",
+        output_language="zh-CN",
+        force_fetch=True,
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["refresh_stats"]["mode"] == "reuse_existing_raw_past_date"
+    assert result["counts"]["reused_existing_raw"] is True
+    assert result["counts"]["fetched_total"] == 0
 
 
 def test_run_market_daily_update_reuses_existing_raw(monkeypatch) -> None:
@@ -489,6 +733,7 @@ def test_market_warmup_generates_daily_reports_and_clusters(monkeypatch) -> None
     report_days = []
     cluster_days = []
 
+    monkeypatch.setattr(market_updates, "_current_app_date", lambda: date(2026, 3, 16))
     monkeypatch.setattr(market_updates, "get_market_story_warmup_state", lambda: dict(state))
 
     def fake_upsert(**kwargs):
@@ -576,31 +821,8 @@ def test_market_macro_refresh_uses_llm_calendar(monkeypatch) -> None:
     assert upserts[0]["event_name"] == "US CPI"
 
 
-def test_market_macro_extension_window_uses_future_max_date(monkeypatch) -> None:
-    class _Cursor:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def execute(self, *args, **kwargs):
-            return None
-
-        def fetchone(self):
-            return {"max_event_dt": datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc)}
-
-    class _Conn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def cursor(self):
-            return _Cursor()
-
-    monkeypatch.setattr(market_updates, "get_connection", lambda: _Conn())
+def test_market_macro_extension_window_uses_today_plus_3_months(monkeypatch) -> None:
+    monkeypatch.setattr(market_updates, "_current_app_date", lambda: date(2026, 3, 29))
     start, end = market_updates._resolve_macro_extension_window()
-    assert start.isoformat() == "2026-06-11"
-    assert end.isoformat() == "2026-07-10"
+    assert start.isoformat() == "2026-03-29"
+    assert end.isoformat() == "2026-06-26"
