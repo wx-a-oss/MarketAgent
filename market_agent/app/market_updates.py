@@ -88,6 +88,11 @@ def get_market_story_overview(
 ) -> Dict[str, Any]:
     ensure_database_schema()
     warmup = get_market_story_warmup_state()
+    latest_story_date = _get_latest_market_story_date(
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
     stories = list_market_story_states(
         provider_name=provider_name,
         prompt_style=prompt_style,
@@ -103,10 +108,35 @@ def get_market_story_overview(
     ]
     return {
         "warmup": warmup,
+        "latest_story_date": latest_story_date,
         "stories": stories,
         "ongoing_stories": ongoing,
         "finished_stories": finished,
     }
+
+
+def _get_latest_market_story_date(
+    *,
+    provider_name: str = DEFAULT_MARKET_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> str:
+    ensure_database_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT MAX(as_of_date) AS latest_story_date
+                FROM {TBL_MARKET_STORY_UPDATE}
+                WHERE provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                """,
+                (provider_name, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    latest = row["latest_story_date"] if row else None
+    return latest.isoformat() if latest else ""
 
 
 def get_market_story_warmup_state() -> Dict[str, Any]:

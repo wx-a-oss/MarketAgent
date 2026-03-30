@@ -1682,6 +1682,7 @@ def render_company_detail_page(
                             }}
                             const ongoingStories = Array.isArray(payload && payload.ongoing_stories) ? payload.ongoing_stories : [];
                             const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
+                            const latestStoryDate = String((payload && payload.latest_story_date) || "").trim();
                             const summaryParts = [];
                             const detailParts = [];
                             if (warmup) {{
@@ -1711,6 +1712,9 @@ def render_company_detail_page(
                                 if (warmup.total_slices) {{
                                     detailParts.push(`Slices ${{warmup.completed_slices || 0}}/${{warmup.total_slices}}`);
                                 }}
+                                if (latestStoryDate) {{
+                                    detailParts.push(`Latest story date ${{latestStoryDate}}`);
+                                }}
                                 if (warmup.raw_stored_count || warmup.filtered_kept_count) {{
                                     detailParts.push(`${{warmup.raw_stored_count || 0}} raw news stored`);
                                     detailParts.push(`${{warmup.filtered_kept_count || 0}} kept after filter`);
@@ -1722,6 +1726,8 @@ def render_company_detail_page(
                                 if (state === "failed" && Number(warmup.raw_fetched_count || 0) <= 0) {{
                                     detailParts.push("Fix ticker or rebuild warm-up");
                                 }}
+                            }} else if (latestStoryDate) {{
+                                detailParts.push(`Latest story date ${{latestStoryDate}}`);
                             }}
                             detailParts.push(`${{ongoingStories.length}} ongoing stories`);
                             detailParts.push(`${{finishedStories.length}} finished stories`);

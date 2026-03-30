@@ -26,6 +26,7 @@ def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
         "frontend.web.server.get_market_story_overview",
         lambda provider_name="openai", prompt_style="simple", output_language="zh-CN": {
             "warmup": {"job_state": "completed", "ongoing_story_count": 1, "finished_story_count": 1},
+            "latest_story_date": "2026-03-29",
             "ongoing_stories": [{"story_title": "Rates repricing", "happened_text": "- A", "happening_text": "- B", "next_text": "- C"}],
             "finished_stories": [{"story_title": "Past election overhang", "happened_text": "- A", "happening_text": "- B", "next_text": "- C"}],
         },
@@ -35,6 +36,7 @@ def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["warmup"]["job_state"] == "completed"
+    assert payload["latest_story_date"] == "2026-03-29"
     assert len(payload["ongoing_stories"]) == 1
     assert len(payload["finished_stories"]) == 1
 
@@ -256,6 +258,25 @@ def test_company_status_endpoint_returns_history_preview(monkeypatch) -> None:
     payload = response.json()
     assert payload["status"]["id"] == 21
     assert payload["history_preview"][0]["id"] == 21
+
+
+def test_company_stories_endpoint_returns_latest_story_date(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.get_company_story_overview",
+        lambda company_name, provider_name="openai", model="gpt-5.4", prompt_style="simple", output_language="zh-CN", start_warmup_if_needed=False: {
+            "company": company_name,
+            "warmup": {"job_state": "completed", "current_stage": "done"},
+            "latest_story_date": "2026-03-28",
+            "ongoing_stories": [],
+            "finished_stories": [],
+            "stories": [],
+        },
+    )
+    client = TestClient(app)
+    response = client.get("/api/company/Google/stories")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["latest_story_date"] == "2026-03-28"
 
 
 def test_company_story_warmup_invalid_when_running_state_is_stale(monkeypatch) -> None:

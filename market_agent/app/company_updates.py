@@ -16,6 +16,7 @@ from market_agent.analysis.company.news import (
     ensure_company_profile,
     ensure_company_story_warmup_started,
     generate_company_daily_report,
+    get_latest_company_story_update_date,
     get_company_story_warmup_state,
     is_company_story_warmup_invalid,
     list_company_story_states,
@@ -103,6 +104,12 @@ def get_company_story_overview(
             prompt_style=prompt_style,
             output_language=output_language,
         )
+    latest_story_date = get_latest_company_story_update_date(
+        company_name,
+        provider_name=provider_name,
+        prompt_style=prompt_style,
+        output_language=output_language,
+    )
     stories = list_company_story_states(
         company_name,
         provider_name=provider_name,
@@ -124,6 +131,7 @@ def get_company_story_overview(
     return {
         "company": company_name,
         "warmup": warmup,
+        "latest_story_date": latest_story_date,
         "stories": stories,
         "ongoing_stories": ongoing,
         "finished_stories": finished,

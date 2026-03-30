@@ -1623,6 +1623,35 @@ def list_company_story_updates(
     ]
 
 
+def get_latest_company_story_update_date(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    output_language: str = "zh-CN",
+) -> str:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return ""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT MAX(as_of_date) AS latest_story_date
+                FROM {TBL_COMPANY_STORY_UPDATE}
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                """,
+                (company_name, provider_name, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    latest = row["latest_story_date"] if row else None
+    return latest.isoformat() if latest else ""
+
+
 def list_company_story_qa(
     company_name: str,
     *,

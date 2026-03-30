@@ -1501,6 +1501,7 @@ def render_market_page(
                         const parts = [];
                         if (warmup.job_state) parts.push(`state=${{warmup.job_state}}`);
                         if (warmup.current_stage) parts.push(`stage=${{warmup.current_stage}}`);
+                        if (payload.latest_story_date) parts.push(`latest=${{payload.latest_story_date}}`);
                         if (Number(warmup.raw_stored_count || 0)) parts.push(`${{warmup.raw_stored_count}} raw news`);
                         if (Number(warmup.ongoing_story_count || 0) || Number(warmup.finished_story_count || 0)) {{
                             parts.push(`${{warmup.ongoing_story_count || 0}} ongoing`);
