@@ -14,6 +14,7 @@ SYSTEM_PROMPT = (
 
 def build_user_prompt(payload: Dict[str, Any]) -> str:
     return (
+        "Write the analysis in Simplified Chinese.\n"
         "Analyze this section. Return JSON with keys: summary, highlights, risks, "
         "questions. Keep each list to 3-5 short bullets.\n\nSection payload:\n"
         f"{json.dumps(payload, indent=2)}"

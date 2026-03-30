@@ -55,6 +55,8 @@ def analyze_single_stock_sections(
     }
 
     for section, rows in sections:
+        if section == "Quote":
+            continue
         current_metrics = {key: value for key, value in rows}
         payload = {
             "symbol": snapshot.symbol,

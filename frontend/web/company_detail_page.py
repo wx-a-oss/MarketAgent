@@ -366,6 +366,57 @@ def render_company_detail_page(
                     }}
                     .news-card h3 {{ margin: 0 0 0.6rem; font-size: 18px; color: var(--ink); }}
                     .news-meta {{ color: #334155; font-size: 0.9rem; }}
+                    .stock-history-item {{
+                        margin-bottom: 0.75rem;
+                        border: 1px solid rgba(15, 23, 42, 0.08);
+                        border-radius: 0.9rem;
+                        background: #fffaf0;
+                        box-shadow: none;
+                        overflow: hidden;
+                    }}
+                    .stock-history-item.active {{
+                        border-color: rgba(37, 99, 235, 0.45);
+                        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.08);
+                    }}
+                    .stock-history-summary {{
+                        list-style: none;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 1rem;
+                        padding: 0.8rem 0.95rem;
+                        color: var(--ink);
+                        font-size: 0.95rem;
+                        font-weight: 600;
+                    }}
+                    .stock-history-summary::-webkit-details-marker {{ display: none; }}
+                    .stock-history-summary::after {{
+                        content: "Expand";
+                        flex: 0 0 auto;
+                        font-size: 0.78rem;
+                        font-weight: 500;
+                        color: #64748b;
+                    }}
+                    .stock-history-item[open] .stock-history-summary::after {{ content: "Collapse"; }}
+                    .stock-history-position {{
+                        color: #1d4ed8;
+                        font-size: 0.85rem;
+                        font-weight: 600;
+                        white-space: nowrap;
+                    }}
+                    .stock-history-body {{
+                        padding: 0 0.95rem 0.9rem;
+                        border-top: 1px solid rgba(15, 23, 42, 0.08);
+                    }}
+                    .stock-history-body .news-meta {{
+                        margin-top: 0.7rem;
+                    }}
+                    .stock-history-body .news-summary {{
+                        margin-top: 0.55rem;
+                        color: #334155;
+                        line-height: 1.5;
+                    }}
                     .news-meta a {{
                         color: #6b7280;
                         text-decoration: underline;
@@ -836,12 +887,12 @@ def render_company_detail_page(
                             </div>
                         </div>
                         <div class="view-tabs" id="view-tabs">
-                            <button class="view-tab active" type="button" data-view-mode="stories">Stories</button>
-                            <button class="view-tab" type="button" data-view-mode="daily">Daily News</button>
-                            <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
-                            <button class="view-tab" type="button" data-view-mode="earnings">Earnings</button>
+                            <button class="view-tab active" type="button" data-view-mode="daily">Daily News</button>
+                            <button class="view-tab" type="button" data-view-mode="stories">Stories</button>
                             <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
                             <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
+                            <button class="view-tab" type="button" data-view-mode="earnings">Earnings</button>
+                            <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
                         </div>
                         <div class="layout" id="company-layout">
                             <div class="timeline" id="timeline"></div>
@@ -868,11 +919,11 @@ def render_company_detail_page(
                     const sourceSelect = document.getElementById("news-source");
                     const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
-                    const VIEW_MODES = new Set(["stories", "stock", "indicators", "daily", "weekly", "earnings"]);
+                    const VIEW_MODES = new Set(["daily", "stories", "stock", "indicators", "earnings", "weekly"]);
                     const RANGE_KEYS = new Set(["1D", "5D", "1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"]);
                     function normalizeViewMode(raw) {{
                         const token = String(raw || "").trim().toLowerCase();
-                        return VIEW_MODES.has(token) ? token : "stories";
+                        return VIEW_MODES.has(token) ? token : "daily";
                     }}
                     function normalizeRangeKey(raw) {{
                         const token = String(raw || "").trim().toUpperCase();
@@ -884,7 +935,7 @@ def render_company_detail_page(
                         const source = String(params.get("source") || "").trim().toLowerCase();
                         const dateRange = String(params.get("date_range") || "").trim();
                         return {{
-                            viewMode: "stories",
+                            viewMode: normalizeViewMode(params.get("view")),
                             groupKey: String(params.get("group") || "").trim() || null,
                             stockRange: normalizeRangeKey(params.get("range")),
                             lang: lang === "en" ? "en" : "zh-CN",
@@ -895,7 +946,7 @@ def render_company_detail_page(
                     function updateUrlState({{ viewMode = null, groupKey = null, stockRange = null }} = {{}}) {{
                         const url = new URL(window.location.href);
                         const params = url.searchParams;
-                        const mode = normalizeViewMode(viewMode || currentViewMode || "stories");
+                        const mode = normalizeViewMode(viewMode || currentViewMode || "daily");
                         params.set("view", mode);
                         if ((mode === "daily" || mode === "weekly") && groupKey) {{
                             params.set("group", String(groupKey));
@@ -926,6 +977,9 @@ def render_company_detail_page(
                     const storyCache = {{}};
                     let stockChart = null;
                     let storyPollTimer = null;
+                    let storyJobStop = null;
+                    let priceIntelligenceJobStop = null;
+                    let priceIntelligenceDetailJobStop = null;
 
                     function getOutputLanguage() {{
                         const selected = outputLanguageSelect && outputLanguageSelect.value
@@ -1047,6 +1101,16 @@ def render_company_detail_page(
                             return window.marked.parse(content);
                         }}
                         return `<pre>${{escapeHtml(content)}}</pre>`;
+                    }}
+
+                    function formatDateTime(value) {{
+                        const text = String(value || "").trim();
+                        if (!text) return "—";
+                        const date = new Date(text);
+                        if (Number.isNaN(date.getTime())) {{
+                            return text;
+                        }}
+                        return date.toLocaleString();
                     }}
 
                     function toReadableBullets(raw) {{
@@ -1397,6 +1461,60 @@ def render_company_detail_page(
                         }}
                     }}
 
+                    function buildJobKey(...parts) {{
+                        return parts.map((item) => String(item || "").trim().toLowerCase()).join("|");
+                    }}
+
+                    function formatJobText(job) {{
+                        if (!job) return "";
+                        const counts = job.final_counts || {{}};
+                        const parts = [String(job.status || "")];
+                        if (job.current_stage) parts.push(String(job.current_stage));
+                        if (job.elapsed_sec) parts.push(`${{Number(job.elapsed_sec || 0).toFixed(1)}}s`);
+                        if (job.input_char_count) parts.push(`prompt=${{job.input_char_count}} chars`);
+                        if (job.input_item_count) parts.push(`input=${{job.input_item_count}}`);
+                        if (job.output_char_count) parts.push(`output=${{job.output_char_count}} chars`);
+                        if (counts.raw_stored_count) parts.push(`raw=${{counts.raw_stored_count}}`);
+                        if (counts.filtered_kept_count) parts.push(`kept=${{counts.filtered_kept_count}}`);
+                        if (counts.cluster_count) parts.push(`clusters=${{counts.cluster_count}}`);
+                        if (counts.report_count || counts.daily_report_count) parts.push(`reports=${{counts.report_count || counts.daily_report_count}}`);
+                        if (counts.updated_story_count || counts.new_story_count) parts.push(`stories +${{counts.new_story_count || 0}}/${{counts.updated_story_count || 0}} updated`);
+                        if (job.result_summary) parts.push(String(job.result_summary));
+                        if (job.error_text) parts.push(String(job.error_text));
+                        return parts.filter(Boolean).join(" · ");
+                    }}
+
+                    async function fetchJob(jobId) {{
+                        const payload = await fetchJsonWithTimeout(`/api/jobs/${{encodeURIComponent(String(jobId))}}`, {{ method: "GET" }}, 30000);
+                        return payload.job || null;
+                    }}
+
+                    async function fetchJobByKey(jobKey) {{
+                        try {{
+                            const payload = await fetchJsonWithTimeout(`/api/jobs/by-key?job_key=${{encodeURIComponent(jobKey)}}&include_finished=true`, {{ method: "GET" }}, 30000);
+                            return payload.job || null;
+                        }} catch (_err) {{
+                            return null;
+                        }}
+                    }}
+
+                    function pollJob(jobId, onUpdate, onDone) {{
+                        let stopped = false;
+                        async function tick() {{
+                            if (stopped) return;
+                            const job = await fetchJob(jobId);
+                            if (onUpdate) onUpdate(job);
+                            const running = job && ["queued", "running"].includes(String(job.status || ""));
+                            if (running) {{
+                                window.setTimeout(tick, 2000);
+                                return;
+                            }}
+                            if (onDone) onDone(job);
+                        }}
+                        tick();
+                        return () => {{ stopped = true; }};
+                    }}
+
                     async function fetchStoryList(style, forceRefresh = false, bypassCache = false) {{
                         const outputLanguage = getOutputLanguage();
                         const cacheKey = `${{style}}|${{outputLanguage}}`;
@@ -1416,6 +1534,8 @@ def render_company_detail_page(
                             ongoing_stories: Array.isArray(payload.ongoing_stories) ? payload.ongoing_stories : [],
                             finished_stories: Array.isArray(payload.finished_stories) ? payload.finished_stories : [],
                             warmup: payload.warmup || null,
+                            job: payload.job || null,
+                            mode: payload.mode || "",
                         }};
                         storyCache[cacheKey] = normalized;
                         return normalized;
@@ -1770,9 +1890,35 @@ def render_company_detail_page(
                             const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
                             const stories = [...ongoingStories, ...finishedStories];
                             if (metaEl) {{
-                                metaEl.textContent = renderWarmupMeta(payload);
+                                const warmupText = renderWarmupMeta(payload);
+                                metaEl.textContent = payload.job ? [formatJobText(payload.job), warmupText].filter(Boolean).join("\\n") : warmupText;
                             }}
                             scheduleStoryPoll(style);
+                            if (payload.job) {{
+                                const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                                if (refreshBtn) {{
+                                    refreshBtn.disabled = running;
+                                    refreshBtn.textContent = running ? "Update Running..." : "Update Stories";
+                                }}
+                                if (rebuildBtn) {{
+                                    rebuildBtn.disabled = running;
+                                    if (running && rebuildBtn.style.display !== "none") {{
+                                        rebuildBtn.textContent = "Rebuild Running...";
+                                    }} else {{
+                                        rebuildBtn.textContent = "Rebuild Warm-up";
+                                    }}
+                                }}
+                                if (running) {{
+                                    if (storyJobStop) storyJobStop();
+                                    storyJobStop = pollJob(payload.job.job_id, (job) => {{
+                                        if (metaEl) metaEl.textContent = formatJobText(job);
+                                    }}, async () => {{
+                                        const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                        delete storyCache[cacheKey];
+                                        await loadStories(false, true, style, true);
+                                    }});
+                                }}
+                            }}
                             if (!listEl) return;
                             if (!stories.length) {{
                                 listEl.innerHTML = '<p class="placeholder">No stories yet. Warm-up is running in the background.</p>';
@@ -1835,7 +1981,26 @@ def render_company_detail_page(
                             }});
                         }}
 
-                        loadStories(false);
+                        loadStories(false).then(async () => {{
+                            const style = "simple";
+                            const outputLanguage = getOutputLanguage();
+                            const refreshJob = await fetchJobByKey(buildJobKey("company_story_update", companyName, "openai", style, outputLanguage, 21));
+                            const rebuildJob = await fetchJobByKey(buildJobKey("company_story_rebuild", companyName, "openai", style, outputLanguage));
+                            const job = (refreshJob && ["queued", "running"].includes(String(refreshJob.status || ""))) ? refreshJob : rebuildJob;
+                            if (job && metaEl) {{
+                                metaEl.textContent = formatJobText(job);
+                            }}
+                            if (job && ["queued", "running"].includes(String(job.status || ""))) {{
+                                if (storyJobStop) storyJobStop();
+                                storyJobStop = pollJob(job.job_id, (currentJob) => {{
+                                    if (metaEl) metaEl.textContent = formatJobText(currentJob);
+                                }}, async () => {{
+                                    const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                    delete storyCache[cacheKey];
+                                    await loadStories(false, true, style, true);
+                                }});
+                            }}
+                        }});
                     }}
 
                     function renderEarningsView() {{
@@ -1955,14 +2120,24 @@ def render_company_detail_page(
                                             <div class="status-meta" id="price-intelligence-meta">Loading price intelligence...</div>
                                         </div>
                                         <div class="status-controls">
-                                            <select class="status-select" id="price-intelligence-style">
-                                                <option value="simple" selected>simple</option>
-                                                <option value="structured">structured</option>
-                                            </select>
-                                            <button class="status-btn" id="price-intelligence-refresh" type="button">Analyze Position</button>
+                                            <button class="status-btn" id="price-intelligence-refresh" type="button">Generate Price Intelligence</button>
                                         </div>
                                     </div>
+                                    <div class="status-meta" id="price-intelligence-history-meta" style="margin-bottom:0.5rem;"></div>
                                     <div class="status-output" id="price-intelligence-output"></div>
+                                    <div class="stock-analysis-list" id="price-intelligence-history" style="margin-top:0.85rem;"></div>
+                                </div>
+                                <div class="status-panel" style="margin-top:0.9rem;">
+                                    <div class="status-panel-header">
+                                        <div class="status-header-main">
+                                            <h2 style="margin:0;">Detailed Report</h2>
+                                            <div class="status-meta" id="detailed-report-meta">Loading detailed report...</div>
+                                        </div>
+                                        <div class="status-controls">
+                                            <button class="status-btn" id="detailed-report-refresh" type="button">Generate Detailed Report</button>
+                                        </div>
+                                    </div>
+                                    <div class="status-output" id="detailed-report-output"></div>
                                 </div>
                                 <div class="stock-analysis-list" id="stock-analysis-list"></div>
                             </div>
@@ -1975,7 +2150,11 @@ def render_company_detail_page(
                         const intelligenceOutput = document.getElementById("price-intelligence-output");
                         const intelligenceMeta = document.getElementById("price-intelligence-meta");
                         const intelligenceRefresh = document.getElementById("price-intelligence-refresh");
-                        const intelligenceStyle = document.getElementById("price-intelligence-style");
+                        const intelligenceHistoryMeta = document.getElementById("price-intelligence-history-meta");
+                        const intelligenceHistory = document.getElementById("price-intelligence-history");
+                        const detailedOutput = document.getElementById("detailed-report-output");
+                        const detailedMeta = document.getElementById("detailed-report-meta");
+                        const detailedRefresh = document.getElementById("detailed-report-refresh");
                         const rangeButtons = Array.from(contentEl.querySelectorAll(".stock-range-btn"));
                         let activeRange = defaultRange;
                         let latestSeries = [];
@@ -2156,25 +2335,218 @@ def render_company_detail_page(
                             }}
                         }}
 
-                        async function loadPriceIntelligence(forceGenerate = false) {{
-                            const style = intelligenceStyle && intelligenceStyle.value ? String(intelligenceStyle.value) : "simple";
-                            const endpoint = forceGenerate
-                                ? `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                                : `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence?prompt_style=${{encodeURIComponent(style)}}`;
-                            if (intelligenceMeta) {{
-                                intelligenceMeta.textContent = forceGenerate ? "Generating..." : "Loading...";
+                        function renderPiList(items) {{
+                            const rows = Array.isArray(items) ? items.filter((item) => String(item || "").trim()) : [];
+                            return rows.length ? `<ul>${{rows.map((item) => `<li>${{renderMarkdown(String(item))}}</li>`).join("")}}</ul>` : "<p>—</p>";
+                        }}
+
+                        function renderPriceIntelligenceHistory(items, selectedRunId) {{
+                            const rows = Array.isArray(items) ? items : [];
+                            if (!rows.length) {{
+                                return '<p class="placeholder">No stored runs yet.</p>';
                             }}
+                            return rows.map((item) => {{
+                                const runId = Number(item.id || 0);
+                                const active = selectedRunId && Number(selectedRunId) === runId ? "active" : "";
+                                const zone = item && item.fair_price_zone && typeof item.fair_price_zone === "object"
+                                    ? `${{item.fair_price_zone.low ?? "—"}} / ${{item.fair_price_zone.mid ?? "—"}} / ${{item.fair_price_zone.high ?? "—"}}`
+                                    : "—";
+                                const createdAt = item.created_at ? formatDateTime(item.created_at) : "—";
+                                const positionLabel = item && item.price_position && typeof item.price_position === "object"
+                                    ? String(item.price_position.label || "—")
+                                    : "—";
+                                return `
+                                    <details class="stock-history-item ${{active}}" ${{active ? "open" : ""}}>
+                                        <summary class="stock-history-summary" data-run-id="${{runId}}">
+                                            <span>${{escapeHtml(createdAt)}}</span>
+                                            <span class="stock-history-position">${{escapeHtml(positionLabel)}}</span>
+                                        </summary>
+                                        <div class="stock-history-body">
+                                            <div class="news-meta">as_of=${{escapeHtml(String(item.as_of_date || "—"))}} · fair_zone=${{escapeHtml(zone)}}</div>
+                                            <div class="news-summary">${{escapeHtml(String(item.bottom_line || "Run " + runId))}}</div>
+                                        </div>
+                                    </details>
+                                `;
+                            }}).join("");
+                        }}
+
+                        function renderQuickPriceIntelligence(run) {{
+                            const fairZone = run && typeof run.fair_price_zone === "object" ? run.fair_price_zone : {{}};
+                            const pricePosition = run && typeof run.price_position === "object" ? run.price_position : {{}};
+                            const technical = run && typeof run.technical_view === "object" ? run.technical_view : {{}};
+                            const fundamental = run && typeof run.fundamental_market_view === "object" ? run.fundamental_market_view : {{}};
+                            const synthesis = run && typeof run.synthesis_view === "object" ? run.synthesis_view : {{}};
+                            const currentPrice = run && run.current_price !== null && run.current_price !== undefined ? String(run.current_price) : "—";
+                            const fairZoneText = [fairZone.low, fairZone.mid, fairZone.high].map((value) => value === null || value === undefined ? "—" : String(value)).join(" / ");
+                            return `
+                                <div class="news-card expanded">
+                                    <h3>Price Intelligence</h3>
+                                    <div class="news-meta">current_price=${{escapeHtml(currentPrice)}} · fair_zone=${{escapeHtml(fairZoneText)}} · price_position=${{escapeHtml(String(pricePosition.label || "—"))}}</div>
+                                    <div class="news-content">
+                                        <div><strong>Bottom Line:</strong> ${{renderMarkdown(run.bottom_line || "—")}}</div>
+                                        <div><strong>Fair Zone Basis:</strong> ${{renderMarkdown(fairZone.basis || "—")}}</div>
+                                        <div><strong>Price Position:</strong> ${{renderMarkdown(pricePosition.explanation || "—")}}</div>
+                                    </div>
+                                </div>
+                                <div class="stock-analysis-list">
+                                    <div class="news-card expanded">
+                                        <h3>Technical View</h3>
+                                        <div class="news-content">
+                                            <div><strong>Summary:</strong> ${{renderMarkdown(technical.summary || "—")}}</div>
+                                            <div><strong>Fair Price Read:</strong> ${{renderMarkdown(technical.fair_price_read || "—")}}</div>
+                                            <div><strong>Signals:</strong> ${{renderPiList(technical.signals || [])}}</div>
+                                            <div><strong>Risks:</strong> ${{renderPiList(technical.risks || [])}}</div>
+                                        </div>
+                                    </div>
+                                    <div class="news-card expanded">
+                                        <h3>Fundamental / Market View</h3>
+                                        <div class="news-content">
+                                            <div><strong>Summary:</strong> ${{renderMarkdown(fundamental.summary || "—")}}</div>
+                                            <div><strong>Fair Price Read:</strong> ${{renderMarkdown(fundamental.fair_price_read || "—")}}</div>
+                                            <div><strong>Signals:</strong> ${{renderPiList(fundamental.signals || [])}}</div>
+                                            <div><strong>Risks:</strong> ${{renderPiList(fundamental.risks || [])}}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="news-card expanded">
+                                    <h3>Synthesis</h3>
+                                    <div class="news-content">
+                                        <div><strong>Summary:</strong> ${{renderMarkdown(synthesis.summary || "—")}}</div>
+                                        <div><strong>Dominant Method:</strong> ${{renderMarkdown(synthesis.dominant_method || "—")}}</div>
+                                        <div><strong>Triggers:</strong> ${{renderPiList(synthesis.triggers || [])}}</div>
+                                        <div><strong>Invalidations:</strong> ${{renderPiList(synthesis.invalidations || [])}}</div>
+                                    </div>
+                                </div>
+                            `;
+                        }}
+
+                        function renderDetailedReport(status) {{
+                            if (!status) return "<p>—</p>";
+                            return `
+                                <div class="news-card expanded">
+                                    <h3>Detailed Report</h3>
+                                    <div class="news-content">
+                                        <div>${{renderMarkdown(status.output_text || status.output_markdown || "—")}}</div>
+                                    </div>
+                                </div>
+                            `;
+                        }}
+
+                        async function loadPriceIntelligenceRun(runId) {{
+                            const response = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/${{encodeURIComponent(runId)}}`);
+                            const payload = await response.json();
+                            if (!response.ok || payload.error) {{
+                                if (intelligenceMeta) intelligenceMeta.textContent = payload.error || "Failed to load selected run.";
+                                return;
+                            }}
+                            const run = payload.run || null;
+                            if (intelligenceOutput) intelligenceOutput.innerHTML = renderQuickPriceIntelligence(run);
+                            if (intelligenceHistory) intelligenceHistory.innerHTML = renderPriceIntelligenceHistory(payload.history_preview || [], run ? run.id : null);
+                            if (intelligenceHistoryMeta) intelligenceHistoryMeta.textContent = `history=${{Array.isArray(payload.history_preview) ? payload.history_preview.length : 0}} runs`;
+                            if (intelligenceMeta && run) {{
+                                intelligenceMeta.textContent = `as_of=${{run.as_of_date || "—"}} · created=${{formatDateTime(run.created_at || "")}} · provider=${{run.provider || "—"}} · model=${{run.model || "—"}} · windows=${{run.context_window_days || 730}}d/${{run.focus_window_days || 60}}d`;
+                            }}
+                            if (intelligenceHistory) {{
+                                intelligenceHistory.querySelectorAll("[data-run-id]").forEach((btn) => {{
+                                    btn.addEventListener("click", async () => {{
+                                        const selectedRunId = btn.getAttribute("data-run-id");
+                                        if (selectedRunId) await loadPriceIntelligenceRun(selectedRunId);
+                                    }});
+                                }});
+                            }}
+                        }}
+
+                        async function loadPriceIntelligence(forceGenerate = false) {{
+                            const endpoint = forceGenerate
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/generate?output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                                : `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence`;
+                            const response = await fetch(endpoint, {{ method: forceGenerate ? "POST" : "GET" }});
+                            const payload = await response.json();
+                            const run = payload.run || null;
+                            if (!run) {{
+                                if (intelligenceOutput) intelligenceOutput.innerHTML = "<p>—</p>";
+                                if (intelligenceHistory) intelligenceHistory.innerHTML = renderPriceIntelligenceHistory(payload.history_preview || [], null);
+                                if (intelligenceHistoryMeta) intelligenceHistoryMeta.textContent = `history=${{Array.isArray(payload.history_preview) ? payload.history_preview.length : 0}} runs`;
+                                if (intelligenceMeta) intelligenceMeta.textContent = payload.job ? formatJobText(payload.job) : "No price intelligence available yet.";
+                                if (payload.job && intelligenceRefresh) {{
+                                    const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                                    intelligenceRefresh.disabled = running;
+                                    intelligenceRefresh.textContent = running ? "Generating..." : "Generate Price Intelligence";
+                                }}
+                                return;
+                            }}
+                            if (intelligenceOutput) intelligenceOutput.innerHTML = renderQuickPriceIntelligence(run);
+                            if (intelligenceHistory) intelligenceHistory.innerHTML = renderPriceIntelligenceHistory(payload.history_preview || [], run.id || null);
+                            if (intelligenceHistoryMeta) intelligenceHistoryMeta.textContent = `history=${{Array.isArray(payload.history_preview) ? payload.history_preview.length : 0}} runs`;
+                            if (intelligenceHistory) {{
+                                intelligenceHistory.querySelectorAll("[data-run-id]").forEach((btn) => {{
+                                    btn.addEventListener("click", async () => {{
+                                        const selectedRunId = btn.getAttribute("data-run-id");
+                                        if (selectedRunId) await loadPriceIntelligenceRun(selectedRunId);
+                                    }});
+                                }});
+                            }}
+                            if (intelligenceMeta) {{
+                                const coverage = run && run.input_payload && run.input_payload.input_coverage
+                                    ? run.input_payload.input_coverage
+                                    : null;
+                                const coverageText = coverage
+                                    ? `daily_reports=${{coverage.daily_report_count || 0}} · fallback_news=${{coverage.raw_news_fallback_count || 0}}`
+                                    : "";
+                                intelligenceMeta.textContent = payload.job
+                                    ? formatJobText(payload.job)
+                                    : `as_of=${{run.as_of_date || "—"}} · created=${{formatDateTime(run.created_at || "")}} · provider=${{run.provider || "—"}} · model=${{run.model || "—"}} · windows=${{run.context_window_days || 730}}d/${{run.focus_window_days || 60}}d${{coverageText ? " · " + coverageText : ""}}`;
+                            }}
+                            if (payload.job && intelligenceRefresh) {{
+                                const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                                intelligenceRefresh.disabled = running;
+                                intelligenceRefresh.textContent = running ? "Generating..." : "Generate Price Intelligence";
+                                if (running) {{
+                                    if (priceIntelligenceJobStop) priceIntelligenceJobStop();
+                                    priceIntelligenceJobStop = pollJob(payload.job.job_id, (job) => {{
+                                        if (intelligenceMeta) intelligenceMeta.textContent = formatJobText(job);
+                                        const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
+                                        intelligenceRefresh.disabled = !!stillRunning;
+                                        intelligenceRefresh.textContent = stillRunning ? "Generating..." : "Generate Price Intelligence";
+                                    }}, async () => {{
+                                        await loadPriceIntelligence(false);
+                                    }});
+                                }}
+                            }}
+                        }}
+
+                        async function loadDetailedReport(forceGenerate = false) {{
+                            const endpoint = forceGenerate
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                                : `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=simple`;
                             const response = await fetch(endpoint, {{ method: forceGenerate ? "POST" : "GET" }});
                             const payload = await response.json();
                             const status = payload.status || null;
-                            if (!status) {{
-                                if (intelligenceOutput) intelligenceOutput.innerHTML = "<p>—</p>";
-                                if (intelligenceMeta) intelligenceMeta.textContent = "No price intelligence available yet.";
-                                return;
+                            if (detailedOutput) detailedOutput.innerHTML = renderDetailedReport(status);
+                            if (detailedMeta) {{
+                                if (!status) {{
+                                    detailedMeta.textContent = payload.job ? formatJobText(payload.job) : "No detailed report available yet.";
+                                }} else {{
+                                    detailedMeta.textContent = payload.job
+                                        ? formatJobText(payload.job)
+                                        : `as_of=${{status.as_of_date || "—"}} · provider=${{status.provider || "—"}} · model=${{status.model || "—"}}`;
+                                }}
                             }}
-                            if (intelligenceOutput) intelligenceOutput.innerHTML = renderMarkdown(status.output_text || "");
-                            if (intelligenceMeta) {{
-                                intelligenceMeta.textContent = `window=${{status.window_start_date}} → ${{status.window_end_date}} · provider=${{status.provider}} · model=${{status.model}}`;
+                            if (payload.job && detailedRefresh) {{
+                                const running = ["queued", "running"].includes(String(payload.job.status || ""));
+                                detailedRefresh.disabled = running;
+                                detailedRefresh.textContent = running ? "Generating..." : "Generate Detailed Report";
+                                if (running) {{
+                                    if (priceIntelligenceDetailJobStop) priceIntelligenceDetailJobStop();
+                                    priceIntelligenceDetailJobStop = pollJob(payload.job.job_id, (job) => {{
+                                        if (detailedMeta) detailedMeta.textContent = formatJobText(job);
+                                        const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
+                                        detailedRefresh.disabled = !!stillRunning;
+                                        detailedRefresh.textContent = stillRunning ? "Generating..." : "Generate Detailed Report";
+                                    }}, async () => {{
+                                        await loadDetailedReport(false);
+                                    }});
+                                }}
                             }}
                         }}
 
@@ -2198,23 +2570,47 @@ def render_company_detail_page(
                         }}
                         if (intelligenceRefresh) {{
                             intelligenceRefresh.addEventListener("click", async () => {{
-                                intelligenceRefresh.disabled = true;
-                                intelligenceRefresh.textContent = "Analyzing...";
-                                try {{
-                                    await loadPriceIntelligence(true);
-                                }} finally {{
-                                    intelligenceRefresh.disabled = false;
-                                    intelligenceRefresh.textContent = "Analyze Position";
-                                }}
+                                await loadPriceIntelligence(true);
                             }});
                         }}
-                        if (intelligenceStyle) {{
-                            intelligenceStyle.addEventListener("change", async () => {{
-                                await loadPriceIntelligence(false);
+                        if (detailedRefresh) {{
+                            detailedRefresh.addEventListener("click", async () => {{
+                                await loadDetailedReport(true);
                             }});
                         }}
                         loadSeries();
-                        loadPriceIntelligence(false);
+                        loadPriceIntelligence(false).then(async () => {{
+                            const job = await fetchJobByKey(buildJobKey("price_intelligence", companyName, "openai", getOutputLanguage()));
+                            if (job && intelligenceMeta) {{
+                                intelligenceMeta.textContent = formatJobText(job);
+                            }}
+                            if (job && intelligenceRefresh && ["queued", "running"].includes(String(job.status || ""))) {{
+                                intelligenceRefresh.disabled = true;
+                                intelligenceRefresh.textContent = "Generating...";
+                                if (priceIntelligenceJobStop) priceIntelligenceJobStop();
+                                priceIntelligenceJobStop = pollJob(job.job_id, (currentJob) => {{
+                                    if (intelligenceMeta) intelligenceMeta.textContent = formatJobText(currentJob);
+                                }}, async () => {{
+                                    await loadPriceIntelligence(false);
+                                }});
+                            }}
+                        }});
+                        loadDetailedReport(false).then(async () => {{
+                            const job = await fetchJobByKey(buildJobKey("detailed_report", companyName, "openai", getOutputLanguage(), 30));
+                            if (job && detailedMeta) {{
+                                detailedMeta.textContent = formatJobText(job);
+                            }}
+                            if (job && detailedRefresh && ["queued", "running"].includes(String(job.status || ""))) {{
+                                detailedRefresh.disabled = true;
+                                detailedRefresh.textContent = "Generating...";
+                                if (priceIntelligenceDetailJobStop) priceIntelligenceDetailJobStop();
+                                priceIntelligenceDetailJobStop = pollJob(job.job_id, (currentJob) => {{
+                                    if (detailedMeta) detailedMeta.textContent = formatJobText(currentJob);
+                                }}, async () => {{
+                                    await loadDetailedReport(false);
+                                }});
+                            }}
+                        }});
                     }}
 
                     function renderIndicatorRows(rows) {{
@@ -2765,7 +3161,7 @@ def render_company_detail_page(
                             contentEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                             return;
                         }}
-                        setViewMode(currentViewMode || "stories");
+                        setViewMode(currentViewMode || "daily");
                     }}
 
                     async function refreshNews() {{
@@ -2802,7 +3198,7 @@ def render_company_detail_page(
                                 timelineEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                                 contentEl.innerHTML = '<p class="placeholder">No news yet.</p>';
                             }} else {{
-                                setViewMode(currentViewMode || "stories");
+                                setViewMode(currentViewMode || "daily");
                             }}
                             if (refreshStatus) {{
                                 const elapsedRaw = Number(payload.elapsed_sec);
@@ -2832,7 +3228,7 @@ def render_company_detail_page(
                     if (viewTabsEl) {{
                         viewTabsEl.querySelectorAll(".view-tab").forEach((button) => {{
                             button.addEventListener("click", () => {{
-                                setViewMode(button.dataset.viewMode || "stories");
+                                setViewMode(button.dataset.viewMode || "daily");
                             }});
                         }});
                     }}
