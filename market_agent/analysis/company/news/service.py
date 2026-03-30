@@ -74,6 +74,9 @@ DEFAULT_STORY_WARMUP_MAX_RETRIES = max(
 DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC = max(
     1, int(os.getenv("COMPANY_STORY_WARMUP_RETRY_DELAY_SEC", "60").strip() or "60")
 )
+DEFAULT_STORY_WARMUP_STALE_MINUTES = max(
+    5, int(os.getenv("COMPANY_STORY_WARMUP_STALE_MINUTES", "180").strip() or "180")
+)
 STORY_WARMUP_PROMPT_JSON_LIMIT = max(
     12000, int(os.getenv("COMPANY_STORY_WARMUP_PROMPT_JSON_LIMIT", "45000").strip() or "45000")
 )
@@ -461,27 +464,52 @@ def is_company_story_warmup_invalid(
         prompt_style=prompt_style,
         output_language=output_language,
     )
+    reason = _get_company_story_warmup_invalid_reason(company_name, state=state)
+    return reason is not None
+
+
+def _get_company_story_warmup_invalid_reason(
+    company_name: str,
+    *,
+    state: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    current_state = state or get_company_story_warmup_state(company_name)
     profile = get_company_profile(company_name)
     ticker = ""
     if profile:
         ticker = str(profile.get("ticker") or profile.get("symbol") or "").strip()
     if not ticker:
-        return True
-    job_state = str(state.get("job_state") or "").strip().lower()
+        return "No valid ticker available for company warm-up."
+    job_state = str(current_state.get("job_state") or "").strip().lower()
     if job_state == "failed":
-        failed_stage = str(state.get("failed_stage") or "").strip().lower()
+        failed_stage = str(current_state.get("failed_stage") or "").strip().lower()
         if failed_stage == "fetching_raw":
-            return True
-        if int(state.get("raw_fetched_count") or 0) <= 0:
-            return True
-        if "ticker" in str(state.get("last_error") or "").lower():
-            return True
-        return False
+            return "Warm-up previously failed while fetching raw news."
+        if int(current_state.get("raw_fetched_count") or 0) <= 0:
+            return "Warm-up failed before collecting any raw news."
+        if "ticker" in str(current_state.get("last_error") or "").lower():
+            return "Warm-up failed because ticker resolution was invalid."
+        return None
     if job_state in {"not_started", ""}:
-        return True
-    if job_state == "completed" and int(state.get("raw_fetched_count") or 0) <= 0:
-        return True
-    return False
+        return "Warm-up has not started."
+    if job_state == "completed" and int(current_state.get("raw_fetched_count") or 0) <= 0:
+        return "Warm-up completed without collecting raw news."
+    if bool(current_state.get("analysis_completed")) and job_state != "completed":
+        return "Warm-up state is inconsistent: analysis completed but job is not completed."
+    if job_state in {"running", "analyzing", "partial"}:
+        heartbeat = _parse_story_warmup_state_datetime(
+            current_state.get("updated_at") or current_state.get("started_at")
+        )
+        if not heartbeat:
+            return "Warm-up state is missing heartbeat timestamps."
+        stale_sec = DEFAULT_STORY_WARMUP_STALE_MINUTES * 60
+        age_sec = max(0.0, (datetime.now(timezone.utc) - heartbeat).total_seconds())
+        if age_sec >= stale_sec:
+            return (
+                "Warm-up state is stale: "
+                f"no update for {round(age_sec / 60.0, 1)} minutes."
+            )
+    return None
 
 
 def ensure_company_story_warmup_started(
@@ -509,13 +537,34 @@ def ensure_company_story_warmup_started(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    if state.get("job_state") == "completed" and not is_company_story_warmup_invalid(
-        normalized,
-        provider_name=provider_name,
-        prompt_style=prompt_style,
-        output_language=output_language,
-    ):
+    invalid_reason = _get_company_story_warmup_invalid_reason(normalized, state=state)
+    if state.get("job_state") == "completed" and invalid_reason is None:
         return state
+    if invalid_reason and str(state.get("job_state") or "").strip().lower() in {"running", "analyzing", "partial"}:
+        _upsert_story_warmup_state(
+            normalized,
+            provider_name=provider_name,
+            model=model,
+            prompt_style=prompt_style,
+            output_language=output_language,
+            updates={
+                "job_state": "failed",
+                "current_stage": "idle",
+                "window_days": max(1, int(state.get("window_days") or warmup_days)),
+                "slice_days": max(1, int(state.get("slice_days") or slice_days)),
+                "analysis_started": bool(state.get("analysis_started")),
+                "analysis_completed": False,
+                "raw_fetched_count": int(state.get("raw_fetched_count") or 0),
+                "raw_stored_count": int(state.get("raw_stored_count") or 0),
+                "filtered_kept_count": int(state.get("filtered_kept_count") or 0),
+                "ongoing_story_count": int(state.get("ongoing_story_count") or 0),
+                "finished_story_count": int(state.get("finished_story_count") or 0),
+                "retry_count": int(state.get("retry_count") or 0),
+                "last_error": invalid_reason,
+                "failed_stage": str(state.get("current_stage") or "stale_state"),
+                "completed_at": datetime.now(timezone.utc),
+            },
+        )
     _ensure_story_warmup_thread(
         normalized,
         provider_name=provider_name,
@@ -784,14 +833,21 @@ def get_company_status_snapshot(
     *,
     provider_name: str = DEFAULT_PROVIDER,
     prompt_style: str = "simple",
+    snapshot_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     _ensure_news_schema()
     company_name = _normalize_company_name(company_name)
+    params: List[Any] = [company_name, provider_name, prompt_style]
+    where_extra = ""
+    if snapshot_id is not None:
+        where_extra = " AND id = %s"
+        params.append(int(snapshot_id))
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
+                    id,
                     as_of_date,
                     window_start_date,
                     window_end_date,
@@ -806,10 +862,11 @@ def get_company_status_snapshot(
                 WHERE company_name = %s
                   AND provider = %s
                   AND prompt_style = %s
+                  {where_extra}
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
-                (company_name, provider_name, prompt_style),
+                tuple(params),
             )
             row = cur.fetchone()
     if not row:
@@ -821,6 +878,7 @@ def get_company_status_snapshot(
             as_of_date=row["as_of_date"],
         )
     snapshot = {
+        "id": int(row["id"]),
         "as_of_date": row["as_of_date"].isoformat(),
         "window_start_date": row["window_start_date"].isoformat(),
         "window_end_date": row["window_end_date"].isoformat(),
@@ -834,6 +892,49 @@ def get_company_status_snapshot(
     }
     snapshot.update(structured)
     return snapshot
+
+
+def list_company_status_snapshots(
+    company_name: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER,
+    prompt_style: str = "simple",
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    _ensure_news_schema()
+    company_name = _normalize_company_name(company_name)
+    safe_limit = max(1, min(int(limit), 100))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, as_of_date, provider, model, prompt_style, output_json, output_text, created_at
+                FROM company_status_snapshot
+                WHERE company_name = %s
+                  AND provider = %s
+                  AND prompt_style = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (company_name, provider_name, prompt_style, safe_limit),
+            )
+            rows = cur.fetchall()
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        structured = _parse_json_object(row["output_json"] or "") or {}
+        result.append(
+            {
+                "id": int(row["id"]),
+                "as_of_date": row["as_of_date"].isoformat(),
+                "provider": row["provider"],
+                "model": row["model"],
+                "prompt_style": row["prompt_style"],
+                "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                "price_position_summary": str(structured.get("price_position_summary") or ""),
+                "technical_summary": str(structured.get("technical_summary") or structured.get("company_summary") or ""),
+            }
+        )
+    return result
 
 
 def get_company_price_intelligence_run(
@@ -1221,13 +1322,13 @@ def generate_company_status_snapshot(
         provider_name=provider_name,
         output_language=output_language,
     )
-    if not status_input["daily_reports"] and not status_input["raw_news_fallback"]:
+    price_point_count = int((status_input.get("price_context") or {}).get("point_count") or 0)
+    if price_point_count <= 0:
         return {
             "generated": False,
-            "daily_report_count": 0,
-            "raw_news_count": len(status_input["raw_news_fallback"]),
+            "price_point_count": 0,
             "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
-            "input_item_count": len(status_input.get("raw_news_fallback") or []),
+            "input_item_count": 0,
             "prompt_char_count": 0,
             "output_char_count": 0,
         }
@@ -1262,10 +1363,9 @@ def generate_company_status_snapshot(
     )
     return {
         "generated": True,
-        "daily_report_count": len(status_input["daily_reports"]),
-        "raw_news_count": len(status_input["raw_news_fallback"]),
+        "price_point_count": price_point_count,
         "elapsed_sec": round(pytime.perf_counter() - started_at, 2),
-        "input_item_count": len(status_input["daily_reports"]) + len(status_input["raw_news_fallback"]) + len(status_input.get("active_stories") or []) + len(status_input.get("market_stories") or []),
+        "input_item_count": int((status_input.get("input_coverage") or {}).get("input_item_count") or 0),
         "prompt_char_count": len(prompt),
         "output_char_count": len(output_text or ""),
     }
@@ -3932,82 +4032,33 @@ def _upsert_company_status_snapshot(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id
-                FROM company_status_snapshot
-                WHERE company_name = %s
-                  AND provider = %s
-                  AND prompt_style = %s
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
+                INSERT INTO company_status_snapshot (
+                    company_name,
+                    as_of_date,
+                    window_start_date,
+                    window_end_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    input_payload,
+                    output_json,
+                    output_text
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (company_name, provider, prompt_style),
+                (
+                    company_name,
+                    as_of_date,
+                    window_start_date,
+                    window_end_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    json.dumps(input_payload),
+                    json.dumps(output_json, ensure_ascii=False),
+                    output_text,
+                ),
             )
-            existing = cur.fetchone()
-            if existing:
-                cur.execute(
-                    """
-                    UPDATE company_status_snapshot
-                    SET as_of_date = %s,
-                        window_start_date = %s,
-                        window_end_date = %s,
-                        model = %s,
-                        input_payload = %s,
-                        output_json = %s,
-                        output_text = %s,
-                        created_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        as_of_date,
-                        window_start_date,
-                        window_end_date,
-                        model,
-                        json.dumps(input_payload),
-                        json.dumps(output_json, ensure_ascii=False),
-                        output_text,
-                        existing["id"],
-                    ),
-                )
-                cur.execute(
-                    """
-                    DELETE FROM company_status_snapshot
-                    WHERE company_name = %s
-                      AND provider = %s
-                      AND prompt_style = %s
-                      AND id <> %s
-                    """,
-                    (company_name, provider, prompt_style, existing["id"]),
-                )
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO company_status_snapshot (
-                        company_name,
-                        as_of_date,
-                        window_start_date,
-                        window_end_date,
-                        provider,
-                        model,
-                        prompt_style,
-                        input_payload,
-                        output_json,
-                        output_text
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        company_name,
-                        as_of_date,
-                        window_start_date,
-                        window_end_date,
-                        provider,
-                        model,
-                        prompt_style,
-                        json.dumps(input_payload),
-                        json.dumps(output_json, ensure_ascii=False),
-                        output_text,
-                    ),
-                )
         conn.commit()
 
 
@@ -4470,43 +4521,19 @@ def _build_company_price_intelligence_input(
     provider_name: str,
     output_language: str,
 ) -> Dict[str, Any]:
-    daily_reports = get_company_daily_reports_for_range(
-        company_name,
-        start_date=start_date,
-        end_date=end_date,
-        provider_name=provider_name,
-        prompt_style="simple",
-    )
-    daily_report_dates = {
-        str(item.get("report_date") or "").strip()
-        for item in daily_reports
-        if str(item.get("report_date") or "").strip()
-    }
-    raw_news_fallback = _build_company_status_raw_news_fallback(
-        company_name,
-        start_date=start_date,
-        end_date=end_date,
-        covered_dates=daily_report_dates,
-    )[:PRICE_ANALYSIS_RAW_FALLBACK_LIMIT]
     price_context = _build_company_status_price_context(company_name, start_date=start_date, end_date=end_date)
-    market_daily_summaries = _build_company_status_market_daily_summary_context(
-        start_date=start_date,
-        end_date=end_date,
-    )[:PRICE_ANALYSIS_MARKET_SUMMARY_LIMIT]
+    input_coverage = {
+        "window_start": start_date.isoformat(),
+        "window_end": end_date.isoformat(),
+        "window_days": int((end_date - start_date).days) + 1,
+        "price_point_count": int(price_context.get("point_count") or 0),
+        "recent_point_count": len(price_context.get("recent_points") or []),
+        "move_analysis_count": len(price_context.get("move_analyses") or []),
+        "input_item_count": int(price_context.get("point_count") or 0),
+    }
     return {
-        "daily_reports": daily_reports,
-        "raw_news_fallback": raw_news_fallback,
         "price_context": price_context,
-        "market_stories": _build_company_status_market_story_context(limit=6),
-        "market_daily_summaries": market_daily_summaries,
-        "input_coverage": _build_company_status_input_coverage(
-            daily_reports=daily_reports,
-            raw_news_fallback=raw_news_fallback,
-            start_date=start_date,
-            end_date=end_date,
-            market_daily_summaries=market_daily_summaries,
-            price_context=price_context,
-        ),
+        "input_coverage": input_coverage,
         "output_language": output_language,
     }
 
@@ -5002,7 +5029,8 @@ def _normalize_company_status_payload(payload: Dict[str, Any], *, as_of_date: da
 
     normalized = {
         "as_of_date": as_of_date.isoformat(),
-        "company_summary": _to_text(payload.get("company_summary")),
+        "company_summary": _to_text(payload.get("company_summary") or payload.get("technical_summary")),
+        "technical_summary": _to_text(payload.get("technical_summary")),
         "dominant_personality": payload.get("dominant_personality") if isinstance(payload.get("dominant_personality"), dict) else {
             "label": "",
             "dominant_horizon": "balanced",
@@ -5013,6 +5041,8 @@ def _normalize_company_status_payload(payload: Dict[str, Any], *, as_of_date: da
         "decision_brief": payload.get("decision_brief") if isinstance(payload.get("decision_brief"), dict) else {},
         "research_memo": payload.get("research_memo") if isinstance(payload.get("research_memo"), dict) else {},
         "trader_view": payload.get("trader_view") if isinstance(payload.get("trader_view"), dict) else {},
+        "volume_participation": _to_text(payload.get("volume_participation")),
+        "volatility_range_context": _to_text(payload.get("volatility_range_context")),
         "short_horizon_view": _normalize_horizon("short", payload.get("short_horizon_view")),
         "medium_horizon_view": _normalize_horizon("medium", payload.get("medium_horizon_view")),
         "long_horizon_view": _normalize_horizon("long", payload.get("long_horizon_view")),
@@ -5043,47 +5073,26 @@ def _render_company_status_markdown(payload: Dict[str, Any]) -> str:
             f"- Invalidations:\n{_bullet_block(section.get('invalidations') or [])}"
         )
 
-    decision = payload.get("decision_brief") if isinstance(payload.get("decision_brief"), dict) else {}
-    research = payload.get("research_memo") if isinstance(payload.get("research_memo"), dict) else {}
-    trader = payload.get("trader_view") if isinstance(payload.get("trader_view"), dict) else {}
     personality = payload.get("dominant_personality") if isinstance(payload.get("dominant_personality"), dict) else {}
     return (
-        "## Decision Brief\n"
-        f"- Company Summary: {payload.get('company_summary') or '—'}\n"
+        "## Technical Summary\n"
+        f"- Summary: {payload.get('technical_summary') or payload.get('company_summary') or '—'}\n"
         f"- Price Position: {payload.get('price_position_summary') or '—'}\n"
-        f"- Market Regime: {payload.get('market_regime_context') or '—'}\n"
         f"- Dominant Personality: {personality.get('label') or '—'}\n"
         f"- Dominant Horizon: {personality.get('dominant_horizon') or 'balanced'}\n"
         f"- Why Dominant: {personality.get('why') or '—'}\n"
-        f"- Summary: {decision.get('summary') or '—'}\n"
-        f"- Key Reasons:\n{_bullet_block(decision.get('key_reasons') or [])}\n"
-        f"- Top Watch Signals:\n{_bullet_block(decision.get('top_watch_signals') or [])}\n"
+        "\n## Volume And Participation\n"
+        f"- {payload.get('volume_participation') or '—'}\n"
+        "\n## Volatility And Range\n"
+        f"- {payload.get('volatility_range_context') or '—'}\n"
         "\n### Short Horizon\n"
         f"{_render_horizon(payload.get('short_horizon_view') or {})}\n"
         "\n### Medium Horizon\n"
         f"{_render_horizon(payload.get('medium_horizon_view') or {})}\n"
         "\n### Long Horizon\n"
         f"{_render_horizon(payload.get('long_horizon_view') or {})}\n"
-        "\n## Research Memo\n"
-        f"- Company State: {research.get('company_state') or '—'}\n"
-        f"- Market Belief: {research.get('market_belief') or '—'}\n"
-        f"- Valuation vs Expectations: {research.get('valuation_vs_expectations') or '—'}\n"
-        f"- Advantages:\n{_bullet_block(research.get('advantages') or [])}\n"
-        f"- Disadvantages:\n{_bullet_block(research.get('disadvantages') or [])}\n"
-        f"- Certainties:\n{_bullet_block(research.get('certainties') or [])}\n"
-        f"- Uncertainties:\n{_bullet_block(research.get('uncertainties') or [])}\n"
-        "\n## Trader View\n"
-        f"- Behavior Driver: {trader.get('behavior_driver') or '—'}\n"
-        f"- Short-term Notes: {trader.get('short_term_notes') or '—'}\n"
-        f"- Setup Fit:\n{_bullet_block(trader.get('setup_fit') or [])}\n"
-        f"- Entry Signals:\n{_bullet_block(trader.get('entry_signals') or [])}\n"
-        f"- Exit Signals:\n{_bullet_block(trader.get('exit_signals') or [])}\n"
-        f"- Wait Signals:\n{_bullet_block(trader.get('wait_signals') or [])}\n"
-        f"\n## Signals To Watch\n{_bullet_block(payload.get('signals_to_watch') or [])}\n"
         f"\n## Risk Map\n{_bullet_block(payload.get('risk_map') or [])}\n"
         f"\n## Uncertainty Map\n{_bullet_block(payload.get('uncertainty_map') or [])}\n"
-        f"\n## Trading Style Fit\n{_bullet_block(payload.get('trading_style_fit') or [])}\n"
-        f"\n## Supporting Reasoning\n{_bullet_block(payload.get('supporting_reasoning') or [])}\n"
     )
 
 
@@ -5799,6 +5808,25 @@ def _row_to_story_warmup_state(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _parse_story_warmup_state_datetime(raw_value: Any) -> Optional[datetime]:
+    if isinstance(raw_value, datetime):
+        return raw_value if raw_value.tzinfo else raw_value.replace(tzinfo=timezone.utc)
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _group_story_states(
     stories: List[Dict[str, Any]],
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -6422,6 +6450,36 @@ def _run_company_story_warmup_job_inner(
                         )
                         if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES:
                             if is_rate_limit:
+                                _upsert_story_warmup_state(
+                                    company_name,
+                                    provider_name=provider_name,
+                                    model=model,
+                                    prompt_style=prompt_style,
+                                    output_language=output_language,
+                                    updates={
+                                        "job_state": "failed",
+                                        "current_stage": "fetching_raw",
+                                        "window_days": safe_warmup_days,
+                                        "slice_days": safe_slice_days,
+                                        "window_start_date": start_date,
+                                        "window_end_date": end_date,
+                                        "total_slices": len(slices),
+                                        "completed_slices": completed_slices,
+                                        "current_slice_start_date": slice_start,
+                                        "current_slice_end_date": slice_end,
+                                        "last_completed_slice_end_date": last_completed_slice_end,
+                                        "raw_fetched_count": fetched_total,
+                                        "raw_stored_count": raw_stored_count,
+                                        "filtered_kept_count": filtered_kept_count,
+                                        "retry_count": retries,
+                                        "last_retry_at": datetime.now(timezone.utc),
+                                        "last_error": f"Warm-up stopped after repeated rate limiting: {exc}",
+                                        "failed_stage": "fetching_raw",
+                                        "analysis_started": False,
+                                        "analysis_completed": False,
+                                        "completed_at": datetime.now(timezone.utc),
+                                    },
+                                )
                                 return
                             raise
                         if is_rate_limit:

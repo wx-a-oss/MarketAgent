@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -234,6 +234,185 @@ def test_company_price_intelligence_history_endpoint_returns_runs(monkeypatch) -
     assert payload["runs"][0]["id"] == 7
 
 
+def test_company_status_endpoint_returns_history_preview(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.get_company_status_snapshot",
+        lambda company_name, provider_name="openai", prompt_style="simple", snapshot_id=None: {
+            "id": 21,
+            "as_of_date": "2026-03-29",
+            "output_text": "technical report",
+        },
+    )
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_status_snapshots",
+        lambda company_name, provider_name="openai", prompt_style="simple", limit=10: [
+            {"id": 21, "created_at": "2026-03-29 09:00:00", "price_position_summary": "near resistance"},
+            {"id": 20, "created_at": "2026-03-28 09:00:00", "price_position_summary": "inside range"},
+        ],
+    )
+    client = TestClient(app)
+    response = client.get("/api/company/Google/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"]["id"] == 21
+    assert payload["history_preview"][0]["id"] == 21
+
+
+def test_company_story_warmup_invalid_when_running_state_is_stale(monkeypatch) -> None:
+    stale_time = datetime.now(timezone.utc) - timedelta(hours=4)
+    monkeypatch.setattr(
+        company_news_service,
+        "get_company_story_warmup_state",
+        lambda *args, **kwargs: {
+            "job_state": "running",
+            "current_stage": "fetching_raw",
+            "analysis_started": False,
+            "analysis_completed": False,
+            "raw_fetched_count": 12,
+            "failed_stage": "",
+            "last_error": "",
+            "started_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "get_company_profile",
+        lambda company_name: {"ticker": "GOOGL"},
+    )
+    assert company_news_service.is_company_story_warmup_invalid("Google") is True
+
+
+def test_ensure_company_story_warmup_started_invalidates_stale_running_state(monkeypatch) -> None:
+    stale_time = datetime.now(timezone.utc) - timedelta(hours=4)
+    state = {
+        "job_state": "running",
+        "current_stage": "fetching_raw",
+        "window_days": 10,
+        "slice_days": 10,
+        "analysis_started": True,
+        "analysis_completed": True,
+        "raw_fetched_count": 0,
+        "raw_stored_count": 0,
+        "filtered_kept_count": 0,
+        "ongoing_story_count": 0,
+        "finished_story_count": 0,
+        "retry_count": 0,
+        "started_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    upserts = []
+    thread_calls = []
+    call_count = {"value": 0}
+
+    def fake_get_state(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            return dict(state)
+        return {"job_state": "running", "current_stage": "fetching_raw"}
+
+    monkeypatch.setattr(company_news_service, "get_company_story_warmup_state", fake_get_state)
+    monkeypatch.setattr(company_news_service, "get_company_profile", lambda company_name: {"ticker": "GOOGL"})
+    monkeypatch.setattr(
+        company_news_service,
+        "_upsert_story_warmup_state",
+        lambda company_name, **kwargs: upserts.append(kwargs["updates"]) or {"job_state": "failed"},
+    )
+    monkeypatch.setattr(
+        company_news_service,
+        "_ensure_story_warmup_thread",
+        lambda company_name, **kwargs: thread_calls.append((company_name, kwargs)),
+    )
+
+    company_news_service.ensure_company_story_warmup_started("Google")
+
+    assert upserts
+    assert upserts[0]["job_state"] == "failed"
+    assert "stale" in upserts[0]["last_error"].lower() or "inconsistent" in upserts[0]["last_error"].lower()
+    assert thread_calls
+
+
+def test_company_story_warmup_rate_limit_marks_failed(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).date()
+    updates = []
+
+    class DummySource:
+        def fetch_news(self, company_name, start_date, end_date):
+            raise RuntimeError("429 rate limit")
+
+    monkeypatch.setattr(company_news_service, "_ensure_news_schema", lambda: None)
+    monkeypatch.setattr(company_news_service, "_build_story_warmup_slices", lambda **kwargs: [(now, now)])
+    monkeypatch.setattr(
+        company_news_service,
+        "get_company_story_warmup_state",
+        lambda *args, **kwargs: {
+            "analysis_started": False,
+            "analysis_completed": False,
+            "retry_count": 0,
+            "raw_fetched_count": 0,
+            "raw_stored_count": 0,
+            "filtered_kept_count": 0,
+            "ongoing_story_count": 0,
+            "finished_story_count": 0,
+            "completed_slices": 0,
+            "last_completed_slice_end_date": "",
+        },
+    )
+    monkeypatch.setattr(company_news_service, "get_news_provider", lambda *args, **kwargs: object())
+    monkeypatch.setattr(company_news_service, "get_news_source", lambda name: DummySource())
+    monkeypatch.setattr(company_news_service, "_build_fetch_ranges_for_slice", lambda *args, **kwargs: [(now, now)])
+    monkeypatch.setattr(company_news_service, "_resolve_company_ticker", lambda company_name: "GOOGL")
+    monkeypatch.setattr(company_news_service, "_news_items_from_provider", lambda *args, **kwargs: [])
+    monkeypatch.setattr(company_news_service, "_store_articles", lambda *args, **kwargs: None)
+    monkeypatch.setattr(company_news_service, "_filter_company_news_range_raw", lambda **kwargs: 0)
+    monkeypatch.setattr(company_news_service, "DEFAULT_STORY_WARMUP_MAX_RETRIES", 1)
+    monkeypatch.setattr(company_news_service, "DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC", 1)
+    monkeypatch.setattr(
+        company_news_service,
+        "_upsert_story_warmup_state",
+        lambda company_name, **kwargs: updates.append(kwargs["updates"]) or kwargs["updates"],
+    )
+
+    company_news_service._run_company_story_warmup_job_inner(
+        company_name="Google",
+        provider_name="openai",
+        model="gpt-5.4",
+        prompt_style="simple",
+        output_language="zh-CN",
+        warmup_days=10,
+        slice_days=10,
+    )
+
+    assert updates
+    assert updates[-1]["job_state"] == "failed"
+    assert "rate limit" in updates[-1]["last_error"].lower()
+    assert updates[-1]["completed_at"] is not None
+
+
+def test_company_status_snapshot_endpoint_returns_selected_history_item(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.get_company_status_snapshot",
+        lambda company_name, provider_name="openai", prompt_style="simple", snapshot_id=None: {
+            "id": int(snapshot_id or 0),
+            "as_of_date": "2026-03-28",
+            "output_text": "older technical report",
+        },
+    )
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_status_snapshots",
+        lambda company_name, provider_name="openai", prompt_style="simple", limit=10: [
+            {"id": 22, "created_at": "2026-03-29 09:00:00", "price_position_summary": "breakout test"},
+            {"id": 21, "created_at": "2026-03-28 09:00:00", "price_position_summary": "pullback"},
+        ],
+    )
+    client = TestClient(app)
+    response = client.get("/api/company/Google/status/21")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"]["id"] == 21
+    assert payload["history_preview"][1]["id"] == 21
+
+
 def test_company_indicators_analyze_endpoint_no_longer_depends_on_output_language(monkeypatch) -> None:
     class _FakeSnapshot:
         symbol = "NVDA"
@@ -338,14 +517,21 @@ def test_company_analysis_inputs_drop_story_and_earnings_context(monkeypatch) ->
         assert "recent_story_updates" not in payload
         assert "earnings_context" not in payload
         assert "macro_context" not in payload
-        assert payload["daily_reports"]
-        assert payload["raw_news_fallback"]
-        assert payload["market_daily_summaries"]
         assert payload["price_context"]["point_count"] == 12
-        assert payload["input_coverage"]["daily_report_count"] == 2
-        assert payload["input_coverage"]["raw_news_fallback_count"] == 1
-        assert payload["input_coverage"]["market_summary_count"] == 1
         assert payload["input_coverage"]["price_point_count"] == 12
+
+    assert "daily_reports" not in detailed
+    assert "raw_news_fallback" not in detailed
+    assert "market_daily_summaries" not in detailed
+    assert detailed["input_coverage"]["recent_point_count"] == 1
+    assert detailed["input_coverage"]["input_item_count"] == 12
+
+    assert quick["daily_reports"]
+    assert quick["raw_news_fallback"]
+    assert quick["market_daily_summaries"]
+    assert quick["input_coverage"]["daily_report_count"] == 2
+    assert quick["input_coverage"]["raw_news_fallback_count"] == 1
+    assert quick["input_coverage"]["market_summary_count"] == 1
 
 
 def test_market_page_renders_overview_and_stories_subviews() -> None:
@@ -563,8 +749,8 @@ def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> N
     assert ">Earnings<" in html
     assert "Price Intelligence" in html
     assert "Generate Price Intelligence" in html
-    assert "Detailed Report" in html
-    assert "Generate Detailed Report" in html
+    assert "Technical Report" in html
+    assert "Generate Technical Report" in html
     assert "price-intelligence-style" not in html
     assert "Rebuild Warm-up" in html
 
@@ -826,3 +1012,52 @@ def test_market_macro_extension_window_uses_today_plus_3_months(monkeypatch) -> 
     start, end = market_updates._resolve_macro_extension_window()
     assert start.isoformat() == "2026-03-29"
     assert end.isoformat() == "2026-06-26"
+
+
+def test_market_story_state_batch_clears_inactive_rows_before_rollover(monkeypatch) -> None:
+    executed: list[str] = []
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=None):
+            executed.append(" ".join(str(query).split()))
+            return None
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return _Cursor()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(market_updates, "get_connection", lambda: _Conn())
+    market_updates._upsert_market_story_state_batch(
+        provider_name="openai",
+        model="gpt-5.4",
+        prompt_style="simple",
+        output_language="zh-CN",
+        stories=[
+            {
+                "story_key": "rates",
+                "story_title": "Rates",
+                "importance_rank": 1,
+                "story_status": "ongoing",
+            }
+        ],
+    )
+
+    assert "DELETE FROM market_story_state" in executed[0]
+    assert "is_active = FALSE" in executed[0]
+    assert "UPDATE market_story_state" in executed[1]
+    assert "is_active = TRUE" in executed[1]

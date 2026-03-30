@@ -1541,6 +1541,13 @@ def _upsert_market_story_state_batch(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
+                DELETE FROM {TBL_MARKET_STORY_STATE}
+                WHERE provider = %s AND prompt_style = %s AND {COL_OUTPUT_LANGUAGE} = %s AND is_active = FALSE
+                """,
+                (provider_name, prompt_style, output_language),
+            )
+            cur.execute(
+                f"""
                 UPDATE {TBL_MARKET_STORY_STATE}
                 SET is_active = FALSE, updated_at = NOW()
                 WHERE provider = %s AND prompt_style = %s AND {COL_OUTPUT_LANGUAGE} = %s AND is_active = TRUE

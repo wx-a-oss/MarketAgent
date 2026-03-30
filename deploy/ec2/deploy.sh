@@ -24,7 +24,13 @@ fi
 cd "${REPO_DIR}"
 bash postgres/init_db.sh
 
+sudo cp deploy/systemd/marketagent-web.service /etc/systemd/system/marketagent-web.service
+sudo cp deploy/systemd/marketagent-worker.service /etc/systemd/system/marketagent-worker.service
+sudo cp deploy/systemd/marketagent-worker.timer /etc/systemd/system/marketagent-worker.timer
+sudo systemctl daemon-reload
+
 sudo systemctl restart marketagent-web.service
+sudo systemctl restart marketagent-worker.service || true
 sudo systemctl restart marketagent-worker.timer
 
 for _ in $(seq 1 30); do
