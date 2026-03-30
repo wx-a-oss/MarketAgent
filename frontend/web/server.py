@@ -70,6 +70,7 @@ from market_agent.analysis.company.news import (
     get_company_profile,
     get_company_price_intelligence_run,
     get_company_status_snapshot,
+    list_company_status_snapshots,
     get_company_story_warmup_state,
     get_news_report,
     list_watchlist_company_rows,
@@ -1769,7 +1770,50 @@ async def get_company_status_api(
         provider_name=provider or "openai",
         prompt_style="simple",
     )
-    return {"company": company_name, "status": snapshot}
+    history = list_company_status_snapshots(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style="simple",
+        limit=10,
+    )
+    return {"company": company_name, "status": snapshot, "history_preview": history[:10]}
+
+
+@app.get("/api/company/{company_name}/status/history")
+async def list_company_status_history_api(
+    company_name: str,
+    prompt_style: str = Query("simple"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    history = list_company_status_snapshots(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style="simple",
+        limit=20,
+    )
+    return {"company": company_name, "snapshots": history}
+
+
+@app.get("/api/company/{company_name}/status/{snapshot_id}")
+async def get_company_status_snapshot_api(
+    company_name: str,
+    snapshot_id: int,
+    prompt_style: str = Query("simple"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    snapshot = get_company_status_snapshot(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style="simple",
+        snapshot_id=snapshot_id,
+    )
+    history = list_company_status_snapshots(
+        company_name,
+        provider_name=provider or "openai",
+        prompt_style="simple",
+        limit=10,
+    )
+    return {"company": company_name, "status": snapshot, "history_preview": history[:10]}
 
 
 @app.get("/api/company/{company_name}/price-intelligence")
@@ -1817,7 +1861,13 @@ async def generate_company_status_api(
         provider_name=provider_name,
         prompt_style="simple",
     )
-    return {"company": company_name, "status": snapshot, **stats}
+    history = list_company_status_snapshots(
+        company_name,
+        provider_name=provider_name,
+        prompt_style="simple",
+        limit=10,
+    )
+    return {"company": company_name, "status": snapshot, "history_preview": history[:10], **stats}
 
 
 @app.post("/api/company/{company_name}/price-intelligence/generate")

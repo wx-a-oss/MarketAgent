@@ -2127,18 +2127,20 @@ def render_company_detail_page(
                                     <div class="status-output" id="price-intelligence-output"></div>
                                     <div class="stock-analysis-list" id="price-intelligence-history" style="margin-top:0.85rem;"></div>
                                 </div>
-                                <div class="status-panel" style="margin-top:0.9rem;">
-                                    <div class="status-panel-header">
-                                        <div class="status-header-main">
-                                            <h2 style="margin:0;">Detailed Report</h2>
-                                            <div class="status-meta" id="detailed-report-meta">Loading detailed report...</div>
+                                    <div class="status-panel" style="margin-top:0.9rem;">
+                                        <div class="status-panel-header">
+                                            <div class="status-header-main">
+                                                <h2 style="margin:0;">Technical Report</h2>
+                                                <div class="status-meta" id="detailed-report-meta">Loading technical report...</div>
                                         </div>
                                         <div class="status-controls">
-                                            <button class="status-btn" id="detailed-report-refresh" type="button">Generate Detailed Report</button>
+                                            <button class="status-btn" id="detailed-report-refresh" type="button">Generate Technical Report</button>
+                                            </div>
                                         </div>
+                                        <div class="status-meta" id="detailed-report-history-meta" style="margin-bottom:0.5rem;"></div>
+                                        <div class="status-output" id="detailed-report-output"></div>
+                                        <div class="stock-analysis-list" id="detailed-report-history" style="margin-top:0.85rem;"></div>
                                     </div>
-                                    <div class="status-output" id="detailed-report-output"></div>
-                                </div>
                                 <div class="stock-analysis-list" id="stock-analysis-list"></div>
                             </div>
                         `;
@@ -2155,6 +2157,8 @@ def render_company_detail_page(
                         const detailedOutput = document.getElementById("detailed-report-output");
                         const detailedMeta = document.getElementById("detailed-report-meta");
                         const detailedRefresh = document.getElementById("detailed-report-refresh");
+                        const detailedHistoryMeta = document.getElementById("detailed-report-history-meta");
+                        const detailedHistory = document.getElementById("detailed-report-history");
                         const rangeButtons = Array.from(contentEl.querySelectorAll(".stock-range-btn"));
                         let activeRange = defaultRange;
                         let latestSeries = [];
@@ -2424,12 +2428,54 @@ def render_company_detail_page(
                             if (!status) return "<p>—</p>";
                             return `
                                 <div class="news-card expanded">
-                                    <h3>Detailed Report</h3>
+                                    <h3>Technical Report</h3>
                                     <div class="news-content">
                                         <div>${{renderMarkdown(status.output_text || status.output_markdown || "—")}}</div>
                                     </div>
                                 </div>
                             `;
+                        }}
+
+                        function renderTechnicalReportHistory(items, activeId) {{
+                            const rows = Array.isArray(items) ? items : [];
+                            if (rows.length <= 1) return "";
+                            return rows.map((item, index) => {{
+                                const snapshotId = String(item.id || "");
+                                const createdAt = formatDateTime(item.created_at || "");
+                                const summary = String(item.price_position_summary || item.technical_summary || "Technical report");
+                                const openAttr = index === 0 || String(activeId || "") === snapshotId ? " open" : "";
+                                const activeClass = String(activeId || "") === snapshotId ? " active" : "";
+                                return `
+                                    <details class="stock-history-item${{activeClass}}"${{openAttr}}>
+                                        <summary class="stock-history-summary" data-technical-id="${{snapshotId}}">
+                                            <span>${{escapeHtml(createdAt)}}</span>
+                                            <span class="stock-history-position">${{escapeHtml(summary)}}</span>
+                                        </summary>
+                                    </details>
+                                `;
+                            }}).join("");
+                        }}
+
+                        async function loadTechnicalReportSnapshot(snapshotId) {{
+                            const response = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/status/${{encodeURIComponent(snapshotId)}}?prompt_style=simple`);
+                            const payload = await response.json();
+                            if (!response.ok || payload.error) {{
+                                if (detailedMeta) detailedMeta.textContent = payload.error || "Failed to load selected technical report.";
+                                return;
+                            }}
+                            const status = payload.status || null;
+                            if (detailedOutput) detailedOutput.innerHTML = renderDetailedReport(status);
+                            const detailedHistoryItems = Array.isArray(payload.history_preview) ? payload.history_preview : [];
+                            if (detailedHistory) detailedHistory.innerHTML = renderTechnicalReportHistory(detailedHistoryItems, status ? status.id : null);
+                            if (detailedHistoryMeta) detailedHistoryMeta.textContent = detailedHistoryItems.length > 1 ? `history=${{detailedHistoryItems.length}} runs` : "";
+                            if (detailedHistory) {{
+                                detailedHistory.querySelectorAll("[data-technical-id]").forEach((btn) => {{
+                                    btn.addEventListener("click", async () => {{
+                                        const selectedId = btn.getAttribute("data-technical-id");
+                                        if (selectedId) await loadTechnicalReportSnapshot(selectedId);
+                                    }});
+                                }});
+                            }}
                         }}
 
                         async function loadPriceIntelligenceRun(runId) {{
@@ -2523,26 +2569,43 @@ def render_company_detail_page(
                             const payload = await response.json();
                             const status = payload.status || null;
                             if (detailedOutput) detailedOutput.innerHTML = renderDetailedReport(status);
+                            const detailedHistoryItems = Array.isArray(payload.history_preview) ? payload.history_preview : [];
+                            if (detailedHistory) detailedHistory.innerHTML = renderTechnicalReportHistory(detailedHistoryItems, status ? status.id : null);
+                            if (detailedHistoryMeta) detailedHistoryMeta.textContent = detailedHistoryItems.length > 1 ? `history=${{detailedHistoryItems.length}} runs` : "";
+                            if (detailedHistory) {{
+                                detailedHistory.querySelectorAll("[data-technical-id]").forEach((btn) => {{
+                                    btn.addEventListener("click", async () => {{
+                                        const selectedId = btn.getAttribute("data-technical-id");
+                                        if (selectedId) await loadTechnicalReportSnapshot(selectedId);
+                                    }});
+                                }});
+                            }}
                             if (detailedMeta) {{
                                 if (!status) {{
-                                    detailedMeta.textContent = payload.job ? formatJobText(payload.job) : "No detailed report available yet.";
+                                    detailedMeta.textContent = payload.job ? formatJobText(payload.job) : "No technical report available yet.";
                                 }} else {{
+                                    const coverage = status && status.input_payload && status.input_payload.input_coverage
+                                        ? status.input_payload.input_coverage
+                                        : null;
+                                    const coverageText = coverage
+                                        ? `price_points=${{coverage.price_point_count || 0}} · recent_points=${{coverage.recent_point_count || 0}}`
+                                        : "";
                                     detailedMeta.textContent = payload.job
                                         ? formatJobText(payload.job)
-                                        : `as_of=${{status.as_of_date || "—"}} · provider=${{status.provider || "—"}} · model=${{status.model || "—"}}`;
+                                        : `as_of=${{status.as_of_date || "—"}} · provider=${{status.provider || "—"}} · model=${{status.model || "—"}}${{coverageText ? " · " + coverageText : ""}}`;
                                 }}
                             }}
                             if (payload.job && detailedRefresh) {{
                                 const running = ["queued", "running"].includes(String(payload.job.status || ""));
                                 detailedRefresh.disabled = running;
-                                detailedRefresh.textContent = running ? "Generating..." : "Generate Detailed Report";
+                                detailedRefresh.textContent = running ? "Generating..." : "Generate Technical Report";
                                 if (running) {{
                                     if (priceIntelligenceDetailJobStop) priceIntelligenceDetailJobStop();
                                     priceIntelligenceDetailJobStop = pollJob(payload.job.job_id, (job) => {{
                                         if (detailedMeta) detailedMeta.textContent = formatJobText(job);
                                         const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
                                         detailedRefresh.disabled = !!stillRunning;
-                                        detailedRefresh.textContent = stillRunning ? "Generating..." : "Generate Detailed Report";
+                                        detailedRefresh.textContent = stillRunning ? "Generating..." : "Generate Technical Report";
                                     }}, async () => {{
                                         await loadDetailedReport(false);
                                     }});
