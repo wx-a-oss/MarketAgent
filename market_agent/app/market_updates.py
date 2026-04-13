@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
 from market_agent.analysis.company.news.service import (
     _build_output_language_line,
@@ -50,7 +50,7 @@ from market_agent.schema_fields import (
 DEFAULT_MARKET_STORY_WARMUP_DAYS = 14
 DEFAULT_MARKET_STORY_WARMUP_SLICE_DAYS = 10
 DEFAULT_MARKET_PROVIDER = "openai"
-DEFAULT_MARKET_MODEL = DEFAULT_OPENAI_MODEL
+DEFAULT_MARKET_MODEL = DEFAULT_MARKET_OPENAI_MODEL
 MARKET_STORY_PROMPT_JSON_LIMIT = max(
     10000, int(os.getenv("MARKET_STORY_PROMPT_JSON_LIMIT", "30000").strip() or "30000")
 )

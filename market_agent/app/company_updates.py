@@ -20,14 +20,15 @@ from market_agent.analysis.company.news import (
     get_company_story_warmup_state,
     is_company_story_warmup_invalid,
     list_company_story_states,
+    list_watchlist_company_rows,
     rebuild_company_story_warmup,
     refresh_company_daily_clusters,
-    list_watchlist_companies,
     refresh_company_news_for_range,
     refresh_company_story_states,
 )
 from market_agent.analysis.company.news.service import _upsert_story_warmup_state
 from .market_updates import run_market_daily_update
+from market_agent.config.models import DEFAULT_COMPANY_OPENAI_MODEL, DEFAULT_MARKET_OPENAI_MODEL
 
 _COMPANY_UPDATE_THREADS: Dict[str, threading.Thread] = {}
 _COMPANY_UPDATE_THREADS_LOCK = threading.Lock()
@@ -45,7 +46,7 @@ def start_company_story_warmup(
     subscribe: bool = False,
 ) -> Dict[str, Any]:
     if subscribe:
-        add_company_to_watchlist(company_name)
+        add_company_to_watchlist(company_name, model=model)
     ensure_company_profile(company_name)
     return ensure_company_story_warmup_started(
         company_name,
@@ -474,19 +475,26 @@ def run_daily_updates_for_watchlist(
     target_date: Optional[date] = None,
     source_name: str = "finnhub",
     provider_name: str = DEFAULT_PROVIDER,
-    model: str = DEFAULT_MODEL,
+    company_model: Optional[str] = None,
+    market_model: str = DEFAULT_MARKET_OPENAI_MODEL,
     prompt_style: str = "simple",
     output_language: str = "zh-CN",
     story_window_days: int = 21,
     companies: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    names = companies or list_watchlist_companies()
+    if companies:
+        rows = [
+            {"company_name": company_name, "llm_model": company_model or DEFAULT_COMPANY_OPENAI_MODEL}
+            for company_name in companies
+        ]
+    else:
+        rows = list_watchlist_company_rows()
     results: List[Dict[str, Any]] = []
     try:
         market_result = run_market_daily_update(
             target_date=target_date,
             provider_name=provider_name,
-            model=model,
+            model=market_model,
             prompt_style=prompt_style,
             output_language=output_language,
         )
@@ -499,14 +507,20 @@ def run_daily_updates_for_watchlist(
             "error": str(exc),
         }
     results.append({"scope": "market", **market_result})
-    for company_name in names:
+    for row in rows:
+        company_name = str(row.get("company_name") or "").strip()
+        selected_company_model = str(
+            company_model or row.get("llm_model") or DEFAULT_COMPANY_OPENAI_MODEL
+        ).strip() or DEFAULT_COMPANY_OPENAI_MODEL
+        if not company_name:
+            continue
         try:
             result = run_company_daily_update(
                 company_name,
                 target_date=target_date,
                 source_name=source_name,
                 provider_name=provider_name,
-                model=model,
+                model=selected_company_model,
                 prompt_style=prompt_style,
                 output_language=output_language,
                 story_window_days=story_window_days,

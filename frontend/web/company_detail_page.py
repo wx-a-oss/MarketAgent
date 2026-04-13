@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import DEFAULT_COMPANY_OPENAI_MODEL, DEFAULT_OPENAI_MODEL
 from market_agent.news_sources import list_news_sources
 
 
@@ -14,6 +14,7 @@ def render_company_detail_page(
     *,
     model_choices_by_provider: dict[str, list[str]] | None = None,
     indicator_models: list[str] | None = None,
+    default_company_model: str | None = None,
 ) -> str:
     safe_company = company_name.replace('"', "")
     display_company = (
@@ -28,9 +29,15 @@ def render_company_detail_page(
     for provider, models in (model_choices_by_provider or {}).items():
         for model in models:
             flat_models.append({"provider": str(provider), "model": str(model)})
+    company_models = list((model_choices_by_provider or {}).get("openai") or [])
+    selected_company_model = str(default_company_model or DEFAULT_COMPANY_OPENAI_MODEL)
+    if selected_company_model not in company_models:
+        company_models.append(selected_company_model)
     model_choices_json = json.dumps(flat_models, ensure_ascii=False)
+    company_model_choices_json = json.dumps(company_models, ensure_ascii=False)
     indicator_models_json = json.dumps(indicator_models or [], ensure_ascii=False)
     default_openai_model_json = json.dumps(DEFAULT_OPENAI_MODEL, ensure_ascii=False)
+    default_company_model_json = json.dumps(selected_company_model, ensure_ascii=False)
     return f"""
         <html>
             <head>
@@ -874,6 +881,7 @@ def render_company_detail_page(
                         <div class="header-row">
                             <h1>{display_company}</h1>
                             <div class="header-actions">
+                                <select class="week-input" id="company-job-model"></select>
                                 <select class="week-input" id="news-source">
                                     <option value="finnhub" selected>finnhub</option>
                                     <option value="openai">openai</option>
@@ -907,7 +915,9 @@ def render_company_detail_page(
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                 <script>
                     const stockModelChoices = {model_choices_json};
+                    const companyModelChoices = {company_model_choices_json};
                     const indicatorModels = {indicator_models_json};
+                    const defaultCompanyModel = {default_company_model_json};
                     const timelineEl = document.getElementById("timeline");
                     const layoutEl = document.getElementById("company-layout");
                     const contentEl = document.getElementById("news-content");
@@ -917,6 +927,7 @@ def render_company_detail_page(
                     const rangeInput = document.getElementById("range-date");
                     const outputLanguageSelect = document.getElementById("global-language-select");
                     const sourceSelect = document.getElementById("news-source");
+                    const companyJobModelSelect = document.getElementById("company-job-model");
                     const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
                     const VIEW_MODES = new Set(["daily", "stories", "stock", "indicators", "earnings", "weekly"]);
@@ -1013,6 +1024,82 @@ def render_company_detail_page(
                                 }});
                             }});
                         }}
+                    }}
+
+                    function getCompanyJobModel() {{
+                        if (companyJobModelSelect && companyJobModelSelect.value) {{
+                            return String(companyJobModelSelect.value);
+                        }}
+                        return String(defaultCompanyModel || "gpt-5.4-mini");
+                    }}
+
+                    async function persistCompanyJobModel(nextModel) {{
+                        const selectedModel = String(nextModel || "").trim() || String(defaultCompanyModel || "gpt-5.4-mini");
+                        const response = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/llm-model`, {{
+                            method: "PUT",
+                            headers: {{
+                                "Content-Type": "application/json",
+                            }},
+                            body: JSON.stringify({{ model: selectedModel }}),
+                        }});
+                        const payload = await response.json();
+                        if (!response.ok || payload.error) {{
+                            throw new Error((payload && payload.error) || "Failed to save company model.");
+                        }}
+                        return payload;
+                    }}
+
+                    function initCompanyJobModel() {{
+                        if (!companyJobModelSelect) {{
+                            return;
+                        }}
+                        const models = Array.isArray(companyModelChoices) ? companyModelChoices : [];
+                        const selectedModel = String(defaultCompanyModel || "gpt-5.4-mini");
+                        companyJobModelSelect.innerHTML = models
+                            .map((model) => {{
+                                const value = String(model || "");
+                                const selected = value === selectedModel ? "selected" : "";
+                                return `<option value="${{escapeHtml(value)}}" ${{selected}}>${{escapeHtml(value)}}</option>`;
+                            }})
+                            .join("");
+                        if (![...companyJobModelSelect.options].some((option) => option.value === selectedModel)) {{
+                            const option = document.createElement("option");
+                            option.value = selectedModel;
+                            option.textContent = selectedModel;
+                            option.selected = true;
+                            companyJobModelSelect.appendChild(option);
+                        }}
+                        companyJobModelSelect.dataset.previousValue = selectedModel;
+                        companyJobModelSelect.addEventListener("change", async () => {{
+                            const previous = companyJobModelSelect.dataset.previousValue || selectedModel;
+                            const nextModel = getCompanyJobModel();
+                            try {{
+                                await persistCompanyJobModel(nextModel);
+                                companyJobModelSelect.dataset.previousValue = nextModel;
+                                for (const cacheKey of Object.keys(statusCache)) {{
+                                    delete statusCache[cacheKey];
+                                }}
+                                for (const cacheKey of Object.keys(storyCache)) {{
+                                    delete storyCache[cacheKey];
+                                }}
+                                if (currentViewMode === "stories") {{
+                                    renderStoriesView();
+                                }} else if (currentViewMode === "stock") {{
+                                    renderStockView();
+                                }}
+                            }} catch (err) {{
+                                companyJobModelSelect.value = previous;
+                                alert(err && err.message ? err.message : "Failed to save company model.");
+                            }}
+                        }});
+                    }}
+
+                    function buildCompanyStatusCacheKey(style, outputLanguage) {{
+                        return `${{style}}|${{outputLanguage}}|${{getCompanyJobModel()}}`;
+                    }}
+
+                    function buildCompanyStoryCacheKey(style, outputLanguage) {{
+                        return `${{style}}|${{outputLanguage}}|${{getCompanyJobModel()}}`;
                     }}
 
                     function escapeHtml(value) {{
@@ -1275,9 +1362,10 @@ def render_company_detail_page(
                     async function fetchCompanyStatus(promptStyle, generateIfMissing = true) {{
                         const style = promptStyle || "simple";
                         const outputLanguage = getOutputLanguage();
-                        const cacheKey = `${{style}}|${{outputLanguage}}`;
+                        const model = getCompanyJobModel();
+                        const cacheKey = buildCompanyStatusCacheKey(style, outputLanguage);
                         const response = await fetch(
-                            `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=${{encodeURIComponent(style)}}`
+                            `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=${{encodeURIComponent(style)}}&model=${{encodeURIComponent(model)}}`
                         );
                         const payload = await response.json();
                         if (payload && payload.status) {{
@@ -1288,7 +1376,7 @@ def render_company_detail_page(
                             return null;
                         }}
                         const genResp = await fetch(
-                            `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`,
+                            `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}&model=${{encodeURIComponent(model)}}`,
                             {{ method: "POST" }}
                         );
                         const genPayload = await genResp.json();
@@ -1301,7 +1389,7 @@ def render_company_detail_page(
 
                     function renderStatusView() {{
                         const outputLanguage = getOutputLanguage();
-                        const cachedSimple = statusCache[`simple|${{outputLanguage}}`] || null;
+                        const cachedSimple = statusCache[buildCompanyStatusCacheKey("simple", outputLanguage)] || null;
                         const defaultStyle = cachedSimple ? "simple" : "simple";
                         contentEl.innerHTML = `
                             <div class="status-panel">
@@ -1338,14 +1426,14 @@ def render_company_detail_page(
                             }}
                             let status = null;
                             const outputLanguage = getOutputLanguage();
-                            const cacheKey = `${{style}}|${{outputLanguage}}`;
+                            const cacheKey = buildCompanyStatusCacheKey(style, outputLanguage);
                             if (!forceGenerate && statusCache[cacheKey]) {{
                                 status = statusCache[cacheKey];
                             }} else if (!forceGenerate) {{
                                 status = await fetchCompanyStatus(style, true);
                             }} else {{
                                 const resp = await fetch(
-                                    `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`,
+                                    `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}&model=${{encodeURIComponent(getCompanyJobModel())}}`,
                                     {{ method: "POST" }}
                                 );
                                 const payload = await resp.json();
@@ -1517,13 +1605,14 @@ def render_company_detail_page(
 
                     async function fetchStoryList(style, forceRefresh = false, bypassCache = false) {{
                         const outputLanguage = getOutputLanguage();
-                        const cacheKey = `${{style}}|${{outputLanguage}}`;
+                        const model = getCompanyJobModel();
+                        const cacheKey = buildCompanyStoryCacheKey(style, outputLanguage);
                         if (!forceRefresh && !bypassCache && storyCache[cacheKey]) {{
                             return storyCache[cacheKey];
                         }}
                         const url = forceRefresh
-                            ? `/api/company/${{encodeURIComponent(companyName)}}/stories/refresh?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`
-                            : `/api/company/${{encodeURIComponent(companyName)}}/stories?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}`;
+                            ? `/api/company/${{encodeURIComponent(companyName)}}/stories/refresh?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}&model=${{encodeURIComponent(model)}}`
+                            : `/api/company/${{encodeURIComponent(companyName)}}/stories?prompt_style=${{encodeURIComponent(style)}}&output_language=${{encodeURIComponent(outputLanguage)}}&model=${{encodeURIComponent(model)}}`;
                         const payload = await fetchJsonWithTimeout(
                             url,
                             {{ method: forceRefresh ? "POST" : "GET" }},
@@ -1845,7 +1934,7 @@ def render_company_detail_page(
                                     );
                                     const payload = await response.json();
                                     if (payload && !payload.error) {{
-                                        const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                        const cacheKey = buildCompanyStoryCacheKey(style, getOutputLanguage());
                                         delete storyCache[cacheKey];
                                         await loadStories(false, true, style, true);
                                         await renderDetail(storyKey, style);
@@ -1969,12 +2058,12 @@ def render_company_detail_page(
                                 try {{
                                     activeStoryKey = "";
                                     const response = await fetch(
-                                        `/api/company/${{encodeURIComponent(companyName)}}/stories/rebuild-warmup?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                        `/api/company/${{encodeURIComponent(companyName)}}/stories/rebuild-warmup?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`,
                                         {{ method: "POST" }}
                                     );
                                     const payload = await response.json();
                                     if (payload && !payload.error) {{
-                                        const cacheKey = `simple|${{getOutputLanguage()}}`;
+                                        const cacheKey = buildCompanyStoryCacheKey("simple", getOutputLanguage());
                                         delete storyCache[cacheKey];
                                         await loadStories(false, true, "simple", true);
                                     }} else if (metaEl) {{
@@ -1990,8 +2079,9 @@ def render_company_detail_page(
                         loadStories(false).then(async () => {{
                             const style = "simple";
                             const outputLanguage = getOutputLanguage();
-                            const refreshJob = await fetchJobByKey(buildJobKey("company_story_update", companyName, "openai", style, outputLanguage, 21));
-                            const rebuildJob = await fetchJobByKey(buildJobKey("company_story_rebuild", companyName, "openai", style, outputLanguage));
+                            const selectedModel = getCompanyJobModel();
+                            const refreshJob = await fetchJobByKey(buildJobKey("company_story_update", companyName, "openai", selectedModel, style, outputLanguage, 21));
+                            const rebuildJob = await fetchJobByKey(buildJobKey("company_story_rebuild", companyName, "openai", selectedModel, style, outputLanguage));
                             const job = (refreshJob && ["queued", "running"].includes(String(refreshJob.status || ""))) ? refreshJob : rebuildJob;
                             if (job && metaEl) {{
                                 metaEl.textContent = formatJobText(job);
@@ -2001,7 +2091,7 @@ def render_company_detail_page(
                                 storyJobStop = pollJob(job.job_id, (currentJob) => {{
                                     if (metaEl) metaEl.textContent = formatJobText(currentJob);
                                 }}, async () => {{
-                                    const cacheKey = `${{style}}|${{getOutputLanguage()}}`;
+                                    const cacheKey = buildCompanyStoryCacheKey(style, getOutputLanguage());
                                     delete storyCache[cacheKey];
                                     await loadStories(false, true, style, true);
                                 }});
@@ -2509,8 +2599,9 @@ def render_company_detail_page(
                         }}
 
                         async function loadPriceIntelligence(forceGenerate = false) {{
+                            const selectedModel = getCompanyJobModel();
                             const endpoint = forceGenerate
-                                ? `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/generate?output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence/generate?output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(selectedModel)}}`
                                 : `/api/company/${{encodeURIComponent(companyName)}}/price-intelligence`;
                             const response = await fetch(endpoint, {{ method: forceGenerate ? "POST" : "GET" }});
                             const payload = await response.json();
@@ -2568,9 +2659,10 @@ def render_company_detail_page(
                         }}
 
                         async function loadDetailedReport(forceGenerate = false) {{
+                            const selectedModel = getCompanyJobModel();
                             const endpoint = forceGenerate
-                                ? `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                                : `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=simple`;
+                                ? `/api/company/${{encodeURIComponent(companyName)}}/status/generate?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(selectedModel)}}`
+                                : `/api/company/${{encodeURIComponent(companyName)}}/status?prompt_style=simple&model=${{encodeURIComponent(selectedModel)}}`;
                             const response = await fetch(endpoint, {{ method: forceGenerate ? "POST" : "GET" }});
                             const payload = await response.json();
                             const status = payload.status || null;
@@ -2649,7 +2741,7 @@ def render_company_detail_page(
                         }}
                         loadSeries();
                         loadPriceIntelligence(false).then(async () => {{
-                            const job = await fetchJobByKey(buildJobKey("price_intelligence", companyName, "openai", getOutputLanguage()));
+                            const job = await fetchJobByKey(buildJobKey("price_intelligence", companyName, "openai", getCompanyJobModel(), getOutputLanguage()));
                             if (job && intelligenceMeta) {{
                                 intelligenceMeta.textContent = formatJobText(job);
                             }}
@@ -2665,7 +2757,7 @@ def render_company_detail_page(
                             }}
                         }});
                         loadDetailedReport(false).then(async () => {{
-                            const job = await fetchJobByKey(buildJobKey("detailed_report", companyName, "openai", getOutputLanguage(), 30));
+                            const job = await fetchJobByKey(buildJobKey("detailed_report", companyName, "openai", getCompanyJobModel(), getOutputLanguage(), 30));
                             if (job && detailedMeta) {{
                                 detailedMeta.textContent = formatJobText(job);
                             }}
@@ -2960,14 +3052,14 @@ def render_company_detail_page(
                                 const storyTitle = window.prompt("Story title", item.news_title || "");
                                 if (!storyTitle) return;
                                 await fetch(
-                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/create-from-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/create-from-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`,
                                     {{
                                         method: "POST",
                                         headers: {{ "Content-Type": "application/json" }},
                                         body: JSON.stringify({{ target_date: dayDate, story_title: storyTitle, news_item: item }}),
                                     }}
                                 );
-                                delete storyCache[`simple|${{getOutputLanguage()}}`];
+                                delete storyCache[buildCompanyStoryCacheKey("simple", getOutputLanguage())];
                             }});
                         }});
                         contentEl.querySelectorAll(".news-action-btn.attach-story").forEach((button) => {{
@@ -2977,12 +3069,12 @@ def render_company_detail_page(
                                 const newsId = card ? card.dataset.newsId : null;
                                 const item = items.find((entry) => String(entry.id) === String(newsId));
                                 if (!item || !dayDate) return;
-                                const cachedStories = storyCache[`simple|${{getOutputLanguage()}}`];
+                                const cachedStories = storyCache[buildCompanyStoryCacheKey("simple", getOutputLanguage())];
                                 const storyOptions = cachedStories && Array.isArray(cachedStories.stories) ? cachedStories.stories : [];
                                 if (!storyOptions.length) {{
                                     await fetchStoryList("simple", false, true);
                                 }}
-                                const latestStories = storyCache[`simple|${{getOutputLanguage()}}`];
+                                const latestStories = storyCache[buildCompanyStoryCacheKey("simple", getOutputLanguage())];
                                 const options = latestStories && Array.isArray(latestStories.stories) ? latestStories.stories : [];
                                 const keyHint = window.prompt(
                                     "Attach to story key",
@@ -2992,14 +3084,14 @@ def render_company_detail_page(
                                 const targetKey = String(keyHint.split(":")[0] || "").trim();
                                 if (!targetKey) return;
                                 await fetch(
-                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(targetKey)}}/attach-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
+                                    `/api/company/${{encodeURIComponent(companyName)}}/stories/${{encodeURIComponent(targetKey)}}/attach-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`,
                                     {{
                                         method: "POST",
                                         headers: {{ "Content-Type": "application/json" }},
                                         body: JSON.stringify({{ target_date: dayDate, news_item: item }}),
                                     }}
                                 );
-                                delete storyCache[`simple|${{getOutputLanguage()}}`];
+                                delete storyCache[buildCompanyStoryCacheKey("simple", getOutputLanguage())];
                             }});
                         }});
                         const dayAnalyzeBtn = document.getElementById("day-analyze-btn");
@@ -3022,7 +3114,8 @@ def render_company_detail_page(
                                     const url =
                                         `/api/company/${{encodeURIComponent(companyName)}}/news/summarize/day` +
                                         `?date=${{encodeURIComponent(dayDate)}}` +
-                                        `&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
+                                        `&output_language=${{encodeURIComponent(getOutputLanguage())}}` +
+                                        `&model=${{encodeURIComponent(getCompanyJobModel())}}`;
                                     const response = await fetch(url, {{ method: "POST" }});
                                     const payload = await response.json();
                                     if (!response.ok || payload.error) {{
@@ -3073,7 +3166,8 @@ def render_company_detail_page(
                                     button.textContent = "Generating...";
                                     try {{
                                         const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
-                                        const response = await fetch(url, {{ method: "POST" }});
+                                        const fullUrl = `${{url}}&model=${{encodeURIComponent(getCompanyJobModel())}}`;
+                                        const response = await fetch(fullUrl, {{ method: "POST" }});
                                         const payload = await response.json();
                                         const groups = payload.groups || [];
                                         if (groups.length) {{
@@ -3143,7 +3237,7 @@ def render_company_detail_page(
                                 rebuildBtn.textContent = "Rebuilding...";
                                 try {{
                                     const url = `/api/company/${{encodeURIComponent(companyName)}}/report?week_date=${{encodeURIComponent(startDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`;
-                                    const response = await fetch(url, {{ method: "POST" }});
+                                    const response = await fetch(`${{url}}&model=${{encodeURIComponent(getCompanyJobModel())}}`, {{ method: "POST" }});
                                     const payload = await response.json();
                                     const groups = payload.groups || [];
                                     if (groups.length) {{
@@ -3255,6 +3349,7 @@ def render_company_detail_page(
                             }}
                             const joiner = url.includes("?") ? "&" : "?";
                             url += `${{joiner}}output_language=${{encodeURIComponent(getOutputLanguage())}}`;
+                            url += `&model=${{encodeURIComponent(getCompanyJobModel())}}`;
                             const response = await fetch(url, {{
                                 method: "POST",
                             }});
@@ -3302,6 +3397,7 @@ def render_company_detail_page(
                         }});
                     }}
                     initOutputLanguage();
+                    initCompanyJobModel();
                     if (sourceSelect) {{
                         sourceSelect.value = initialUrlState.source || "finnhub";
                         sourceSelect.addEventListener("change", () => updateUrlState({{

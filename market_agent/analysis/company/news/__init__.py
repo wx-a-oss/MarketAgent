@@ -13,6 +13,7 @@ from .service import (
     get_company_profile,
     get_company_price_intelligence_run,
     get_latest_company_story_update_date,
+    get_company_watchlist_model,
     generate_weekly_report,
     generate_company_daily_report,
     generate_company_price_intelligence_run,
@@ -53,6 +54,7 @@ from .service import (
     set_company_ticker,
     summarize_company_news_day,
     summarize_company_news_item,
+    update_company_watchlist_model,
     update_user_note,
     invalidate_user_note,
 )
@@ -73,6 +75,7 @@ __all__ = [
     "get_company_profile",
     "get_company_price_intelligence_run",
     "get_latest_company_story_update_date",
+    "get_company_watchlist_model",
     "set_company_ticker",
     "generate_weekly_report",
     "generate_company_daily_report",
@@ -110,6 +113,7 @@ __all__ = [
     "refresh_company_news_if_needed",
     "summarize_company_news_day",
     "summarize_company_news_item",
+    "update_company_watchlist_model",
     "update_user_note",
     "invalidate_user_note",
 ]

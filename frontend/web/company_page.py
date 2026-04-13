@@ -5,7 +5,19 @@ from __future__ import annotations
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
 
 
-def render_company_page() -> str:
+def render_company_page(
+    *,
+    model_choices_by_provider: dict[str, list[str]] | None = None,
+    default_company_model: str = "gpt-5.4-mini",
+) -> str:
+    openai_models = list((model_choices_by_provider or {}).get("openai") or [])
+    if default_company_model not in openai_models:
+        openai_models.append(default_company_model)
+    model_options = "".join(
+        f'<option value="{model}"{" selected" if model == default_company_model else ""}>{model}</option>'
+        for model in openai_models
+    )
+    safe_default_model = default_company_model.replace("\\", "\\\\").replace('"', '\\"')
     return f"""
         <html>
             <head>
@@ -41,6 +53,15 @@ def render_company_page() -> str:
                         align-items: center;
                         gap: 0.5rem;
                         min-width: 0;
+                    }}
+                    .company-model-tag {{
+                        border: 1px solid #cbd5e1;
+                        background: #ffffff;
+                        color: #475569;
+                        border-radius: 999px;
+                        padding: 0.2rem 0.55rem;
+                        font-size: 0.76rem;
+                        font-weight: 600;
                     }}
                     .ticker-edit-btn {{
                         border: 1px solid #f59e0b;
@@ -83,22 +104,27 @@ def render_company_page() -> str:
                         <h1>Company</h1>
                         <form id="company-form">
                             <input type="text" id="company-input" placeholder="Add company (e.g. Apple Inc.)" />
+                            <select id="company-model">
+                                {model_options}
+                            </select>
                             <button type="submit">Subscribe</button>
                         </form>
                         <div id="company-list" class="list"></div>
                     </section>
                 </div>
                 <script>
+                    const DEFAULT_COMPANY_MODEL = "{safe_default_model}";
                     const listEl = document.getElementById("company-list");
                     const formEl = document.getElementById("company-form");
                     const inputEl = document.getElementById("company-input");
+                    const modelEl = document.getElementById("company-model");
 
                     async function loadCompanies() {{
                         const response = await fetch("/api/companies");
                         const payload = await response.json();
                         const companies = (payload.companies || []).map((item) =>
                             typeof item === "string"
-                                ? {{ company_name: item, ticker: "" }}
+                                ? {{ company_name: item, ticker: "", llm_model: DEFAULT_COMPANY_MODEL }}
                                 : item
                         );
                         if (!companies.length) {{
@@ -110,10 +136,12 @@ def render_company_page() -> str:
                                 (item) => {{
                                     const name = item.company_name || "";
                                     const ticker = normalizeTicker(item.ticker || "");
+                                    const llmModel = String(item.llm_model || DEFAULT_COMPANY_MODEL);
                                     return `
                                     <div class="list-item">
                                         <div class="company-meta">
                                             <a class="company-button" href="/company/${{encodeURIComponent(name)}}">${{escapeHtml(capitalizeName(name))}}</a>
+                                            <span class="company-model-tag">${{escapeHtml(llmModel)}}</span>
                                             <button
                                                 class="ticker-edit-btn ${{ticker ? "filled" : ""}}"
                                                 data-company="${{escapeHtml(name)}}"
@@ -123,7 +151,7 @@ def render_company_page() -> str:
                                         </div>
                                         <button class="remove-btn" data-name="${{escapeHtml(name)}}">Remove</button>
                                     </div>
-                                `
+                                `;
                                 }}
                             )
                             .join("");
@@ -146,6 +174,7 @@ def render_company_page() -> str:
                     formEl.addEventListener("submit", async (event) => {{
                         event.preventDefault();
                         const name = capitalizeName(inputEl.value.trim());
+                        const selectedModel = modelEl && modelEl.value ? String(modelEl.value) : DEFAULT_COMPANY_MODEL;
                         if (!name) {{
                             return;
                         }}
@@ -160,7 +189,7 @@ def render_company_page() -> str:
                                 headers: {{
                                     "Content-Type": "application/json",
                                 }},
-                                body: JSON.stringify({{ company_name: name }}),
+                                body: JSON.stringify({{ company_name: name, model: selectedModel }}),
                             }});
                         }}
                         window.location.href = `/company/${{encodeURIComponent(name)}}`;

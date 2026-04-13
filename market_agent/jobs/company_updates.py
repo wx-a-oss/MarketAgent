@@ -10,7 +10,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from market_agent.app import run_daily_updates_for_watchlist
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
 
 
 def _parse_date(value: str) -> date:
@@ -22,7 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", dest="target_date", type=_parse_date, default=None)
     parser.add_argument("--source", default="finnhub")
     parser.add_argument("--provider", default="openai")
-    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL)
+    parser.add_argument("--market-model", default=DEFAULT_MARKET_OPENAI_MODEL)
+    parser.add_argument("--company-model", default=None)
     parser.add_argument("--prompt-style", default="simple")
     parser.add_argument("--output-language", default="zh-CN")
     parser.add_argument("--story-window-days", type=int, default=21)
@@ -44,7 +45,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         target_date=target_date,
         source_name=args.source,
         provider_name=args.provider,
-        model=args.model,
+        market_model=args.market_model,
+        company_model=args.company_model,
         prompt_style=args.prompt_style,
         output_language=args.output_language,
         story_window_days=args.story_window_days,

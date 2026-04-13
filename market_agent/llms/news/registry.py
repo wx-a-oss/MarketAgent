@@ -58,6 +58,7 @@ def list_news_models() -> Dict[str, List[str]]:
     return {
         "openai": [
             DEFAULT_NEWS_MODEL,
+            "gpt-5.4-mini",
             "gpt-5.2",
             "gpt-5.4",
         ],

@@ -12,7 +12,7 @@ import time as pytime
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import DEFAULT_OPENAI_MODEL, DEFAULT_COMPANY_OPENAI_MODEL
 from market_agent.llms.news import get_news_provider
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
 from market_agent.analysis.company.news.datamodels import NewsArticle
@@ -56,7 +56,7 @@ from market_agent.schema_fields import (
     TBL_MARKET_PRICE_DAILY_SNAPSHOT,
 )
 
-DEFAULT_MODEL = DEFAULT_OPENAI_MODEL
+DEFAULT_MODEL = DEFAULT_COMPANY_OPENAI_MODEL
 DEFAULT_PROVIDER = "openai"
 DEFAULT_SOURCE = "openai"
 FINNHUB_AUTO_ANALYZE_LIMIT = 10
@@ -110,6 +110,7 @@ def list_watchlist_company_rows() -> List[Dict[str, Optional[str]]]:
                 """
                 SELECT
                     w.company_name,
+                    COALESCE(NULLIF(TRIM(w.llm_model), ''), %s) AS llm_model,
                     p.ticker
                 FROM company_watchlist AS w
                 LEFT JOIN LATERAL (
@@ -128,33 +129,81 @@ def list_watchlist_company_rows() -> List[Dict[str, Optional[str]]]:
                     LIMIT 1
                 ) AS p ON TRUE
                 ORDER BY w.added_at DESC
-                """
+                """,
+                (DEFAULT_COMPANY_OPENAI_MODEL,),
             )
             rows = []
             for row in cur.fetchall():
                 rows.append(
                     {
                         "company_name": row["company_name"],
+                        "llm_model": str(row.get("llm_model") or DEFAULT_COMPANY_OPENAI_MODEL),
                         "ticker": _normalize_ticker(row.get("ticker")),
                     }
                 )
             return rows
 
 
-def add_company_to_watchlist(company_name: str) -> None:
+def get_company_watchlist_model(company_name: str) -> str:
     normalized = _normalize_company_name(company_name)
     if not normalized:
-        return
+        return DEFAULT_COMPANY_OPENAI_MODEL
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO company_watchlist (company_name)
-                VALUES (%s)
-                ON CONFLICT (company_name) DO NOTHING
+                SELECT COALESCE(NULLIF(TRIM(llm_model), ''), %s) AS llm_model
+                FROM company_watchlist
+                WHERE company_name = %s
                 """,
-                (normalized,),
-        )
+                (DEFAULT_COMPANY_OPENAI_MODEL, normalized),
+            )
+            row = cur.fetchone()
+    return str((row or {}).get("llm_model") or DEFAULT_COMPANY_OPENAI_MODEL)
+
+
+def update_company_watchlist_model(company_name: str, model: Optional[str]) -> Dict[str, str]:
+    normalized = _normalize_company_name(company_name)
+    if not normalized:
+        raise ValueError("company_name is required")
+    selected_model = str(model or "").strip() or DEFAULT_COMPANY_OPENAI_MODEL
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO company_watchlist (company_name, llm_model)
+                VALUES (%s, %s)
+                ON CONFLICT (company_name)
+                DO UPDATE SET llm_model = EXCLUDED.llm_model
+                RETURNING company_name, llm_model
+                """,
+                (normalized, selected_model),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    ensure_company_profile(normalized)
+    return {
+        "company_name": str(row["company_name"]),
+        "llm_model": str(row["llm_model"] or DEFAULT_COMPANY_OPENAI_MODEL),
+    }
+
+
+def add_company_to_watchlist(company_name: str, *, model: Optional[str] = None) -> None:
+    normalized = _normalize_company_name(company_name)
+    if not normalized:
+        return
+    selected_model = str(model or "").strip() or DEFAULT_COMPANY_OPENAI_MODEL
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO company_watchlist (company_name, llm_model)
+                VALUES (%s, %s)
+                ON CONFLICT (company_name)
+                DO UPDATE SET llm_model = EXCLUDED.llm_model
+                """,
+                (normalized, selected_model),
+            )
         conn.commit()
     ensure_company_profile(normalized)
 

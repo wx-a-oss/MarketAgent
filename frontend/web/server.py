@@ -18,7 +18,15 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 
 from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
-from market_agent.config.models import DEFAULT_OPENAI_MODEL, DEFAULT_PROVIDER_MODELS, get_default_model
+from market_agent.config.models import (
+    DEFAULT_COMPANY_OPENAI_MODEL,
+    DEFAULT_MARKET_OPENAI_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_PROVIDER_MODELS,
+    get_default_company_model,
+    get_default_market_model,
+    get_default_model,
+)
 from frontend.common import StockFrontendClient
 from market_agent.app import market_updates as market_updates_module
 from frontend.web.calendar_page import render_calendar_page
@@ -62,6 +70,7 @@ from market_agent.analysis.company.news import (
     generate_company_status_snapshot,
     get_company_news,
     list_company_daily_clusters,
+    get_company_watchlist_model,
     get_company_story_state,
     list_company_story_qa,
     list_company_price_intelligence_runs,
@@ -92,6 +101,7 @@ from market_agent.analysis.company.news import (
     summarize_company_news_item,
     update_company_story_priority,
     update_company_story_status,
+    update_company_watchlist_model,
     update_user_note,
     list_user_notes,
     list_user_note_tags,
@@ -201,6 +211,20 @@ def _job_key(*parts: Any) -> str:
         text = str(part or "").strip()
         normalized.append(text.lower())
     return "|".join(normalized)
+
+
+def _resolve_company_model(
+    company_name: str,
+    explicit_model: Optional[str],
+    provider_name: str = "openai",
+) -> str:
+    selected = str(explicit_model or "").strip()
+    if selected:
+        return selected
+    normalized_provider = str(provider_name or "openai").lower()
+    if normalized_provider == "openai":
+        return get_company_watchlist_model(company_name)
+    return get_default_company_model(normalized_provider)
 
 
 def _start_background_job(
@@ -925,7 +949,10 @@ async def index(
 
 @app.get("/company", response_class=HTMLResponse)
 async def company() -> str:
-    return render_company_page()
+    return render_company_page(
+        model_choices_by_provider=list_news_models(),
+        default_company_model=DEFAULT_COMPANY_OPENAI_MODEL,
+    )
 
 
 @app.get("/market", response_class=HTMLResponse)
@@ -968,6 +995,7 @@ async def company_detail(company_name: str) -> str:
         company_name,
         model_choices_by_provider=list_news_models(),
         indicator_models=list_models().get("openai", []),
+        default_company_model=get_company_watchlist_model(company_name),
     )
 
 
@@ -1571,13 +1599,14 @@ async def refresh_market_macro_api(
 async def add_company(request: Request) -> Dict[str, Any]:
     payload = await request.json()
     company_name = str(payload.get("company_name", "")).strip()
+    selected_model = _resolve_company_model(company_name, payload.get("model"), "openai")
     if not company_name:
         return {"error": "company_name is required"}
     warmup = start_company_story_warmup(
         company_name,
         subscribe=True,
         provider_name="openai",
-        model=DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style="simple",
         output_language="zh-CN",
     )
@@ -1607,6 +1636,16 @@ async def update_company_ticker(company_name: str, request: Request) -> Dict[str
     }
 
 
+@app.put("/api/company/{company_name}/llm-model")
+async def update_company_llm_model_api(company_name: str, request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    try:
+        row = update_company_watchlist_model(company_name, payload.get("model"))
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"ok": True, **row}
+
+
 @app.get("/api/company/{company_name}/news")
 async def company_news(
     company_name: str,
@@ -1631,6 +1670,8 @@ async def refresh_company_news(
 ) -> Dict[str, Any]:
     before_count = len(get_company_news(company_name, output_language=output_language))
     selected_source = source or "openai"
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     if start_date or end_date:
         if not start_date or not end_date:
             return {"error": "start_date and end_date are required"}
@@ -1648,8 +1689,8 @@ async def refresh_company_news(
             start_date=start,
             end_date=end,
             source_name=selected_source,
-            provider_name=provider or "openai",
-            model=model or DEFAULT_OPENAI_MODEL,
+            provider_name=selected_provider,
+            model=selected_model,
         )
         articles = get_company_news(company_name, output_language=output_language)
         groups = _group_news_items(company_name, articles)
@@ -1683,8 +1724,8 @@ async def refresh_company_news(
         start_date=week_start,
         end_date=week_end,
         source_name=selected_source,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -1707,6 +1748,8 @@ async def generate_company_report(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     try:
         selected = datetime.fromisoformat(week_date).date()
     except ValueError:
@@ -1718,8 +1761,8 @@ async def generate_company_report(
         start_date=week_start,
         end_date=week_end,
         output_language=output_language,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -1734,6 +1777,8 @@ async def generate_company_daily_report_api(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     try:
         target_date = datetime.fromisoformat(date).date()
     except ValueError:
@@ -1741,16 +1786,16 @@ async def generate_company_daily_report_api(
     stats = generate_company_daily_report(
         company_name,
         target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style="simple",
         output_language=output_language,
     )
     cluster_stats = refresh_company_daily_clusters(
         company_name,
         target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style="simple",
         output_language=output_language,
     )
@@ -1838,10 +1883,10 @@ async def generate_company_status_api(
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    selected_model = model or DEFAULT_OPENAI_MODEL
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     stats = _start_background_job(
         job_type="company_detailed_report",
-        job_key=_job_key("detailed_report", company_name, provider_name, output_language, max(30, int(window_days))),
+        job_key=_job_key("detailed_report", company_name, provider_name, selected_model, output_language, max(30, int(window_days))),
         provider=provider_name,
         model=selected_model,
         output_language=output_language,
@@ -1879,10 +1924,10 @@ async def generate_company_price_intelligence_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    selected_model = model or DEFAULT_OPENAI_MODEL
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     stats = _start_background_job(
         job_type="company_price_intelligence",
-        job_key=_job_key("price_intelligence", company_name, provider_name, output_language),
+        job_key=_job_key("price_intelligence", company_name, provider_name, selected_model, output_language),
         provider=provider_name,
         model=selected_model,
         output_language=output_language,
@@ -1938,10 +1983,12 @@ async def refresh_company_earnings_api(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     stats = refresh_company_earnings(
         company_name,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         output_language=output_language,
     )
     return {"company": company_name, **stats}
@@ -1952,13 +1999,15 @@ async def get_company_stories_api(
     company_name: str,
     prompt_style: str = Query("simple"),
     output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     overview = get_company_story_overview(
         company_name,
         provider_name=provider_name,
-        model=DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -1975,10 +2024,10 @@ async def refresh_company_stories_api(
     window_days: int = Query(21),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    selected_model = model or DEFAULT_OPENAI_MODEL
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     result = _start_background_job(
         job_type="company_story_update",
-        job_key=_job_key("company_story_update", company_name, provider_name, prompt_style, output_language, window_days),
+        job_key=_job_key("company_story_update", company_name, provider_name, selected_model, prompt_style, output_language, window_days),
         provider=provider_name,
         model=selected_model,
         output_language=output_language,
@@ -2014,10 +2063,10 @@ async def rebuild_company_story_warmup_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
-    selected_model = model or DEFAULT_OPENAI_MODEL
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     started = _start_background_job(
         job_type="company_story_rebuild_warmup",
-        job_key=_job_key("company_story_rebuild", company_name, provider_name, prompt_style, output_language),
+        job_key=_job_key("company_story_rebuild", company_name, provider_name, selected_model, prompt_style, output_language),
         provider=provider_name,
         model=selected_model,
         output_language=output_language,
@@ -2149,13 +2198,15 @@ async def create_company_story_from_news_api(
 ) -> Dict[str, Any]:
     payload = await request.json()
     target_date = datetime.fromisoformat(str(payload.get("target_date"))).date()
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     story = create_company_story_from_news(
         company_name,
         target_date=target_date,
         story_title=str(payload.get("story_title") or "").strip(),
         news_item=payload.get("news_item") or {},
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -2175,13 +2226,15 @@ async def attach_news_to_company_story_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     payload = await request.json()
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     changed = attach_news_to_company_story(
         company_name,
         target_date=datetime.fromisoformat(str(payload.get("target_date"))).date(),
         story_key=story_key,
         news_item=payload.get("news_item") or {},
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -2203,12 +2256,13 @@ async def ask_company_story_api(
     if not question:
         return {"error": "question is required"}
     provider_name = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     row = ask_company_story_question(
         company_name,
         story_key=story_key,
         question=question,
         provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -2236,12 +2290,13 @@ async def merge_company_story_qa_api(
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     provider_name = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, provider_name)
     row = merge_company_story_qa_answer(
         company_name,
         story_key=story_key,
         qa_id=qa_id,
         provider_name=provider_name,
-        model=model or DEFAULT_OPENAI_MODEL,
+        model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
     )
@@ -2578,11 +2633,13 @@ async def summarize_company_news(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     summarize_company_news_item(
         company_name,
         news_id=news_id,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         analysis_prompt=(analysis_prompt or "simple"),
         output_language=output_language,
     )
@@ -2599,11 +2656,13 @@ async def filter_company_news(
     model: Optional[str] = Query(None),
     provider: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     result = filter_company_news_item(
         company_name,
         news_id=news_id,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -2624,12 +2683,14 @@ async def filter_company_news_for_day(
         target_date = datetime.fromisoformat(date).date()
     except ValueError:
         return {"error": "date must be YYYY-MM-DD"}
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     stats = filter_company_news_day(
         company_name,
         target_date=target_date,
         limit=limit,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
     )
     articles = get_company_news(company_name, output_language=output_language)
     groups = _group_news_items(company_name, articles)
@@ -2657,19 +2718,21 @@ async def summarize_company_news_for_day(
         target_date = datetime.fromisoformat(date).date()
     except ValueError:
         return {"error": "date must be YYYY-MM-DD"}
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
     stats = generate_company_daily_report(
         company_name,
         target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style="simple",
         output_language=output_language,
     )
     cluster_stats = refresh_company_daily_clusters(
         company_name,
         target_date=target_date,
-        provider_name=provider or "openai",
-        model=model or DEFAULT_OPENAI_MODEL,
+        provider_name=selected_provider,
+        model=selected_model,
         prompt_style="simple",
         output_language=output_language,
     )

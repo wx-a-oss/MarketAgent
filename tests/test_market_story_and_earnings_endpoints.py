@@ -156,6 +156,7 @@ def test_company_earnings_endpoint_returns_events(monkeypatch) -> None:
 
 
 def test_company_earnings_refresh_endpoint_returns_stats(monkeypatch) -> None:
+    monkeypatch.setattr("frontend.web.server.get_company_watchlist_model", lambda company_name: "gpt-5.4-mini")
     monkeypatch.setattr(
         "frontend.web.server.refresh_company_earnings",
         lambda company_name, provider_name="openai", model="gpt-5-mini", output_language="zh-CN": {
@@ -173,6 +174,7 @@ def test_company_earnings_refresh_endpoint_returns_stats(monkeypatch) -> None:
 
 
 def test_company_price_intelligence_generate_endpoint_returns_run(monkeypatch) -> None:
+    monkeypatch.setattr("frontend.web.server.get_company_watchlist_model", lambda company_name: "gpt-5.4-mini")
     monkeypatch.setattr(
         "frontend.web.server._start_background_job",
         lambda **kwargs: {
@@ -261,9 +263,10 @@ def test_company_status_endpoint_returns_history_preview(monkeypatch) -> None:
 
 
 def test_company_stories_endpoint_returns_latest_story_date(monkeypatch) -> None:
+    monkeypatch.setattr("frontend.web.server.get_company_watchlist_model", lambda company_name: "gpt-5.4-mini")
     monkeypatch.setattr(
         "frontend.web.server.get_company_story_overview",
-        lambda company_name, provider_name="openai", model="gpt-5.4", prompt_style="simple", output_language="zh-CN", start_warmup_if_needed=False: {
+        lambda company_name, provider_name="openai", model="gpt-5.4-mini", prompt_style="simple", output_language="zh-CN", start_warmup_if_needed=False: {
             "company": company_name,
             "warmup": {"job_state": "completed", "current_stage": "done"},
             "latest_story_date": "2026-03-28",
@@ -795,6 +798,32 @@ def test_daily_worker_runs_market_before_companies(monkeypatch) -> None:
     assert results[0]["scope"] == "market"
     assert results[1]["company_name"] == "Google"
     assert results[2]["company_name"] == "Oracle"
+
+
+def test_daily_worker_uses_market_model_and_company_model_separately(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_market_update(**kwargs):
+        captured["market_model"] = kwargs.get("model")
+        return {"scope": "market", "updated": True}
+
+    def _fake_company_update(company_name, **kwargs):
+        captured["company_model"] = kwargs.get("model")
+        return {"company_name": company_name, "updated": True}
+
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.run_market_daily_update",
+        _fake_market_update,
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.run_company_daily_update",
+        _fake_company_update,
+    )
+
+    run_daily_updates_for_watchlist(companies=["Google"], market_model="gpt-5.4", company_model="gpt-5.4-mini")
+
+    assert captured["market_model"] == "gpt-5.4"
+    assert captured["company_model"] == "gpt-5.4-mini"
 
 
 def test_market_story_generation_uses_chunk_fallback(monkeypatch) -> None:
