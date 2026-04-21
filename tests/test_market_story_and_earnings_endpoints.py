@@ -604,17 +604,20 @@ def test_company_analysis_inputs_drop_story_and_earnings_context(monkeypatch) ->
     assert quick["input_coverage"]["market_summary_count"] == 1
 
 
-def test_market_page_renders_overview_and_stories_subviews() -> None:
+def test_market_page_renders_overview_with_prices_analysis_and_calendar() -> None:
     html = render_market_page(
         {"openai": ["gpt-5-mini"], "gemini": ["gemini-2.5-pro"]},
         default_date="2026-03-12",
     )
     assert "Overview" in html
     assert "Stories" in html
+    assert "Macro" in html
+    assert html.index(">Overview<") < html.index(">Daily News<") < html.index(">Macro<") < html.index(">Stories<")
     assert "market-stories-view" in html
+    assert "market-calendar-view" in html
     assert "refresh-market-stories" in html
-    assert "market-date-stories" not in html
-    assert "Macro Calendar" not in html
+    assert "refresh-market-prices-analysis" in html
+    assert "market-prices-analysis-output" in html
 
 
 def test_notes_page_renders_notes_ui() -> None:
@@ -679,12 +682,92 @@ def test_notes_invalidate_endpoint_is_idempotent(monkeypatch) -> None:
     assert payload["note"]["validity_state"] == "invalid"
 
 
-def test_calendar_page_renders_calendar_controls() -> None:
-    html = render_calendar_page()
-    assert ">Calendar<" in html
-    assert "macro releases" in html
-    assert "refresh-market-macro" in html
-    assert "Refresh 3 Months" in html
+def test_calendar_route_removed() -> None:
+    client = TestClient(app)
+    response = client.get("/calendar")
+    assert response.status_code == 404
+
+
+def test_market_prices_analysis_get_endpoint_returns_saved_analysis(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server._get_market_price_analysis",
+        lambda **kwargs: {
+            "id": 3,
+            "analysis_date": "2026-03-12",
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "output_language": "zh-CN",
+            "output_text": "US equities rose as rates eased.",
+            "output_json": {
+                "main_narrative": "US equities rose as rates eased.",
+                "section_notes": [{"section_key": "bonds", "section_label": "Bond Rates", "summary": "Yields softened."}],
+            },
+            "created_at": "2026-03-12 10:00:00",
+            "updated_at": "2026-03-12 10:00:00",
+        },
+    )
+    client = TestClient(app)
+    response = client.get("/api/market/prices/analysis", params={"date": "2026-03-12"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["analysis"]["output_text"] == "US equities rose as rates eased."
+    assert payload["analysis"]["output_json"]["section_notes"][0]["section_label"] == "Bond Rates"
+
+
+def test_market_prices_analysis_generate_endpoint_returns_generated_analysis(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server._generate_market_prices_analysis",
+        lambda **kwargs: {
+            "id": 4,
+            "analysis_date": "2026-03-12",
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "output_language": "zh-CN",
+            "output_text": "Leadership narrowed while oil rose.",
+            "output_json": {
+                "main_narrative": "Leadership narrowed while oil rose.",
+                "section_notes": [{"section_key": "commodities", "section_label": "Commodities", "summary": "Oil outperformed."}],
+            },
+            "created_at": "2026-03-12 11:00:00",
+            "updated_at": "2026-03-12 11:00:00",
+        },
+    )
+    client = TestClient(app)
+    response = client.post("/api/market/prices/analysis/generate", params={"date": "2026-03-12"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["analysis"]["model"] == "gpt-5.4"
+    assert payload["analysis"]["output_json"]["section_notes"][0]["section_key"] == "commodities"
+
+
+def test_company_monthly_report_get_endpoint_returns_saved_report(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.get_news_report",
+        lambda company_name, beginning_date, end_date: {"summary": ["Month recap"]},
+    )
+    monkeypatch.setattr("frontend.web.server.get_company_news", lambda company_name, output_language="zh-CN": [])
+    monkeypatch.setattr("frontend.web.server._group_news_items", lambda company_name, articles: [])
+    client = TestClient(app)
+    response = client.get("/api/company/Google/report/month", params={"month": "2026-03"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["report"]["summary"][0] == "Month recap"
+    assert payload["report_start"] == "2026-03-01"
+    assert payload["report_end"] == "2026-03-31"
+
+
+def test_company_monthly_report_generate_endpoint_returns_report(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.generate_monthly_report",
+        lambda *args, **kwargs: {"summary": ["Generated month"]},
+    )
+    monkeypatch.setattr("frontend.web.server.get_company_news", lambda company_name, output_language="zh-CN": [])
+    monkeypatch.setattr("frontend.web.server._group_news_items", lambda company_name, articles: [])
+    client = TestClient(app)
+    response = client.post("/api/company/Google/report/month", params={"month": "2026-03"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["report"]["summary"][0] == "Generated month"
 
 
 def test_update_company_ticker_returns_user_error_when_data_exists(monkeypatch) -> None:

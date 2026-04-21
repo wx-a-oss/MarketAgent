@@ -1,4 +1,4 @@
-"""Market overview page rendering."""
+"""Market workspace page rendering."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from typing import Dict, List
 
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
 
 
 def render_market_page(
@@ -19,15 +19,12 @@ def render_market_page(
         for model in models:
             model_choices.append({"provider": provider, "model": model})
     model_choices_json = json.dumps(model_choices, ensure_ascii=False)
-    default_openai_model_json = json.dumps(DEFAULT_OPENAI_MODEL, ensure_ascii=False)
+    default_openai_model_json = json.dumps(DEFAULT_MARKET_OPENAI_MODEL, ensure_ascii=False)
     return f"""
         <html>
             <head>
                 <title>MarketAgent – Market</title>
-                <link
-                    rel="stylesheet"
-                    href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css"
-                />
+                <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
                 <style>
                     {BASE_PAGE_STYLES}
                     .report {{
@@ -37,15 +34,62 @@ def render_market_page(
                         line-height: 1.7;
                         color: #0f172a;
                     }}
-                    .report h1 {{
-                        font-size: 26px;
-                        font-weight: 600;
-                        margin-bottom: 8px;
+                    .subtabs {{
+                        display: flex;
+                        gap: 0.5rem;
+                        margin-bottom: 0.85rem;
+                        flex-wrap: wrap;
                     }}
-                    .report h2 {{
-                        font-size: 18px;
+                    .subtab-btn {{
+                        border: 1px solid #cbd5e1;
+                        background: #ffffff;
+                        color: #334155;
+                        border-radius: 999px;
+                        padding: 0.38rem 0.8rem;
+                        font-size: 0.85rem;
                         font-weight: 600;
-                        margin: 12px 0 6px;
+                        cursor: pointer;
+                    }}
+                    .subtab-btn.active {{
+                        background: #0f172a;
+                        color: #ffffff;
+                        border-color: #0f172a;
+                    }}
+                    .market-subview {{ display: none; }}
+                    .market-subview.active {{ display: block; }}
+                    .view-toolbar {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 1rem;
+                        flex-wrap: wrap;
+                        margin-bottom: 0.55rem;
+                    }}
+                    .view-toolbar h2 {{ margin: 0; font-size: 1.2rem; }}
+                    .view-toolbar-right {{
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        flex-wrap: wrap;
+                    }}
+                    .view-status-row, .summary-status, .overview-refresh-status {{
+                        color: #6b7280;
+                        font-size: 0.83rem;
+                        margin-bottom: 0.85rem;
+                    }}
+                    .date-input {{
+                        padding: 0.45rem 0.55rem;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.45rem;
+                        background: #ffffff;
+                        font-size: 0.9rem;
+                        width: 140px;
+                    }}
+                    .refresh-btn {{
+                        background: #16a34a;
+                    }}
+                    .refresh-btn:hover {{
+                        background: #15803d;
                     }}
                     .market-grid {{
                         display: grid;
@@ -54,9 +98,6 @@ def render_market_page(
                     }}
                     .market-overview-section {{
                         margin-top: 1rem;
-                    }}
-                    .market-overview-section:first-child {{
-                        margin-top: 0.2rem;
                     }}
                     .market-overview-section-title {{
                         margin: 0 0 0.65rem;
@@ -83,7 +124,6 @@ def render_market_page(
                     .market-item .country {{
                         color: #94a3b8;
                         font-size: 0.72rem;
-                        margin-top: -0.1rem;
                         margin-bottom: 0.3rem;
                         text-transform: uppercase;
                         letter-spacing: 0.03em;
@@ -116,73 +156,48 @@ def render_market_page(
                     .change.up {{ color: #16a34a; }}
                     .change.down {{ color: #dc2626; }}
                     .change.flat {{ color: #6b7280; }}
-                    .section-title {{
-                        display: flex;
-                        align-items: center;
-                        justify-content: space-between;
-                        margin-bottom: 0.6rem;
-                    }}
-                    .status {{
-                        color: #6b7280;
-                        font-size: 0.85rem;
-                    }}
-                    .news-list {{
+                    .overview-grid {{
                         display: grid;
-                        gap: 0.7rem;
+                        gap: 0.9rem;
                     }}
-                    .summary-controls {{
-                        display: flex;
-                        align-items: center;
-                        gap: 0.45rem;
-                        flex-wrap: wrap;
-                        margin: 0.5rem 0 0.8rem;
-                    }}
-                    .summary-controls select {{
-                        padding: 0.45rem 0.55rem;
-                        border: 1px solid #d1d5db;
-                        border-radius: 0.45rem;
-                        background: #ffffff;
-                    }}
-                    .analyze-btn {{
-                        background: #0f766e;
-                    }}
-                    .analyze-btn:hover {{
-                        background: #0d9488;
-                    }}
-                    .summary-status {{
+                    .overview-hint {{
+                        margin-top: 0.85rem;
+                        color: #64748b;
                         font-size: 0.82rem;
-                        color: #6b7280;
                     }}
-                    .view-toolbar {{
-                        display: flex;
-                        align-items: center;
-                        justify-content: space-between;
+                    .prices-layout {{
+                        display: grid;
                         gap: 1rem;
-                        flex-wrap: wrap;
-                        margin-bottom: 0.55rem;
                     }}
-                    .view-toolbar h2,
-                    .view-toolbar h1 {{
-                        margin: 0;
+                    .prices-analysis-card {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 1rem;
                     }}
-                    .view-toolbar-left,
-                    .view-toolbar-right {{
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 0.45rem;
-                        flex-wrap: wrap;
+                    .prices-analysis-body {{
+                        color: #0f172a;
+                        line-height: 1.7;
                     }}
-                    .view-status-row {{
-                        color: #6b7280;
-                        font-size: 0.83rem;
-                        margin-bottom: 0.85rem;
+                    .prices-analysis-grid {{
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                        gap: 0.8rem;
+                        margin-top: 0.9rem;
                     }}
-                    .view-select {{
-                        padding: 0.45rem 0.55rem;
-                        border: 1px solid #d1d5db;
-                        border-radius: 0.45rem;
+                    .prices-note-card {{
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.75rem;
                         background: #ffffff;
+                        padding: 0.75rem;
+                    }}
+                    .prices-note-card h4 {{
+                        margin: 0 0 0.3rem;
                         font-size: 0.9rem;
+                    }}
+                    .prices-list {{
+                        margin: 0.6rem 0 0;
+                        padding-left: 1rem;
                     }}
                     .summary-card {{
                         border: 1px solid #e5e7eb;
@@ -197,49 +212,180 @@ def render_market_page(
                         line-height: 1.65;
                         font-size: 0.95rem;
                     }}
-                    .summary-card .summary-output h1,
-                    .summary-card .summary-output h2,
-                    .summary-card .summary-output h3,
-                    .summary-card .summary-output h4 {{
-                        margin: 0.75rem 0 0.4rem;
-                        line-height: 1.35;
-                    }}
-                    .summary-card .summary-output h1 {{ font-size: 1.12rem; }}
-                    .summary-card .summary-output h2 {{ font-size: 1.04rem; }}
-                    .summary-card .summary-output h3 {{ font-size: 0.98rem; }}
-                    .summary-card .summary-output p {{
-                        margin: 0.38rem 0;
-                    }}
+                    .summary-card .summary-output p {{ margin: 0.38rem 0; }}
                     .summary-card .summary-output ul,
                     .summary-card .summary-output ol {{
                         margin: 0.42rem 0 0.42rem 1rem;
                         padding-left: 0.7rem;
                     }}
-                    .summary-card .summary-output li {{
-                        margin-bottom: 0.28rem;
+                    .news-list {{
+                        display: grid;
+                        gap: 0.7rem;
                     }}
-                    .summary-card .summary-output code {{
-                        background: #eef2ff;
+                    .news-item {{
                         border: 1px solid #e5e7eb;
-                        border-radius: 0.28rem;
-                        padding: 0.02rem 0.28rem;
-                        font-size: 0.88em;
+                        border-radius: 0.6rem;
+                        padding: 0.75rem;
+                        background: #fff;
+                        position: relative;
+                        cursor: pointer;
                     }}
-                    .summary-card .summary-output pre {{
+                    .news-item.expanded {{
+                        border-color: #cbd5e1;
+                        background: #fcfdff;
+                    }}
+                    .news-tag {{
+                        position: absolute;
+                        top: -0.42rem;
+                        right: 0.6rem;
+                        background: #f1f5f9;
+                        color: #64748b;
+                        border-radius: 999px;
+                        padding: 0.08rem 0.45rem;
+                        font-size: 0.64rem;
+                        font-weight: 700;
+                        text-transform: uppercase;
+                        border: 1px solid #e2e8f0;
+                    }}
+                    .news-item a {{
+                        color: #1f2937;
+                        text-decoration: none;
+                        font-weight: 600;
+                    }}
+                    .news-item a:hover {{
+                        text-decoration: underline;
+                    }}
+                    .news-meta {{
+                        color: #6b7280;
+                        font-size: 0.8rem;
+                        margin-top: 0.3rem;
+                    }}
+                    .news-actions {{
+                        display: flex;
+                        align-items: center;
+                        gap: 0.45rem;
+                        margin-top: 0.55rem;
+                        flex-wrap: wrap;
+                    }}
+                    .news-model-picker {{
+                        padding: 0.3rem 0.45rem;
+                        border: 1px solid #d1d5db;
+                        border-radius: 0.45rem;
+                        background: #ffffff;
+                        font-size: 0.78rem;
+                        max-width: 230px;
+                    }}
+                    .news-analyze-btn {{
+                        border: 1px solid #0f766e;
+                        background: #0f766e;
+                        color: #ffffff;
+                        border-radius: 999px;
+                        padding: 0.28rem 0.62rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        cursor: pointer;
+                    }}
+                    .news-analysis {{
+                        display: none;
+                        margin-top: 0.65rem;
+                        padding: 0.65rem;
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.55rem;
+                        background: #f8fafc;
                         white-space: pre-wrap;
                         overflow-wrap: anywhere;
+                        line-height: 1.6;
+                        font-size: 0.9rem;
+                    }}
+                    .news-item.expanded .news-analysis {{ display: block; }}
+                    .news-analysis-meta {{
+                        color: #64748b;
+                        font-size: 0.75rem;
+                        margin-bottom: 0.35rem;
+                    }}
+                    .attach-story-inline {{
+                        display: none;
+                        align-items: center;
+                        gap: 0.35rem;
+                    }}
+                    .attach-story-inline.active {{
+                        display: inline-flex;
+                    }}
+                    .story-warmup {{
+                        color: #64748b;
+                        font-size: 0.84rem;
+                        margin-bottom: 0.7rem;
+                    }}
+                    .stories-wrap {{
+                        display: grid;
+                        grid-template-columns: 280px minmax(0, 920px);
+                        gap: 0.8rem;
+                        align-items: start;
+                    }}
+                    .stories-side {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.7rem;
+                        max-height: 70vh;
+                        overflow-y: auto;
+                    }}
+                    .story-list {{ display: grid; gap: 0.5rem; }}
+                    .story-item {{
+                        border: 1px solid #dbeafe;
                         background: #ffffff;
+                        border-radius: 0.7rem;
+                        padding: 0.55rem 0.6rem;
+                        cursor: pointer;
+                    }}
+                    .story-item.active {{
+                        border-color: #60a5fa;
+                        box-shadow: 0 0 0 1px #93c5fd inset;
+                    }}
+                    .story-item-title {{
+                        font-size: 0.9rem;
+                        font-weight: 700;
+                        color: #0f172a;
+                        margin-bottom: 0.25rem;
+                    }}
+                    .story-item-meta {{
+                        font-size: 0.76rem;
+                        color: #64748b;
+                    }}
+                    .story-group-heading {{
+                        font-size: 0.75rem;
+                        font-weight: 700;
+                        letter-spacing: 0.06em;
+                        text-transform: uppercase;
+                        color: #64748b;
+                        margin: 0.25rem 0 0.15rem;
+                        padding: 0 0.15rem;
+                    }}
+                    .stories-main {{
+                        border: 1px solid #dbeafe;
+                        border-radius: 0.9rem;
+                        background: #f8fbff;
+                        padding: 0.8rem;
+                        width: 100%;
+                        max-width: 920px;
+                    }}
+                    .story-detail-section {{ margin-top: 0.65rem; }}
+                    .story-detail-section h3 {{
+                        margin: 0 0 0.28rem;
+                        font-size: 0.9rem;
+                    }}
+                    .story-detail-box {{
                         border: 1px solid #e5e7eb;
-                        border-radius: 0.45rem;
-                        padding: 0.55rem;
+                        border-radius: 0.65rem;
+                        background: #fff;
+                        padding: 0.55rem 0.65rem;
+                        line-height: 1.6;
+                        font-size: 0.9rem;
+                        overflow-wrap: anywhere;
                     }}
                     .macro-calendar-wrap {{
                         display: grid;
                         gap: 1rem;
-                    }}
-                    .macro-calendar-note {{
-                        font-size: 0.82rem;
-                        color: #64748b;
                     }}
                     .macro-month-grid {{
                         display: grid;
@@ -350,108 +496,8 @@ def render_market_page(
                         text-decoration: underline;
                         font-size: 0.78rem;
                     }}
-                    .news-item {{
-                        border: 1px solid #e5e7eb;
-                        border-radius: 0.6rem;
-                        padding: 0.75rem;
-                        background: #fff;
-                        position: relative;
-                        cursor: pointer;
-                    }}
-                    .news-item.expanded {{
-                        border-color: #cbd5e1;
-                        background: #fcfdff;
-                    }}
-                    .news-tag {{
-                        position: absolute;
-                        top: -0.42rem;
-                        right: 0.6rem;
-                        background: #f1f5f9;
+                    .placeholder {{
                         color: #64748b;
-                        border-radius: 999px;
-                        padding: 0.08rem 0.45rem;
-                        font-size: 0.64rem;
-                        font-weight: 700;
-                        text-transform: uppercase;
-                        border: 1px solid #e2e8f0;
-                        max-width: 96px;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                        white-space: nowrap;
-                    }}
-                    .news-item a {{
-                        color: #1f2937;
-                        text-decoration: none;
-                        font-weight: 600;
-                    }}
-                    .news-item a:hover {{
-                        text-decoration: underline;
-                    }}
-                    .news-meta {{
-                        color: #6b7280;
-                        font-size: 0.8rem;
-                        margin-top: 0.3rem;
-                    }}
-                    .news-actions {{
-                        display: flex;
-                        align-items: center;
-                        gap: 0.45rem;
-                        margin-top: 0.55rem;
-                    }}
-                    .news-model-picker {{
-                        padding: 0.3rem 0.45rem;
-                        border: 1px solid #d1d5db;
-                        border-radius: 0.45rem;
-                        background: #ffffff;
-                        font-size: 0.78rem;
-                        max-width: 230px;
-                    }}
-                    .news-analyze-btn {{
-                        border: 1px solid #0f766e;
-                        background: #0f766e;
-                        color: #ffffff;
-                        border-radius: 999px;
-                        padding: 0.28rem 0.62rem;
-                        font-size: 0.78rem;
-                        font-weight: 600;
-                        cursor: pointer;
-                    }}
-                    .news-analyze-btn:hover {{
-                        background: #0d9488;
-                        border-color: #0d9488;
-                    }}
-                    .news-analysis {{
-                        display: none;
-                        margin-top: 0.65rem;
-                        padding: 0.65rem;
-                        border: 1px solid #e2e8f0;
-                        border-radius: 0.55rem;
-                        background: #f8fafc;
-                        white-space: pre-wrap;
-                        overflow-wrap: anywhere;
-                        line-height: 1.6;
-                        font-size: 0.9rem;
-                    }}
-                    .news-item.expanded .news-analysis {{
-                        display: block;
-                    }}
-                    .news-analysis-meta {{
-                        color: #64748b;
-                        font-size: 0.75rem;
-                        margin-bottom: 0.35rem;
-                    }}
-                    .controls {{
-                        display: flex;
-                        gap: 0.5rem;
-                        align-items: center;
-                    }}
-                    .date-input {{
-                        padding: 0.45rem 0.55rem;
-                        border: 1px solid #d1d5db;
-                        border-radius: 0.45rem;
-                        background: #ffffff;
-                        font-size: 0.9rem;
-                        width: 140px;
                     }}
                     .flatpickr-day.has-report {{
                         position: relative;
@@ -469,179 +515,11 @@ def render_market_page(
                         border-radius: 999px;
                         background: #16a34a;
                     }}
-                    .refresh-btn {{
-                        background: #16a34a;
-                    }}
-                    .refresh-btn:hover {{
-                        background: #15803d;
-                    }}
-                    .subtabs {{
-                        display: flex;
-                        gap: 0.5rem;
-                        margin-bottom: 0.85rem;
-                        flex-wrap: wrap;
-                    }}
-                    .subtab-btn {{
-                        border: 1px solid #cbd5e1;
-                        background: #ffffff;
-                        color: #334155;
-                        border-radius: 999px;
-                        padding: 0.38rem 0.8rem;
-                        font-size: 0.85rem;
-                        font-weight: 600;
-                        cursor: pointer;
-                    }}
-                    .subtab-btn.active {{
-                        background: #0f172a;
-                        color: #ffffff;
-                        border-color: #0f172a;
-                    }}
-                    .market-subview {{
-                        display: none;
-                    }}
-                    .market-subview.active {{
-                        display: block;
-                    }}
-                    .overview-toolbar {{
-                        display: flex;
-                        align-items: center;
-                        justify-content: space-between;
-                        gap: 1rem;
-                        margin-bottom: 0.85rem;
-                        flex-wrap: wrap;
-                    }}
-                    .overview-toolbar h1 {{
-                        margin: 0;
-                    }}
-                    .overview-toolbar-meta {{
-                        display: grid;
-                        gap: 0.25rem;
-                    }}
-                    .overview-toolbar-copy {{
-                        color: #6b7280;
-                        font-size: 0.84rem;
-                    }}
-                    .overview-toolbar-controls {{
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 0.45rem;
-                        flex-wrap: wrap;
-                    }}
-                    .overview-refresh-status {{
-                        color: #6b7280;
-                        font-size: 0.82rem;
-                    }}
-                    .story-group {{
-                        display: grid;
-                        gap: 0.7rem;
-                        margin-top: 0.8rem;
-                    }}
-                    .story-card {{
-                        border: 1px solid #dbe4ee;
-                        border-radius: 0.75rem;
-                        padding: 0.85rem;
-                        background: #f8fafc;
-                    }}
-                    .story-card h3 {{
-                        margin: 0 0 0.45rem;
-                        font-size: 1rem;
-                    }}
-                    .story-section-label {{
-                        display: block;
-                        font-size: 0.78rem;
-                        color: #64748b;
-                        font-weight: 700;
-                        margin: 0.55rem 0 0.2rem;
-                        text-transform: uppercase;
-                        letter-spacing: 0.04em;
-                    }}
-                    .story-warmup {{
-                        color: #64748b;
-                        font-size: 0.84rem;
-                        margin-bottom: 0.7rem;
-                    }}
-                    .stories-wrap {{
-                        display: grid;
-                        grid-template-columns: 280px minmax(0, 920px);
-                        gap: 0.8rem;
-                        align-items: start;
-                    }}
-                    .stories-side {{
-                        border: 1px solid #dbeafe;
-                        border-radius: 0.9rem;
-                        background: #f8fbff;
-                        padding: 0.7rem;
-                        max-height: 70vh;
-                        overflow-y: auto;
-                    }}
-                    .story-list {{
-                        display: grid;
-                        gap: 0.5rem;
-                    }}
-                    .story-item {{
-                        border: 1px solid #dbeafe;
-                        background: #ffffff;
-                        border-radius: 0.7rem;
-                        padding: 0.55rem 0.6rem;
-                        cursor: pointer;
-                    }}
-                    .story-item.active {{
-                        border-color: #60a5fa;
-                        box-shadow: 0 0 0 1px #93c5fd inset;
-                    }}
-                    .story-item-title {{
-                        font-size: 0.9rem;
-                        font-weight: 700;
-                        color: #0f172a;
-                        margin-bottom: 0.25rem;
-                    }}
-                    .story-item-meta {{
-                        font-size: 0.76rem;
-                        color: #64748b;
-                    }}
-                    .story-group-heading {{
-                        font-size: 0.75rem;
-                        font-weight: 700;
-                        letter-spacing: 0.06em;
-                        text-transform: uppercase;
-                        color: #64748b;
-                        margin: 0.25rem 0 0.15rem;
-                        padding: 0 0.15rem;
-                    }}
-                    .stories-main {{
-                        border: 1px solid #dbeafe;
-                        border-radius: 0.9rem;
-                        background: #f8fbff;
-                        padding: 0.8rem;
-                        width: 100%;
-                        max-width: 920px;
-                    }}
-                    .story-detail-section {{
-                        margin-top: 0.65rem;
-                    }}
-                    .story-detail-section h3 {{
-                        margin: 0 0 0.28rem;
-                        font-size: 0.9rem;
-                    }}
-                    .story-detail-box {{
-                        border: 1px solid #e5e7eb;
-                        border-radius: 0.65rem;
-                        background: #fff;
-                        padding: 0.55rem 0.65rem;
-                        line-height: 1.6;
-                        font-size: 0.9rem;
-                        overflow-wrap: anywhere;
-                    }}
-                    .placeholder {{
-                        color: #64748b;
-                    }}
                     @media (max-width: 1200px) {{
                         .stories-wrap {{
                             grid-template-columns: 260px minmax(0, 1fr);
                         }}
-                        .stories-main {{
-                            max-width: none;
-                        }}
+                        .stories-main {{ max-width: none; }}
                     }}
                     @media (max-width: 900px) {{
                         .stories-wrap {{
@@ -650,28 +528,12 @@ def render_market_page(
                         .stories-side {{
                             max-height: none;
                         }}
-                    }}
-                    .macro-events {{
-                        display: grid;
-                        gap: 0.7rem;
-                    }}
-                    .macro-card {{
-                        border: 1px solid #e5e7eb;
-                        border-radius: 0.65rem;
-                        padding: 0.8rem;
-                        background: #fafafa;
-                    }}
-                    .macro-card h3 {{
-                        margin: 0 0 0.2rem;
-                        font-size: 0.98rem;
-                    }}
-                    .attach-story-inline {{
-                        display: none;
-                        align-items: center;
-                        gap: 0.35rem;
-                    }}
-                    .attach-story-inline.active {{
-                        display: inline-flex;
+                        .macro-month-grid {{
+                            grid-template-columns: repeat(1, minmax(0, 1fr));
+                        }}
+                        .macro-weekday {{
+                            display: none;
+                        }}
                     }}
                 </style>
             </head>
@@ -681,6 +543,7 @@ def render_market_page(
                     <div class="subtabs" id="market-view-tabs">
                         <button class="subtab-btn active" type="button" data-market-view="overview">Overview</button>
                         <button class="subtab-btn" type="button" data-market-view="daily-news">Daily News</button>
+                        <button class="subtab-btn" type="button" data-market-view="calendar">Macro</button>
                         <button class="subtab-btn" type="button" data-market-view="stories">Stories</button>
                     </div>
 
@@ -690,12 +553,24 @@ def render_market_page(
                                 <h2>Market Overview</h2>
                                 <div class="view-toolbar-right">
                                     <input id="market-date-overview" class="date-input" type="text" />
-                                    <button id="refresh-market" class="refresh-btn" type="button">Refresh Overview</button>
+                                    <button id="refresh-market-overview" class="refresh-btn" type="button">Refresh Overview</button>
                                 </div>
                             </div>
-                            <div class="view-status-row">Pick a date to view the market snapshot. Auto refresh runs during U.S. market hours.</div>
-                            <div id="market-status" class="overview-refresh-status"></div>
-                            <div id="market-sections"></div>
+                            <div id="market-overview-status" class="overview-refresh-status"></div>
+                            <div class="overview-grid" id="market-overview-grid"></div>
+                            <div class="overview-hint">Use Macro for macro events and Daily News for the news flow behind the move.</div>
+                            <div class="prices-analysis-card" style="margin-top: 1rem;">
+                                <div class="view-toolbar">
+                                    <h2>Market Analysis</h2>
+                                    <div class="view-toolbar-right">
+                                        <select id="market-prices-analysis-model" class="news-model-picker"></select>
+                                        <button id="refresh-market-prices-analysis" class="refresh-btn" type="button">Generate Analysis</button>
+                                    </div>
+                                </div>
+                                <div id="market-prices-analysis-status" class="summary-status"></div>
+                                <div id="market-prices-analysis-output" class="prices-analysis-body"></div>
+                                <div id="market-prices-analysis-notes" class="prices-analysis-grid"></div>
+                            </div>
                         </section>
                     </div>
 
@@ -729,97 +604,127 @@ def render_market_page(
                             <div class="stories-main" id="market-story-detail"><p class="placeholder">Select a story to see details.</p></div>
                         </div>
                     </section>
+
+                    <div id="market-calendar-view" class="market-subview">
+                        <section class="card">
+                            <div class="view-toolbar">
+                                <h2>Market Macro</h2>
+                                <div class="view-toolbar-right">
+                                    <button id="refresh-market-macro" class="refresh-btn" type="button">Refresh 3 Months</button>
+                                </div>
+                            </div>
+                            <div id="market-macro-status" class="view-status-row"></div>
+                            <div id="market-macro-events" class="macro-calendar-wrap"></div>
+                        </section>
+                    </div>
                 </div>
                 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
                 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
                 <script>
                     const singleNewsModels = {model_choices_json};
-                    const refreshBtn = document.getElementById("refresh-market");
+                    const defaultModel = {default_openai_model_json};
+                    const summaryLanguage = document.getElementById("global-language-select");
+                    const marketViewTabs = document.getElementById("market-view-tabs");
                     const overviewDateInput = document.getElementById("market-date-overview");
                     const dailyNewsDateInput = document.getElementById("market-date-daily-news");
                     const dateInputs = [overviewDateInput, dailyNewsDateInput].filter(Boolean);
-                    const statusEl = document.getElementById("market-status");
-                    const marketSectionsEl = document.getElementById("market-sections");
-                    const summaryLanguage = document.getElementById("global-language-select");
+                    const overviewStatusEl = document.getElementById("market-overview-status");
+                    const overviewGridEl = document.getElementById("market-overview-grid");
+                    const pricesAnalysisStatusEl = document.getElementById("market-prices-analysis-status");
+                    const pricesAnalysisOutputEl = document.getElementById("market-prices-analysis-output");
+                    const pricesAnalysisNotesEl = document.getElementById("market-prices-analysis-notes");
+                    const pricesAnalysisModelPicker = document.getElementById("market-prices-analysis-model");
+                    const refreshOverviewBtn = document.getElementById("refresh-market-overview");
+                    const refreshPricesAnalysisBtn = document.getElementById("refresh-market-prices-analysis");
                     const refreshDailyNewsBtn = document.getElementById("refresh-market-daily-news");
                     const summaryStatus = document.getElementById("summary-status");
                     const summariesEl = document.getElementById("news-summaries");
                     const marketDailyClustersEl = document.getElementById("market-daily-clusters");
-                    const marketViewTabs = document.getElementById("market-view-tabs");
                     const marketStoriesStatus = document.getElementById("market-stories-status");
                     const marketStoryWarmup = document.getElementById("market-story-warmup");
                     const marketStoryListEl = document.getElementById("market-story-list");
                     const marketStoryDetailEl = document.getElementById("market-story-detail");
+                    const marketMacroEventsEl = document.getElementById("market-macro-events");
+                    const marketMacroStatus = document.getElementById("market-macro-status");
+                    const refreshMacroBtn = document.getElementById("refresh-market-macro");
                     let latestNews = [];
                     let latestStoryOptions = [];
+                    let latestMarketSections = [];
+                    let latestMarketPayload = null;
                     let activeMarketStoryKey = "";
                     let currentMarketView = "overview";
+                    let selectedMacroDate = "";
                     let dailyNewsAutoInitializedKey = "";
                     let marketStoriesAutoInitializedKey = "";
                     let dailyNewsJobStop = null;
                     let marketStoriesJobStop = null;
+                    let macroJobStop = null;
+                    let reportDateSet = new Set();
                     const datePickers = [];
+
                     function readUrlState() {{
                         const params = new URLSearchParams(window.location.search || "");
                         const lang = String(params.get("lang") || "").trim();
                         const date = String(params.get("date") || "").trim();
+                        const rawView = String(params.get("view") || "").trim();
+                        const allowed = new Set(["overview", "daily-news", "stories", "calendar"]);
                         return {{
                             lang: lang === "en" ? "en" : "zh-CN",
                             date,
+                            view: allowed.has(rawView) ? rawView : "overview",
                         }};
                     }}
+
                     function updateUrlState() {{
                         const url = new URL(window.location.href);
                         const params = url.searchParams;
                         params.set("date", selectedDate);
                         params.set("lang", getOutputLanguage());
+                        params.set("view", currentMarketView);
                         window.history.replaceState({{}}, "", `${{url.pathname}}?${{params.toString()}}`);
                     }}
+
                     function buildJobKey(...parts) {{
                         return parts.map((item) => String(item || "").trim().toLowerCase()).join("|");
                     }}
+
                     function formatJobText(job) {{
                         if (!job) return "";
                         const counts = job.final_counts || {{}};
-                        const status = String(job.status || "");
-                        const stage = String(job.current_stage || "");
-                        const prefix = status === "running" || status === "queued"
-                            ? `${{status}}${{stage ? ` · ${{stage}}` : ""}}`
-                            : `${{status || "idle"}}`;
-                        const metrics = [];
-                        if (job.elapsed_sec) metrics.push(`${{Number(job.elapsed_sec || 0).toFixed(1)}}s`);
-                        if (job.input_char_count) metrics.push(`prompt=${{job.input_char_count}} chars`);
-                        if (job.input_item_count) metrics.push(`input=${{job.input_item_count}}`);
-                        if (job.output_char_count) metrics.push(`output=${{job.output_char_count}} chars`);
-                        if (counts.fetched_total) metrics.push(`fetched=${{counts.fetched_total}}`);
-                        if (counts.stored_total) metrics.push(`stored=${{counts.stored_total}}`);
-                        if (counts.cluster_count) metrics.push(`clusters=${{counts.cluster_count}}`);
-                        if (counts.report_count) metrics.push(`reports=${{counts.report_count}}`);
-                        if (counts.backlog_day_count) metrics.push(`days=${{counts.backlog_day_count}}`);
-                        if (counts.updated_story_count || counts.new_story_count) {{
-                            metrics.push(`stories +${{counts.new_story_count || 0}}/${{counts.updated_story_count || 0}} updated`);
-                        }}
-                        const summary = String(job.result_summary || job.error_text || "").trim();
-                        return [prefix, ...metrics, summary].filter(Boolean).join(" · ");
+                        const bits = [String(job.status || "")];
+                        if (job.current_stage) bits.push(String(job.current_stage));
+                        if (job.elapsed_sec) bits.push(`${{Number(job.elapsed_sec || 0).toFixed(1)}}s`);
+                        if (job.input_char_count) bits.push(`prompt=${{job.input_char_count}} chars`);
+                        if (counts.fetched_total) bits.push(`fetched=${{counts.fetched_total}}`);
+                        if (counts.cluster_count) bits.push(`clusters=${{counts.cluster_count}}`);
+                        if (counts.report_count) bits.push(`reports=${{counts.report_count}}`);
+                        if (counts.updated) bits.push(`updated=${{counts.updated}}`);
+                        if (counts.event_count) bits.push(`events=${{counts.event_count}}`);
+                        if (job.result_summary) bits.push(String(job.result_summary));
+                        if (job.error_text) bits.push(String(job.error_text));
+                        return bits.filter(Boolean).join(" · ");
                     }}
+
                     async function fetchJobByKey(jobKey) {{
                         const response = await fetch(`/api/jobs/by-key?job_key=${{encodeURIComponent(jobKey)}}&include_finished=true`);
                         const payload = await response.json();
                         return payload.job || null;
                     }}
+
                     async function fetchJob(jobId) {{
                         const response = await fetch(`/api/jobs/${{encodeURIComponent(String(jobId))}}`);
                         const payload = await response.json();
                         return payload.job || null;
                     }}
+
                     function pollJob(jobId, onUpdate, onDone) {{
                         let stopped = false;
                         async function tick() {{
                             if (stopped) return;
                             const job = await fetchJob(jobId);
                             if (onUpdate) onUpdate(job);
-                            const status = String((job && job.status) || "");
-                            if (status === "queued" || status === "running") {{
+                            const running = job && ["queued", "running"].includes(String(job.status || ""));
+                            if (running) {{
                                 window.setTimeout(tick, 2000);
                                 return;
                             }}
@@ -828,49 +733,20 @@ def render_market_page(
                         tick();
                         return () => {{ stopped = true; }};
                     }}
-                    const initialState = readUrlState();
+
                     function localDateText(d = new Date()) {{
                         const year = d.getFullYear();
                         const month = String(d.getMonth() + 1).padStart(2, "0");
                         const day = String(d.getDate()).padStart(2, "0");
                         return `${{year}}-${{month}}-${{day}}`;
                     }}
-                    let selectedDate = initialState.date || localDateText();
-                    let reportDateSet = new Set();
+
+                    const initialState = readUrlState();
+                    let selectedDate = initialState.date || {json.dumps(default_date)};
 
                     function getOutputLanguage() {{
-                        const selected = summaryLanguage && summaryLanguage.value
-                            ? String(summaryLanguage.value)
-                            : "zh-CN";
+                        const selected = summaryLanguage && summaryLanguage.value ? String(summaryLanguage.value) : "zh-CN";
                         return selected || "zh-CN";
-                    }}
-
-                    function renderRichText(value) {{
-                        const content = String(value || "").trim();
-                        if (!content) return "<p>—</p>";
-                        if (/^(\\s*[-*+]\\s+|\\s*\\d+[.)]\\s+)/m.test(content)) {{
-                            return (window.marked && typeof window.marked.parse === "function")
-                                ? window.marked.parse(content)
-                                : `<pre>${{content}}</pre>`;
-                        }}
-                        const lines = content.split("\\n").map((x) => x.trim()).filter(Boolean);
-                        if (lines.length >= 2) {{
-                            return `<ul>${{lines.map((line) => `<li>${{(window.marked && typeof window.marked.parse === "function") ? window.marked.parseInline(line) : line}}</li>`).join("")}}</ul>`;
-                        }}
-                        const numbered = content
-                            .split(/(?:^|\\s)(?:\\d+[.)]|[A-Da-d][.)])\\s+/)
-                            .map((x) => x.trim())
-                            .filter(Boolean);
-                        if (numbered.length >= 2) {{
-                            return `<ul>${{numbered.map((part) => `<li>${{(window.marked && typeof window.marked.parse === "function") ? window.marked.parseInline(part) : part}}</li>`).join("")}}</ul>`;
-                        }}
-                        const semis = content.split(/\\s*[;；]\\s+/).map((x) => x.trim()).filter(Boolean);
-                        if (semis.length >= 2) {{
-                            return `<ul>${{semis.map((part) => `<li>${{(window.marked && typeof window.marked.parse === "function") ? window.marked.parseInline(part) : part}}</li>`).join("")}}</ul>`;
-                        }}
-                        return (window.marked && typeof window.marked.parse === "function")
-                            ? window.marked.parse(content)
-                            : `<pre>${{content}}</pre>`;
                     }}
 
                     function escapeHtml(value) {{
@@ -878,49 +754,21 @@ def render_market_page(
                             .replace(/&/g, "&amp;")
                             .replace(/</g, "&lt;")
                             .replace(/>/g, "&gt;")
-                            .replace(/\"/g, "&quot;")
+                            .replace(/"/g, "&quot;")
                             .replace(/'/g, "&#39;");
                     }}
 
+                    function renderRichText(value) {{
+                        const content = String(value || "").trim();
+                        if (!content) return "<p>—</p>";
+                        return (window.marked && typeof window.marked.parse === "function")
+                            ? window.marked.parse(content)
+                            : `<pre>${{escapeHtml(content)}}</pre>`;
+                    }}
+
                     function formatStoryArray(value) {{
-                        if (!Array.isArray(value) || !value.length) {{
-                            return "<p>—</p>";
-                        }}
-                        function formatEntry(entry) {{
-                            if (entry === null || entry === undefined) {{
-                                return "—";
-                            }}
-                            if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {{
-                                return renderRichText(String(entry));
-                            }}
-                            if (Array.isArray(entry)) {{
-                                return `<ul>${{entry.map((row) => `<li>${{formatEntry(row)}}</li>`).join("")}}</ul>`;
-                            }}
-                            if (typeof entry === "object") {{
-                                const title = entry.title || entry.news_title || entry.headline || entry.label || entry.key || entry.scenario || "";
-                                const date = entry.date || entry.news_date_time || entry.report_date || entry.as_of_date || "";
-                                const source = entry.source || entry.news_source || entry.provider || "";
-                                const link = entry.url || entry.news_source_link || entry.link || "";
-                                const summary = entry.summary || entry.note || entry.change || entry.text || entry.impact || "";
-                                if (title || date || source || link || summary) {{
-                                    const top = [
-                                        title ? `<strong>${{escapeHtml(String(title))}}</strong>` : "",
-                                        date ? escapeHtml(String(date)) : "",
-                                        source ? escapeHtml(String(source)) : "",
-                                    ].filter(Boolean).join(" · ");
-                                    const linkHtml = link
-                                        ? `<div><a href="${{escapeHtml(String(link))}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(String(link))}}</a></div>`
-                                        : "";
-                                    const summaryHtml = summary
-                                        ? `<div>${{renderRichText(String(summary))}}</div>`
-                                        : "";
-                                    return `<div>${{top || "Item"}}${{linkHtml}}${{summaryHtml}}</div>`;
-                                }}
-                                return `<pre>${{escapeHtml(JSON.stringify(entry, null, 2))}}</pre>`;
-                            }}
-                            return escapeHtml(String(entry));
-                        }}
-                        return `<ul>${{value.map((entry) => `<li>${{formatEntry(entry)}}</li>`).join("")}}</ul>`;
+                        if (!Array.isArray(value) || !value.length) return "<p>—</p>";
+                        return `<ul>${{value.map((entry) => `<li>${{renderRichText(typeof entry === "object" ? JSON.stringify(entry) : String(entry))}}</li>`).join("")}}</ul>`;
                     }}
 
                     function initOutputLanguage() {{
@@ -936,9 +784,39 @@ def render_market_page(
                         }}
                     }}
 
+                    function modelOptionsHtml(selectedModel) {{
+                        const current = String(selectedModel || defaultModel);
+                        return singleNewsModels.map((choice) => {{
+                            const model = String(choice.model || "");
+                            const provider = String(choice.provider || "");
+                            const selectedAttr = model === current ? "selected" : "";
+                            return `<option value="${{model}}" data-provider="${{provider}}" ${{selectedAttr}}>${{provider}} · ${{model}}</option>`;
+                        }}).join("");
+                    }}
+
+                    function initPricesAnalysisModelPicker() {{
+                        if (!pricesAnalysisModelPicker) return;
+                        const storageKey = "market_prices_analysis_model";
+                        const savedModel = String(localStorage.getItem(storageKey) || "").trim();
+                        pricesAnalysisModelPicker.innerHTML = modelOptionsHtml(savedModel || defaultModel);
+                        pricesAnalysisModelPicker.addEventListener("change", () => {{
+                            localStorage.setItem(storageKey, String(pricesAnalysisModelPicker.value || defaultModel));
+                        }});
+                    }}
+
+                    function getSelectedPricesAnalysisModel() {{
+                        if (!pricesAnalysisModelPicker) return defaultModel;
+                        return String(pricesAnalysisModelPicker.value || defaultModel);
+                    }}
+
+                    function getSelectedPricesAnalysisProvider() {{
+                        if (!pricesAnalysisModelPicker) return "openai";
+                        const option = pricesAnalysisModelPicker.options[pricesAnalysisModelPicker.selectedIndex];
+                        return String(option && option.dataset && option.dataset.provider ? option.dataset.provider : "openai");
+                    }}
+
                     function isToday(dateText) {{
-                        const today = localDateText();
-                        return String(dateText || "") === today;
+                        return String(dateText || "") === localDateText();
                     }}
 
                     function numFromText(value) {{
@@ -951,7 +829,7 @@ def render_market_page(
                     function renderItems(container, items) {{
                         if (!container) return;
                         if (!items || !items.length) {{
-                            container.innerHTML = '<p class="status">No data available.</p>';
+                            container.innerHTML = '<p class="summary-status">No data available.</p>';
                             return;
                         }}
                         container.innerHTML = items.map((item) => {{
@@ -972,9 +850,9 @@ def render_market_page(
                             }}
                             return `
                                 <div class="market-item">
-                                    <h3>${{item.label}}</h3>
+                                    <h3>${{item.label || "Item"}}</h3>
                                     <div class="symbol">${{item.symbol || "—"}}</div>
-                                    ${{item.country_code ? `<div class="country">Country: ${{item.country_code}}</div>` : ""}}
+                                    ${{item.country_code ? `<div class="country">${{item.country_code}}</div>` : ""}}
                                     <div class="price">${{item.close_price || "—"}}</div>
                                     <div class="change ${{changeClass}}">Change: ${{pctText}}</div>
                                     ${{headlineHtml}}
@@ -983,59 +861,175 @@ def render_market_page(
                         }}).join("");
                     }}
 
-                    function renderMarketSections(sections) {{
-                        if (!marketSectionsEl) return;
+                    function renderOverviewSections(sections, payload) {{
+                        if (!overviewGridEl) return;
                         if (!sections || !sections.length) {{
-                            marketSectionsEl.innerHTML = '<p class="status">No price snapshot available for this date.</p>';
+                            overviewGridEl.innerHTML = '<p class="summary-status">No market snapshot available.</p>';
                             return;
                         }}
-                        marketSectionsEl.innerHTML = sections.map((section, idx) => `
+                        overviewGridEl.innerHTML = sections.map((section, idx) => `
                             <section class="market-overview-section" data-section-key="${{section.key || idx}}">
-                                <h2 class="market-overview-section-title">${{section.label || section.key || "Section"}}</h2>
-                                <div class="market-grid" id="market-grid-${{idx}}"></div>
+                                <h3 class="market-overview-section-title">${{escapeHtml(section.label || section.key || "Section")}}</h3>
+                                <div class="market-grid" id="market-overview-section-grid-${{idx}}"></div>
                             </section>
                         `).join("");
                         sections.forEach((section, idx) => {{
-                            const grid = document.getElementById(`market-grid-${{idx}}`);
+                            const grid = document.getElementById(`market-overview-section-grid-${{idx}}`);
                             renderItems(grid, section.items || []);
                         }});
+                        if (overviewStatusEl && payload) {{
+                            const priceDateText = payload.price_date && payload.price_date !== payload.date ? ` · price_date=${{payload.price_date}}` : "";
+                            overviewStatusEl.textContent = `Date ${{payload.date || selectedDate}}${{priceDateText}} · prices=${{payload.price_data_source || "—"}}`;
+                        }}
+                    }}
+
+                    function renderMarketSections(container, sections) {{
+                        if (!container) return;
+                        if (!sections || !sections.length) {{
+                            container.innerHTML = '<p class="summary-status">No price snapshot available for this date.</p>';
+                            return;
+                        }}
+                        container.innerHTML = sections.map((section, idx) => `
+                            <section class="market-overview-section" data-section-key="${{section.key || idx}}">
+                                <h3 class="market-overview-section-title">${{section.label || section.key || "Section"}}</h3>
+                                <div class="market-grid" id="market-section-grid-${{idx}}"></div>
+                            </section>
+                        `).join("");
+                        sections.forEach((section, idx) => {{
+                            const grid = document.getElementById(`market-section-grid-${{idx}}`);
+                            renderItems(grid, section.items || []);
+                        }});
+                    }}
+
+                    function renderPricesAnalysis(analysis) {{
+                        if (!pricesAnalysisOutputEl || !pricesAnalysisNotesEl) return;
+                        if (!analysis) {{
+                            pricesAnalysisOutputEl.innerHTML = '<p class="summary-status">No stored prices analysis yet for this date.</p>';
+                            pricesAnalysisNotesEl.innerHTML = "";
+                            return;
+                        }}
+                        const structured = analysis.output_json || {{}};
+                        const signals = Array.isArray(structured.signals) && structured.signals.length
+                            ? `<ul class="prices-list">${{structured.signals.map((item) => `<li>${{escapeHtml(String(item))}}</li>`).join("")}}</ul>`
+                            : "";
+                        const risks = Array.isArray(structured.risks) && structured.risks.length
+                            ? `<ul class="prices-list">${{structured.risks.map((item) => `<li>${{escapeHtml(String(item))}}</li>`).join("")}}</ul>`
+                            : "";
+                        pricesAnalysisOutputEl.innerHTML = `
+                            <div class="summary-card">
+                                <div class="news-meta">${{analysis.updated_at || analysis.created_at || ""}} · provider=${{analysis.provider}} · model=${{analysis.model}}</div>
+                                <div class="summary-output">${{renderRichText(analysis.output_text || structured.main_narrative || "")}}</div>
+                                ${{structured.us_market_logic ? `<div class="summary-output"><strong>US Market Logic</strong>${{renderRichText(structured.us_market_logic)}}</div>` : ""}}
+                                ${{structured.rotation_take ? `<div class="summary-output"><strong>Rotation</strong>${{renderRichText(structured.rotation_take)}}</div>` : ""}}
+                                ${{signals ? `<div class="summary-output"><strong>Signals</strong>${{signals}}</div>` : ""}}
+                                ${{risks ? `<div class="summary-output"><strong>Risks</strong>${{risks}}</div>` : ""}}
+                            </div>
+                        `;
+                        const notes = Array.isArray(structured.section_notes) ? structured.section_notes : [];
+                        pricesAnalysisNotesEl.innerHTML = notes.map((item) => `
+                            <div class="prices-note-card">
+                                <h4>${{escapeHtml(item.section_label || item.section_key || "Section")}}</h4>
+                                <div>${{renderRichText(item.summary || "")}}</div>
+                            </div>
+                        `).join("");
+                    }}
+
+                    async function loadMarketSnapshot() {{
+                        const response = await fetch(`/api/market/overview?date=${{encodeURIComponent(selectedDate)}}`);
+                        const payload = await response.json();
+                        if (!response.ok || payload.error) {{
+                            if (overviewStatusEl) overviewStatusEl.textContent = payload.error || "Failed to load market snapshot.";
+                            return null;
+                        }}
+                        latestMarketPayload = payload;
+                        latestMarketSections = Array.isArray(payload.sections) ? payload.sections : [];
+                        renderOverviewSections(latestMarketSections, payload);
+                        return payload;
+                    }}
+
+                    async function loadPricesAnalysis(refresh = false) {{
+                        if (pricesAnalysisStatusEl) {{
+                            pricesAnalysisStatusEl.textContent = refresh ? "Generating prices analysis..." : "Loading prices analysis...";
+                        }}
+                        const selectedModel = getSelectedPricesAnalysisModel();
+                        const selectedProvider = getSelectedPricesAnalysisProvider();
+                        const endpoint = refresh
+                            ? `/api/market/prices/analysis/generate?date=${{encodeURIComponent(selectedDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedProvider)}}&model=${{encodeURIComponent(selectedModel)}}`
+                            : `/api/market/prices/analysis?date=${{encodeURIComponent(selectedDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedProvider)}}`;
+                        const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
+                        const payload = await response.json();
+                        if (!response.ok || payload.error) {{
+                            if (pricesAnalysisStatusEl) pricesAnalysisStatusEl.textContent = payload.error || "Failed to load prices analysis.";
+                            renderPricesAnalysis(null);
+                            return;
+                        }}
+                        if (!refresh && !payload.analysis) {{
+                            await loadPricesAnalysis(true);
+                            return;
+                        }}
+                        renderPricesAnalysis(payload.analysis || null);
+                        if (pricesAnalysisStatusEl) {{
+                            pricesAnalysisStatusEl.textContent = payload.analysis
+                                ? `stored for ${{payload.analysis.analysis_date}}`
+                                : "No stored prices analysis.";
+                        }}
+                    }}
+
+                    function renderSummaryHistory(items) {{
+                        if (!summariesEl) return;
+                        if (!items || !items.length) {{
+                            summariesEl.innerHTML = '<p class="summary-status">No market summary yet for this date.</p>';
+                            return;
+                        }}
+                        summariesEl.innerHTML = items.map((item) => `
+                            <div class="summary-card">
+                                <div class="news-meta">${{item.created_at || ""}} · provider=${{item.provider}} · model=${{item.model}}</div>
+                                <div class="summary-output">${{renderRichText(item.output_text || "")}}</div>
+                            </div>
+                        `).join("");
+                    }}
+
+                    function renderDailyClusters(items) {{
+                        if (!marketDailyClustersEl) return;
+                        if (!items || !items.length) {{
+                            marketDailyClustersEl.innerHTML = '<p class="summary-status">No daily clusters yet for this date.</p>';
+                            return;
+                        }}
+                        marketDailyClustersEl.innerHTML = `
+                            <section class="summary-card">
+                                <h3 style="margin:0 0 0.55rem;">Daily Clusters</h3>
+                                <div class="market-grid">
+                                    ${{items.map((item) => `
+                                        <div class="overview-card">
+                                            <h3>${{item.cluster_title || "Cluster"}}</h3>
+                                            <div>${{renderRichText(item.cluster_summary || "")}}</div>
+                                        </div>
+                                    `).join("")}}
+                                </div>
+                            </section>
+                        `;
                     }}
 
                     function renderNews(items) {{
                         const container = document.getElementById("market-news");
                         if (!container) return;
                         if (!items || !items.length) {{
-                            container.innerHTML = '<p class="status">No market news available.</p>';
+                            container.innerHTML = '<p class="summary-status">No market news available.</p>';
                             return;
                         }}
-                        const defaultModel = {default_openai_model_json};
                         const deriveTag = (item) => {{
                             const explicit = String(item.source_tag || "").trim().toLowerCase();
                             if (explicit.includes("yahoo")) return "yahoo";
                             if (explicit.includes("finnhub")) return "finnhub";
-                            const source = String(item.source || "").toLowerCase();
-                            if (source.includes("yahoo")) return "yahoo";
-                            if (source.includes("finnhub")) return "finnhub";
                             return "";
                         }};
-                        const modelOptionsHtml = (selectedModel) => {{
-                            const current = String(selectedModel || defaultModel);
-                            return singleNewsModels.map((choice) => {{
-                                const model = String(choice.model || "");
-                                const provider = String(choice.provider || "");
-                                const selectedAttr = model === current ? "selected" : "";
-                                return `<option value="${{model}}" data-provider="${{provider}}" ${{selectedAttr}}>${{provider}} · ${{model}}</option>`;
-                            }}).join("");
-                        }};
                         container.innerHTML = items.map((item) => `
-                            <div class="news-item" data-news-url="${{item.url || ''}}">
+                            <div class="news-item" data-news-url="${{item.url || ""}}">
                                 ${{deriveTag(item) ? `<span class="news-tag">${{deriveTag(item)}}</span>` : ""}}
                                 <a href="${{item.url}}" target="_blank" rel="noopener noreferrer">${{item.headline}}</a>
                                 <div class="news-meta">${{item.source || "Unknown source"}} · ${{item.datetime_text || ""}}</div>
                                 <div class="news-actions">
-                                    <select class="news-model-picker">
-                                        ${{modelOptionsHtml(defaultModel)}}
-                                    </select>
+                                    <select class="news-model-picker">${{modelOptionsHtml(defaultModel)}}</select>
                                     <button class="news-analyze-btn" type="button">Analyze</button>
                                     <button class="news-create-story-btn" type="button">New Story</button>
                                     <button class="news-attach-story-btn" type="button">Attach</button>
@@ -1053,39 +1047,30 @@ def render_market_page(
                                 </div>
                             </div>
                         `).join("");
-
                         container.querySelectorAll(".news-item").forEach((card) => {{
                             card.addEventListener("click", (event) => {{
-                                if (event.target.closest("a")) return;
-                                if (event.target.closest("button")) return;
-                                if (event.target.closest("select")) return;
+                                if (event.target.closest("a") || event.target.closest("button") || event.target.closest("select")) return;
                                 card.classList.toggle("expanded");
                             }});
                         }});
-
                         container.querySelectorAll(".news-analyze-btn").forEach((button) => {{
                             button.addEventListener("click", async (event) => {{
                                 event.stopPropagation();
                                 const card = button.closest(".news-item");
                                 if (!card) return;
                                 const modelPicker = card.querySelector(".news-model-picker");
-                                const selectedModel = modelPicker && modelPicker.value
-                                    ? String(modelPicker.value)
-                                    : defaultModel;
+                                const selectedModel = modelPicker && modelPicker.value ? String(modelPicker.value) : defaultModel;
                                 const url = card.getAttribute("data-news-url") || "";
                                 const item = (items || []).find((row) => String(row.url || "") === String(url));
                                 if (!item) return;
                                 button.disabled = true;
                                 button.textContent = "Analyzing...";
                                 try {{
-                                    const response = await fetch(
-                                        `/api/market/news/item-analyze?model=${{encodeURIComponent(selectedModel)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`,
-                                        {{
-                                            method: "POST",
-                                            headers: {{ "Content-Type": "application/json" }},
-                                            body: JSON.stringify({{ date: selectedDate, item }}),
-                                        }}
-                                    );
+                                    const response = await fetch(`/api/market/news/item-analyze?model=${{encodeURIComponent(selectedModel)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
+                                        method: "POST",
+                                        headers: {{ "Content-Type": "application/json" }},
+                                        body: JSON.stringify({{ date: selectedDate, item }}),
+                                    }});
                                     const payload = await response.json();
                                     if (!response.ok || payload.error) {{
                                         alert(payload.error || "Analyze failed");
@@ -1095,12 +1080,8 @@ def render_market_page(
                                     if (analysis) {{
                                         const meta = card.querySelector(".news-analysis-meta");
                                         const text = card.querySelector(".news-analysis-text");
-                                        if (meta) {{
-                                            meta.textContent = `provider=${{analysis.provider}} · model=${{analysis.model}} · lang=${{analysis.output_language}} · updated=${{analysis.updated_at}}`;
-                                        }}
-                                        if (text) {{
-                                            text.innerHTML = renderRichText(analysis.output_text || "");
-                                        }}
+                                        if (meta) meta.textContent = `provider=${{analysis.provider}} · model=${{analysis.model}} · updated=${{analysis.updated_at}}`;
+                                        if (text) text.innerHTML = renderRichText(analysis.output_text || "");
                                         card.classList.add("expanded");
                                     }}
                                 }} finally {{
@@ -1109,7 +1090,6 @@ def render_market_page(
                                 }}
                             }});
                         }});
-
                         container.querySelectorAll(".news-create-story-btn").forEach((button) => {{
                             button.addEventListener("click", async (event) => {{
                                 event.stopPropagation();
@@ -1120,7 +1100,7 @@ def render_market_page(
                                 if (!item) return;
                                 const storyTitle = window.prompt("Story title", item.headline || "");
                                 if (!storyTitle) return;
-                                await fetch(`/api/market/stories/create-from-news?prompt_style=${{encodeURIComponent(summaryPrompt ? summaryPrompt.value || "simple" : "simple")}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
+                                await fetch(`/api/market/stories/create-from-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
                                     method: "POST",
                                     headers: {{ "Content-Type": "application/json" }},
                                     body: JSON.stringify({{ date: selectedDate, story_title: storyTitle, item }}),
@@ -1128,9 +1108,8 @@ def render_market_page(
                                 await loadMarketStories(false);
                             }});
                         }});
-
                         container.querySelectorAll(".news-attach-story-btn").forEach((button) => {{
-                            button.addEventListener("click", async (event) => {{
+                            button.addEventListener("click", (event) => {{
                                 event.stopPropagation();
                                 const card = button.closest(".news-item");
                                 if (!card) return;
@@ -1139,7 +1118,6 @@ def render_market_page(
                                 inline.classList.toggle("active");
                             }});
                         }});
-
                         container.querySelectorAll(".news-attach-confirm-btn").forEach((button) => {{
                             button.addEventListener("click", async (event) => {{
                                 event.stopPropagation();
@@ -1151,133 +1129,14 @@ def render_market_page(
                                 const url = card.getAttribute("data-news-url") || "";
                                 const item = (items || []).find((row) => String(row.url || "") === String(url));
                                 if (!item) return;
-                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/attach-news?prompt_style=${{encodeURIComponent(summaryPrompt ? summaryPrompt.value || "simple" : "simple")}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/attach-news?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{
                                     method: "POST",
                                     headers: {{ "Content-Type": "application/json" }},
                                     body: JSON.stringify({{ date: selectedDate, item }}),
                                 }});
-                                const inline = card.querySelector(".attach-story-inline");
-                                if (inline) inline.classList.remove("active");
                                 await loadMarketStories(false);
                             }});
                         }});
-
-                        container.querySelectorAll(".news-model-picker").forEach((picker) => {{
-                            picker.addEventListener("change", async (event) => {{
-                                event.stopPropagation();
-                                const model = picker.value ? String(picker.value) : defaultModel;
-                                const card = picker.closest(".news-item");
-                                if (!card) return;
-                                const url = card.getAttribute("data-news-url") || "";
-                                try {{
-                                    const response = await fetch(
-                                        `/api/market/news/item-analyses?date=${{encodeURIComponent(selectedDate)}}&model=${{encodeURIComponent(model)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                                    );
-                                    const payload = await response.json();
-                                    const analyses = payload.analyses || [];
-                                    const found = analyses.find((row) => String(row.news_url || "") === String(url));
-                                    const meta = card.querySelector(".news-analysis-meta");
-                                    const text = card.querySelector(".news-analysis-text");
-                                    if (!found) {{
-                                        if (meta) meta.textContent = "";
-                                        if (text) text.textContent = "";
-                                        return;
-                                    }}
-                                    if (meta) {{
-                                        meta.textContent = `provider=${{found.provider}} · model=${{found.model}} · lang=${{found.output_language}} · updated=${{found.updated_at}}`;
-                                    }}
-                                    if (text) {{
-                                        text.innerHTML = renderRichText(found.output_text || "");
-                                    }}
-                                    card.classList.add("expanded");
-                                }} catch (_error) {{
-                                    // no-op
-                                }}
-                            }});
-                        }});
-
-                        loadExistingItemAnalyses(items, defaultModel);
-                    }}
-
-                    async function loadExistingItemAnalyses(items, model) {{
-                        try {{
-                            const response = await fetch(
-                                `/api/market/news/item-analyses?date=${{encodeURIComponent(selectedDate)}}&model=${{encodeURIComponent(model)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                            );
-                            const payload = await response.json();
-                            const analyses = payload.analyses || [];
-                            if (!analyses.length) return;
-                            const byUrl = new Map(analyses.map((row) => [String(row.news_url || ""), row]));
-                            const container = document.getElementById("market-news");
-                            if (!container) return;
-                            container.querySelectorAll(".news-item").forEach((card) => {{
-                                const url = card.getAttribute("data-news-url") || "";
-                                const found = byUrl.get(String(url));
-                                if (!found) return;
-                                const meta = card.querySelector(".news-analysis-meta");
-                                const text = card.querySelector(".news-analysis-text");
-                                if (meta) {{
-                                    meta.textContent = `provider=${{found.provider}} · model=${{found.model}} · lang=${{found.output_language}} · updated=${{found.updated_at}}`;
-                                }}
-                                if (text) {{
-                                    text.innerHTML = renderRichText(found.output_text || "");
-                                }}
-                                card.classList.add("expanded");
-                            }});
-                        }} catch (_error) {{
-                            // no-op
-                        }}
-                    }}
-
-                    function renderSummaryHistory(items) {{
-                        if (!summariesEl) return;
-                        if (!items || !items.length) {{
-                            summariesEl.innerHTML = '<p class="status">No market summary yet for today.</p>';
-                            return;
-                        }}
-                        summariesEl.innerHTML = items.map((item) => `
-                            <div class="summary-card">
-                                <div class="news-meta">
-                                    ${{item.created_at || ""}} · provider=${{item.provider}} · model=${{item.model}} · prompt=${{item.prompt_style}}
-                                    ${{item.news_sources ? ` · sources=${{item.news_sources}}` : ""}}
-                                </div>
-                                <div class="summary-output">${{renderRichText(item.output_text || "")}}</div>
-                            </div>
-                        `).join("");
-                    }}
-
-                    function renderDailyClusters(items) {{
-                        if (!marketDailyClustersEl) return;
-                        if (!items || !items.length) {{
-                            marketDailyClustersEl.innerHTML = '<p class="status">No daily clusters yet for this date.</p>';
-                            return;
-                        }}
-                        marketDailyClustersEl.innerHTML = `
-                            <section class="card" style="padding:1rem; margin-bottom:0.85rem;">
-                                <h3 style="margin:0 0 0.55rem;">Daily Clusters</h3>
-                                <div class="story-group">
-                                    ${{items.map((item) => `
-                                        <div class="story-card">
-                                            <h3>${{item.cluster_title || "Cluster"}}</h3>
-                                            <div>${{renderRichText(item.cluster_summary || "")}}</div>
-                                        </div>
-                                    `).join("")}}
-                                </div>
-                            </section>
-                        `;
-                    }}
-
-                    async function loadSummaryHistory() {{
-                        try {{
-                            const response = await fetch(`/api/market/news/summaries?date=${{encodeURIComponent(selectedDate)}}`);
-                            const payload = await response.json();
-                            const summaries = payload.summaries || [];
-                            renderSummaryHistory(summaries);
-                            return summaries;
-                        }} catch (_error) {{
-                            renderSummaryHistory([]);
-                            return [];
-                        }}
                     }}
 
                     async function loadDailyNews(refresh = false) {{
@@ -1301,8 +1160,7 @@ def render_market_page(
                             await loadSummaryDates();
                             if (summaryStatus) {{
                                 const count = Number((payload.raw_news || []).length || 0);
-                                const base = `${{count}} item${{count === 1 ? "" : "s"}}`;
-                                summaryStatus.textContent = payload.job ? formatJobText(payload.job) || base : `${{base}}${{refresh ? " · update started" : ""}}`;
+                                summaryStatus.textContent = `${{count}} item${{count === 1 ? "" : "s"}}${{refresh ? " · update started" : ""}}`;
                             }}
                             if (refresh && payload.job) {{
                                 if (refreshDailyNewsBtn) {{
@@ -1312,12 +1170,11 @@ def render_market_page(
                                 if (dailyNewsJobStop) dailyNewsJobStop();
                                 dailyNewsJobStop = pollJob(payload.job.job_id, (job) => {{
                                     if (summaryStatus) summaryStatus.textContent = formatJobText(job);
-                                    if (refreshDailyNewsBtn) {{
-                                        const running = job && ["queued", "running"].includes(String(job.status || ""));
-                                        refreshDailyNewsBtn.disabled = !!running;
-                                        refreshDailyNewsBtn.textContent = running ? "Refresh Running..." : "Refresh Daily News";
-                                    }}
                                 }}, async () => {{
+                                    if (refreshDailyNewsBtn) {{
+                                        refreshDailyNewsBtn.disabled = false;
+                                        refreshDailyNewsBtn.textContent = "Refresh Daily News";
+                                    }}
                                     await loadDailyNews(false);
                                 }});
                             }}
@@ -1328,110 +1185,36 @@ def render_market_page(
                     }}
 
                     async function ensureDailyNewsLoaded() {{
-                        const lang = getOutputLanguage();
-                        const key = `${{selectedDate}}|simple|${{lang}}`;
                         await loadDailyNews(false);
-                        const jobKey = buildJobKey("market_daily_news", selectedDate, "openai", "simple", lang, "false");
-                        const job = await fetchJobByKey(jobKey);
-                        if (job && summaryStatus) {{
-                            summaryStatus.textContent = formatJobText(job) || summaryStatus.textContent;
-                        }}
-                        if (job && refreshDailyNewsBtn) {{
-                            const running = ["queued", "running"].includes(String(job.status || ""));
-                            refreshDailyNewsBtn.disabled = running;
-                            refreshDailyNewsBtn.textContent = running ? "Refresh Running..." : "Refresh Daily News";
-                            if (running) {{
-                                if (dailyNewsJobStop) dailyNewsJobStop();
-                                dailyNewsJobStop = pollJob(job.job_id, (currentJob) => {{
-                                    if (summaryStatus) summaryStatus.textContent = formatJobText(currentJob);
-                                }}, async () => {{
-                                    await loadDailyNews(false);
-                                }});
-                            }}
-                        }}
+                        const key = `${{selectedDate}}|simple|${{getOutputLanguage()}}`;
                         const hasStoredDailyNews = Array.isArray(latestNews) && latestNews.length > 0;
-                        const hasStoredSummaries = summariesEl && summariesEl.querySelector(".summary-card");
-                        const hasStoredClusters = marketDailyClustersEl && marketDailyClustersEl.querySelector(".story-card");
-                        if (hasStoredDailyNews || hasStoredSummaries || hasStoredClusters) {{
+                        if (hasStoredDailyNews) {{
                             dailyNewsAutoInitializedKey = key;
                             return;
                         }}
-                        if (dailyNewsAutoInitializedKey === key) {{
-                            return;
-                        }}
+                        if (dailyNewsAutoInitializedKey === key) return;
                         dailyNewsAutoInitializedKey = key;
                         await loadDailyNews(true);
                     }}
 
-                    async function refreshMarket() {{
-                        const started = Date.now();
-                        refreshBtn.disabled = true;
-                        refreshBtn.textContent = "Refreshing...";
-                        try {{
-                            const response = await fetch(`/api/market/overview?date=${{encodeURIComponent(selectedDate)}}`);
-                            const payload = await response.json();
-                            if (!response.ok || payload.error) {{
-                                statusEl.textContent = payload.error || "Failed to refresh";
-                                return;
-                            }}
-                            renderMarketSections(payload.sections || []);
-                            const elapsedSec = ((Date.now() - started) / 1000).toFixed(1);
-                            const priceSource = payload.price_data_source ? ` · prices=${{payload.price_data_source}}` : "";
-                            const priceDateText = payload.price_date && payload.price_date !== (payload.date || selectedDate)
-                                ? ` · price_date=${{payload.price_date}}`
-                                : "";
-                            statusEl.textContent = `Date ${{payload.date || selectedDate}}${{priceDateText}} · Updated ${{payload.updated_at || ""}} (${{elapsedSec}}s)${{priceSource}}`;
-                        }} catch (error) {{
-                            statusEl.textContent = "Failed to refresh";
-                            console.error(error);
-                        }} finally {{
-                            refreshBtn.disabled = false;
-                            refreshBtn.textContent = "Refresh";
-                        }}
-                    }}
-
-                    function setMarketView(mode) {{
-                        currentMarketView = ["overview", "daily-news", "stories"].includes(mode) ? mode : "overview";
-                        document.querySelectorAll(".market-subview").forEach((el) => {{
-                            el.classList.toggle("active", el.id === `market-${{currentMarketView}}-view`);
-                        }});
-                        if (marketViewTabs) {{
-                            marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
-                                btn.classList.toggle("active", btn.dataset.marketView === currentMarketView);
-                            }});
-                        }}
-                    }}
-
                     function buildMarketTimeline(story) {{
                         const timelineItems = Array.isArray(story.timeline_items) ? story.timeline_items.filter((item) => item && typeof item === "object") : [];
-                        if (timelineItems.length) {{
-                            return timelineItems;
-                        }}
+                        if (timelineItems.length) return timelineItems;
                         const fallback = [];
-                        if (story.happened_text) {{
-                            fallback.push({{ label: "Earlier", summary: story.happened_text }});
-                        }}
-                        if (story.happening_text) {{
-                            fallback.push({{ label: "Current", summary: story.happening_text }});
-                        }}
+                        if (story.happened_text) fallback.push({{ label: "Earlier", summary: story.happened_text }});
+                        if (story.happening_text) fallback.push({{ label: "Current", summary: story.happening_text }});
                         return fallback;
                     }}
 
                     function buildMarketFuture(story) {{
                         const futureItems = Array.isArray(story.future_and_impact) ? story.future_and_impact.filter((item) => item && typeof item === "object") : [];
-                        if (futureItems.length) {{
-                            return futureItems;
-                        }}
-                        if (story.next_text) {{
-                            return [{{ scenario: story.next_text }}];
-                        }}
+                        if (futureItems.length) return futureItems;
+                        if (story.next_text) return [{{ scenario: story.next_text }}];
                         return [];
                     }}
 
                     function renderMarketStoryGroup(title, stories) {{
-                        if (!Array.isArray(stories) || !stories.length) {{
-                            return "";
-                        }}
+                        if (!Array.isArray(stories) || !stories.length) return "";
                         return `
                             <div class="story-group-heading">${{escapeHtml(title)}}</div>
                             ${{stories.map((story) => `
@@ -1444,16 +1227,8 @@ def render_market_page(
                     }}
 
                     function renderMarketStoryDetail(story) {{
-                        if (!story) {{
-                            return '<p class="placeholder">Select a story to see details.</p>';
-                        }}
-                        const summaryText = String(
-                            story.story_summary
-                            || story.happening_text
-                            || story.happened_text
-                            || story.next_text
-                            || ""
-                        ).trim();
+                        if (!story) return '<p class="placeholder">Select a story to see details.</p>';
+                        const summaryText = String(story.story_summary || story.happening_text || story.happened_text || story.next_text || "").trim();
                         const timelineRows = formatStoryArray(buildMarketTimeline(story));
                         const futureRows = formatStoryArray(buildMarketFuture(story));
                         const isClosed = ["finished", "resolved", "closed"].includes(String(story.story_status || "").toLowerCase());
@@ -1462,39 +1237,24 @@ def render_market_page(
                                 <h3>${{escapeHtml(story.story_title || "")}}</h3>
                                 <div class="story-item-meta">status=${{escapeHtml(story.story_status || "ongoing")}} · priority=${{escapeHtml(story.priority || "normal")}} · updated=${{escapeHtml(story.updated_at || "")}}</div>
                                 <div class="story-detail-box">${{renderRichText(summaryText || "—")}}</div>
-                                <div class="summary-controls" style="margin-top:0.6rem;">
+                                <div class="news-actions" style="margin-top:0.6rem;">
                                     <button class="story-close-btn" type="button" data-story-key="${{story.story_key}}">${{isClosed ? "Reopen Story" : "Close Story"}}</button>
                                     <button class="story-priority-btn" type="button" data-story-key="${{story.story_key}}" data-priority="${{story.priority === 'high' ? 'normal' : 'high'}}">${{story.priority === 'high' ? 'Set Normal Priority' : 'Set High Priority'}}</button>
                                 </div>
                             </div>
-                            <div class="story-detail-section">
-                                <h3>Timeline</h3>
-                                <div class="story-detail-box">${{timelineRows}}</div>
-                            </div>
-                            <div class="story-detail-section">
-                                <h3>Future and Impact</h3>
-                                <div class="story-detail-box">${{futureRows}}</div>
-                            </div>
-                            <div class="story-detail-section">
-                                <h3>Evidence</h3>
-                                <div class="story-detail-box">${{formatStoryArray(story.evidence || [])}}</div>
-                            </div>
-                            <div class="story-detail-section">
-                                <h3>Recent Changes</h3>
-                                <div class="story-detail-box">${{formatStoryArray(story.change_log || [])}}</div>
-                            </div>
+                            <div class="story-detail-section"><h3>Timeline</h3><div class="story-detail-box">${{timelineRows}}</div></div>
+                            <div class="story-detail-section"><h3>Future and Impact</h3><div class="story-detail-box">${{futureRows}}</div></div>
+                            <div class="story-detail-section"><h3>Evidence</h3><div class="story-detail-box">${{formatStoryArray(story.evidence || [])}}</div></div>
+                            <div class="story-detail-section"><h3>Recent Changes</h3><div class="story-detail-box">${{formatStoryArray(story.change_log || [])}}</div></div>
                         `;
                     }}
 
                     async function loadMarketStories(refresh = false) {{
-                        if (marketStoriesStatus) {{
-                            marketStoriesStatus.textContent = refresh ? "Refreshing..." : "Loading...";
-                        }}
-                        const prompt = "simple";
+                        if (marketStoriesStatus) marketStoriesStatus.textContent = refresh ? "Refreshing..." : "Loading...";
                         const lang = getOutputLanguage();
                         const endpoint = refresh
-                            ? `/api/market/stories/refresh?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`
-                            : `/api/market/stories?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`;
+                            ? `/api/market/stories/refresh?prompt_style=simple&output_language=${{encodeURIComponent(lang)}}`
+                            : `/api/market/stories?prompt_style=simple&output_language=${{encodeURIComponent(lang)}}`;
                         const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
                         const payload = await response.json();
                         const warmup = payload.warmup || {{}};
@@ -1502,11 +1262,6 @@ def render_market_page(
                         if (warmup.job_state) parts.push(`state=${{warmup.job_state}}`);
                         if (warmup.current_stage) parts.push(`stage=${{warmup.current_stage}}`);
                         if (payload.latest_story_date) parts.push(`latest=${{payload.latest_story_date}}`);
-                        if (Number(warmup.raw_stored_count || 0)) parts.push(`${{warmup.raw_stored_count}} raw news`);
-                        if (Number(warmup.ongoing_story_count || 0) || Number(warmup.finished_story_count || 0)) {{
-                            parts.push(`${{warmup.ongoing_story_count || 0}} ongoing`);
-                            parts.push(`${{warmup.finished_story_count || 0}} finished`);
-                        }}
                         if (marketStoryWarmup) marketStoryWarmup.textContent = parts.join(" · ");
                         latestStoryOptions = [...(payload.ongoing_stories || []), ...(payload.finished_stories || [])];
                         if (!activeMarketStoryKey || !latestStoryOptions.some((story) => story.story_key === activeMarketStoryKey)) {{
@@ -1524,10 +1279,8 @@ def render_market_page(
                                     marketStoryListEl.querySelectorAll(".story-item").forEach((x) => x.classList.remove("active"));
                                     node.classList.add("active");
                                     const activeStory = latestStoryOptions.find((story) => story.story_key === activeMarketStoryKey) || null;
-                                    if (marketStoryDetailEl) {{
-                                        marketStoryDetailEl.innerHTML = renderMarketStoryDetail(activeStory);
-                                        bindMarketStoryDetailActions();
-                                    }}
+                                    if (marketStoryDetailEl) marketStoryDetailEl.innerHTML = renderMarketStoryDetail(activeStory);
+                                    bindMarketStoryDetailActions();
                                 }});
                             }});
                         }}
@@ -1535,83 +1288,192 @@ def render_market_page(
                             const activeStory = latestStoryOptions.find((story) => story.story_key === activeMarketStoryKey) || null;
                             marketStoryDetailEl.innerHTML = renderMarketStoryDetail(activeStory);
                         }}
-
-                        function bindMarketStoryDetailActions() {{
-                            document.querySelectorAll(".story-close-btn").forEach((button) => {{
-                                button.addEventListener("click", async () => {{
-                                    const storyKey = button.getAttribute("data-story-key") || "";
-                                    const nextAction = String(button.textContent || "").toLowerCase().includes("reopen") ? "reopen" : "close";
-                                    await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/${{nextAction}}?prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
-                                    await loadMarketStories(false);
-                                }});
-                            }});
-                            document.querySelectorAll(".story-priority-btn").forEach((button) => {{
-                                button.addEventListener("click", async () => {{
-                                    const storyKey = button.getAttribute("data-story-key") || "";
-                                    const priority = button.getAttribute("data-priority") || "high";
-                                    await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(priority)}}&prompt_style=${{encodeURIComponent(prompt)}}&output_language=${{encodeURIComponent(lang)}}`, {{ method: "POST" }});
-                                    await loadMarketStories(false);
-                                }});
-                            }});
-                        }}
-
                         bindMarketStoryDetailActions();
-                        if (marketStoriesStatus) {{
-                            marketStoriesStatus.textContent = payload.job ? formatJobText(payload.job) : (refresh ? "Update started" : "");
+                        if (marketStoriesStatus) marketStoriesStatus.textContent = payload.job ? formatJobText(payload.job) : "";
+                    }}
+
+                    function bindMarketStoryDetailActions() {{
+                        document.querySelectorAll(".story-close-btn").forEach((button) => {{
+                            button.addEventListener("click", async () => {{
+                                const storyKey = button.getAttribute("data-story-key") || "";
+                                const nextAction = String(button.textContent || "").toLowerCase().includes("reopen") ? "reopen" : "close";
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/${{nextAction}}?prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{ method: "POST" }});
+                                await loadMarketStories(false);
+                            }});
+                        }});
+                        document.querySelectorAll(".story-priority-btn").forEach((button) => {{
+                            button.addEventListener("click", async () => {{
+                                const storyKey = button.getAttribute("data-story-key") || "";
+                                const priority = button.getAttribute("data-priority") || "high";
+                                await fetch(`/api/market/stories/${{encodeURIComponent(storyKey)}}/priority?priority=${{encodeURIComponent(priority)}}&prompt_style=simple&output_language=${{encodeURIComponent(getOutputLanguage())}}`, {{ method: "POST" }});
+                                await loadMarketStories(false);
+                            }});
+                        }});
+                    }}
+
+                    async function ensureMarketStoriesLoaded() {{
+                        await loadMarketStories(false);
+                        const key = `${{selectedDate}}|simple|${{getOutputLanguage()}}`;
+                        if (latestStoryOptions.length) {{
+                            marketStoriesAutoInitializedKey = key;
+                            return;
                         }}
-                        const refreshStoriesBtn = document.getElementById("refresh-market-stories");
-                        if (payload.job && refreshStoriesBtn) {{
+                        if (marketStoriesAutoInitializedKey === key) return;
+                        marketStoriesAutoInitializedKey = key;
+                        await loadMarketStories(true);
+                    }}
+
+                    function formatMacroCellLabel(name) {{
+                        const text = String(name || "").trim();
+                        if (!text) return "Event";
+                        const replacements = [
+                            ["Consumer Price Index", "CPI"],
+                            ["Producer Price Index", "PPI"],
+                            ["Nonfarm Payrolls", "NFP"],
+                            ["Federal Open Market Committee", "FOMC"],
+                            ["Gross Domestic Product", "GDP"],
+                            ["Unemployment Rate", "Unemployment"],
+                            ["Retail Sales", "Retail Sales"],
+                            ["Consumer Confidence", "Confidence"],
+                            ["Trade Balance", "Trade Balance"],
+                        ];
+                        for (const [needle, label] of replacements) {{
+                            if (text.toLowerCase().includes(needle.toLowerCase())) return label;
+                        }}
+                        return text.length > 22 ? `${{text.slice(0, 21)}}…` : text;
+                    }}
+
+                    function renderMacroEvents(events) {{
+                        if (!marketMacroEventsEl) return;
+                        if (!events || !events.length) {{
+                            marketMacroEventsEl.innerHTML = '<p class="summary-status">No calendar events available.</p>';
+                            return;
+                        }}
+                        const eventsByDate = new Map();
+                        for (const item of events) {{
+                            const dateKey = String(item.event_date_time || "").slice(0, 10);
+                            if (!dateKey) continue;
+                            if (!eventsByDate.has(dateKey)) eventsByDate.set(dateKey, []);
+                            eventsByDate.get(dateKey).push(item);
+                        }}
+                        const dateKeys = Array.from(eventsByDate.keys()).sort();
+                        if (!selectedMacroDate || !eventsByDate.has(selectedMacroDate)) {{
+                            selectedMacroDate = dateKeys[0] || "";
+                        }}
+                        const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                        const firstDate = new Date(`${{dateKeys[0]}}T00:00:00`);
+                        const lastDate = new Date(`${{dateKeys[dateKeys.length - 1]}}T00:00:00`);
+                        const monthStarts = [];
+                        const cursor = new Date(firstDate.getFullYear(), firstDate.getMonth(), 1);
+                        while (cursor <= lastDate) {{
+                            monthStarts.push(new Date(cursor));
+                            cursor.setMonth(cursor.getMonth() + 1);
+                        }}
+                        const monthHtml = monthStarts.map((monthStart) => {{
+                            const year = monthStart.getFullYear();
+                            const month = monthStart.getMonth();
+                            const monthLabel = monthStart.toLocaleDateString(undefined, {{ year: "numeric", month: "long" }});
+                            const startWeekday = new Date(year, month, 1).getDay();
+                            const endDay = new Date(year, month + 1, 0).getDate();
+                            const cells = [];
+                            for (let i = 0; i < startWeekday; i += 1) {{
+                                cells.push('<div class="macro-day-cell empty"></div>');
+                            }}
+                            for (let day = 1; day <= endDay; day += 1) {{
+                                const dt = new Date(year, month, day);
+                                const key = `${{dt.getFullYear()}}-${{String(dt.getMonth() + 1).padStart(2, "0")}}-${{String(day).padStart(2, "0")}}`;
+                                const dayEvents = eventsByDate.get(key) || [];
+                                const classes = ["macro-day-cell"];
+                                if (dayEvents.length) classes.push("has-events");
+                                if (key === selectedMacroDate) classes.push("selected");
+                                const labels = dayEvents.slice(0, 3).map((item) => `<div class="macro-pill" title="${{String(item.event_name || "").replace(/"/g, "&quot;")}}">${{formatMacroCellLabel(item.event_name)}}</div>`).join("");
+                                const overflow = dayEvents.length > 3 ? `<div class="macro-overflow">+${{dayEvents.length - 3}}</div>` : "";
+                                cells.push(`
+                                    <button type="button" class="${{classes.join(" ")}}" data-macro-date="${{key}}">
+                                        <div class="macro-day-num">${{day}}</div>
+                                        <div class="macro-day-events">${{labels}}${{overflow}}</div>
+                                    </button>
+                                `);
+                            }}
+                            return `
+                                <section>
+                                    <h3 class="macro-month-title">${{monthLabel}}</h3>
+                                    <div class="macro-month-grid">
+                                        ${{weekdays.map((label) => `<div class="macro-weekday">${{label}}</div>`).join("")}}
+                                        ${{cells.join("")}}
+                                    </div>
+                                </section>
+                            `;
+                        }}).join("");
+                        const selectedEvents = eventsByDate.get(selectedMacroDate) || [];
+                        const detailHtml = selectedEvents.length
+                            ? selectedEvents.map((item) => `
+                                <div class="macro-detail-item">
+                                    <h3>${{item.event_name || "Event"}}</h3>
+                                    <div class="macro-detail-meta">${{item.country || "US"}} · ${{item.category || "macro"}} · ${{item.event_date_time || ""}}</div>
+                                    <div class="macro-detail-values">
+                                        <div><strong>Actual:</strong> ${{item.actual_value || "—"}}${{item.unit ? ` ${{item.unit}}` : ""}}</div>
+                                        <div><strong>Prior:</strong> ${{item.previous_value || "—"}}</div>
+                                        <div><strong>Expectation:</strong> ${{item.consensus_value || "—"}}</div>
+                                    </div>
+                                    ${{item.source_url ? `<div class="macro-detail-link"><a href="${{item.source_url}}" target="_blank" rel="noopener noreferrer">Source</a></div>` : ""}}
+                                </div>
+                            `).join("")
+                            : '<p class="summary-status">Select a day with events.</p>';
+                        marketMacroEventsEl.innerHTML = `
+                            <div class="macro-calendar-wrap">
+                                ${{monthHtml}}
+                                <div class="macro-detail-card">
+                                    <div class="macro-detail-date">${{selectedMacroDate || "Selected day"}}</div>
+                                    ${{detailHtml}}
+                                </div>
+                            </div>
+                        `;
+                        marketMacroEventsEl.querySelectorAll("[data-macro-date]").forEach((button) => {{
+                            button.addEventListener("click", () => {{
+                                selectedMacroDate = button.getAttribute("data-macro-date") || "";
+                                renderMacroEvents(events);
+                            }});
+                        }});
+                    }}
+
+                    async function loadCalendar(refresh = false) {{
+                        const endpoint = refresh
+                            ? `/api/market/macro/refresh?output_language=${{encodeURIComponent(getOutputLanguage())}}`
+                            : "/api/market/macro";
+                        const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
+                        const payload = await response.json();
+                        renderMacroEvents(payload.events || []);
+                        if (marketMacroStatus) marketMacroStatus.textContent = payload.job ? formatJobText(payload.job) : "";
+                        if (payload.job && refreshMacroBtn) {{
                             const running = ["queued", "running"].includes(String(payload.job.status || ""));
-                            refreshStoriesBtn.disabled = running;
-                            refreshStoriesBtn.textContent = running ? "Refresh Running..." : "Refresh Stories";
+                            refreshMacroBtn.disabled = running;
+                            refreshMacroBtn.textContent = running ? "Refresh Running..." : "Refresh 3 Months";
                             if (running) {{
-                                if (marketStoriesJobStop) marketStoriesJobStop();
-                                marketStoriesJobStop = pollJob(payload.job.job_id, (job) => {{
-                                    if (marketStoriesStatus) marketStoriesStatus.textContent = formatJobText(job);
-                                    const stillRunning = job && ["queued", "running"].includes(String(job.status || ""));
-                                    refreshStoriesBtn.disabled = !!stillRunning;
-                                    refreshStoriesBtn.textContent = stillRunning ? "Refresh Running..." : "Refresh Stories";
+                                if (macroJobStop) macroJobStop();
+                                macroJobStop = pollJob(payload.job.job_id, (job) => {{
+                                    if (marketMacroStatus) marketMacroStatus.textContent = formatJobText(job);
                                 }}, async () => {{
-                                    await loadMarketStories(false);
+                                    refreshMacroBtn.disabled = false;
+                                    refreshMacroBtn.textContent = "Refresh 3 Months";
+                                    await loadCalendar(false);
                                 }});
                             }}
                         }}
                     }}
 
-                    async function ensureMarketStoriesLoaded() {{
-                        const prompt = "simple";
-                        const lang = getOutputLanguage();
-                        const key = `${{selectedDate}}|${{prompt}}|${{lang}}`;
-                        await loadMarketStories(false);
-                        const jobKey = buildJobKey("market_stories", "openai", prompt, lang);
-                        const job = await fetchJobByKey(jobKey);
-                        const refreshStoriesBtn = document.getElementById("refresh-market-stories");
-                        if (job && marketStoriesStatus) {{
-                            marketStoriesStatus.textContent = formatJobText(job);
+                    function setMarketView(mode) {{
+                        const allowed = new Set(["overview", "daily-news", "stories", "calendar"]);
+                        currentMarketView = allowed.has(mode) ? mode : "overview";
+                        document.querySelectorAll(".market-subview").forEach((el) => {{
+                            el.classList.toggle("active", el.id === `market-${{currentMarketView}}-view`);
+                        }});
+                        if (marketViewTabs) {{
+                            marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
+                                btn.classList.toggle("active", btn.dataset.marketView === currentMarketView);
+                            }});
                         }}
-                        if (job && refreshStoriesBtn) {{
-                            const running = ["queued", "running"].includes(String(job.status || ""));
-                            refreshStoriesBtn.disabled = running;
-                            refreshStoriesBtn.textContent = running ? "Refresh Running..." : "Refresh Stories";
-                            if (running) {{
-                                if (marketStoriesJobStop) marketStoriesJobStop();
-                                marketStoriesJobStop = pollJob(job.job_id, (currentJob) => {{
-                                    if (marketStoriesStatus) marketStoriesStatus.textContent = formatJobText(currentJob);
-                                }}, async () => {{
-                                    await loadMarketStories(false);
-                                }});
-                            }}
-                        }}
-                        const hasStories = latestStoryOptions && latestStoryOptions.length > 0;
-                        if (hasStories) {{
-                            marketStoriesAutoInitializedKey = key;
-                            return;
-                        }}
-                        if (marketStoriesAutoInitializedKey === key) {{
-                            return;
-                        }}
-                        marketStoriesAutoInitializedKey = key;
-                        await loadMarketStories(true);
+                        updateUrlState();
                     }}
 
                     function isUsMarketHoursNow() {{
@@ -1626,23 +1488,11 @@ def render_market_page(
                         const weekday = parts.find((part) => part.type === "weekday")?.value || "";
                         const hour = Number(parts.find((part) => part.type === "hour")?.value || "0");
                         const minute = Number(parts.find((part) => part.type === "minute")?.value || "0");
-                        const dayMap = {{
-                            Mon: 1,
-                            Tue: 2,
-                            Wed: 3,
-                            Thu: 4,
-                            Fri: 5,
-                            Sat: 6,
-                            Sun: 7,
-                        }};
+                        const dayMap = {{ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }};
                         const dayNum = dayMap[weekday] || 0;
-                        if (dayNum < 1 || dayNum > 5) {{
-                            return false;
-                        }}
+                        if (dayNum < 1 || dayNum > 5) return false;
                         const minutesFromMidnight = hour * 60 + minute;
-                        const openMinutes = 9 * 60 + 30;
-                        const closeMinutes = 16 * 60;
-                        return minutesFromMidnight >= openMinutes && minutesFromMidnight <= closeMinutes;
+                        return minutesFromMidnight >= 570 && minutesFromMidnight <= 960;
                     }}
 
                     async function loadSummaryDates() {{
@@ -1652,9 +1502,7 @@ def render_market_page(
                             const rows = payload.dates || [];
                             reportDateSet = new Set(rows.map((row) => String(row.date || "")));
                             datePickers.forEach((picker) => {{
-                                if (picker && typeof picker.redraw === "function") {{
-                                    picker.redraw();
-                                }}
+                                if (picker && typeof picker.redraw === "function") picker.redraw();
                             }});
                         }} catch (_error) {{
                             reportDateSet = new Set();
@@ -1667,34 +1515,33 @@ def render_market_page(
                             if (input) input.value = selectedDate;
                         }});
                         datePickers.forEach((picker) => {{
-                            if (picker && typeof picker.setDate === "function") {{
-                                picker.setDate(selectedDate, false);
-                            }}
+                            if (picker && typeof picker.setDate === "function") picker.setDate(selectedDate, false);
                         }});
-                        updateUrlState();
-                        await refreshMarket();
-                        if (currentMarketView === "daily-news") {{
+                        await loadMarketSnapshot();
+                        if (currentMarketView === "overview") {{
+                            await loadPricesAnalysis(false);
+                        }} else if (currentMarketView === "daily-news") {{
                             await ensureDailyNewsLoaded();
                         }} else if (currentMarketView === "stories") {{
                             await ensureMarketStoriesLoaded();
+                        }} else if (currentMarketView === "calendar") {{
+                            await loadCalendar(false);
                         }}
+                        updateUrlState();
                     }}
 
+                    if (refreshOverviewBtn) {{
+                        refreshOverviewBtn.addEventListener("click", async () => {{
+                            await loadMarketSnapshot();
+                        }});
+                    }}
+                    if (refreshPricesAnalysisBtn) {{
+                        refreshPricesAnalysisBtn.addEventListener("click", async () => {{
+                            await loadPricesAnalysis(true);
+                        }});
+                    }}
                     if (refreshDailyNewsBtn) {{
                         refreshDailyNewsBtn.addEventListener("click", () => loadDailyNews(true));
-                    }}
-                    if (marketViewTabs) {{
-                        marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
-                            btn.addEventListener("click", async () => {{
-                                const next = btn.dataset.marketView || "overview";
-                                setMarketView(next);
-                                if (next === "daily-news") {{
-                                    await ensureDailyNewsLoaded();
-                                }} else if (next === "stories") {{
-                                    await ensureMarketStoriesLoaded();
-                                }}
-                            }});
-                        }});
                     }}
                     const refreshStoriesBtn = document.getElementById("refresh-market-stories");
                     if (refreshStoriesBtn) {{
@@ -1702,8 +1549,31 @@ def render_market_page(
                             await loadMarketStories(true);
                         }});
                     }}
+                    if (refreshMacroBtn) {{
+                        refreshMacroBtn.addEventListener("click", async () => {{
+                            await loadCalendar(true);
+                        }});
+                    }}
+                    if (marketViewTabs) {{
+                        marketViewTabs.querySelectorAll(".subtab-btn").forEach((btn) => {{
+                            btn.addEventListener("click", async () => {{
+                                const next = btn.dataset.marketView || "overview";
+                                setMarketView(next);
+                                if (next === "overview") {{
+                                    await loadPricesAnalysis(false);
+                                }} else if (next === "daily-news") {{
+                                    await ensureDailyNewsLoaded();
+                                }} else if (next === "stories") {{
+                                    await ensureMarketStoriesLoaded();
+                                }} else if (next === "calendar") {{
+                                    await loadCalendar(false);
+                                }}
+                            }});
+                        }});
+                    }}
+
                     initOutputLanguage();
-                    refreshBtn.addEventListener("click", refreshMarket);
+                    initPricesAnalysisModelPicker();
                     if (window.flatpickr && dateInputs.length) {{
                         dateInputs.forEach((input) => {{
                             const picker = window.flatpickr(input, {{
@@ -1712,9 +1582,7 @@ def render_market_page(
                                 maxDate: "today",
                                 onDayCreate: function(_dObj, _dStr, _fp, dayElem) {{
                                     const dateText = dayElem.dateObj.toISOString().slice(0, 10);
-                                    if (reportDateSet.has(dateText)) {{
-                                        dayElem.classList.add("has-report");
-                                    }}
+                                    if (reportDateSet.has(dateText)) dayElem.classList.add("has-report");
                                 }},
                                 onChange: function(selectedDates) {{
                                     if (!selectedDates || !selectedDates.length) return;
@@ -1725,18 +1593,23 @@ def render_market_page(
                             datePickers.push(picker);
                         }});
                     }}
-                    Promise.all([loadSummaryDates(), refreshMarket()]).then(async () => {{
-                        updateUrlState();
+
+                    Promise.all([loadSummaryDates(), loadMarketSnapshot()]).then(async () => {{
+                        setMarketView(initialState.view || "overview");
+                        if (currentMarketView === "overview") {{
+                            await loadPricesAnalysis(false);
+                        }} else if (currentMarketView === "daily-news") {{
+                            await ensureDailyNewsLoaded();
+                        }} else if (currentMarketView === "stories") {{
+                            await ensureMarketStoriesLoaded();
+                        }} else if (currentMarketView === "calendar") {{
+                            await loadCalendar(false);
+                        }}
                     }});
-                    setMarketView("overview");
+
                     setInterval(() => {{
-                        if (!isUsMarketHoursNow()) {{
-                            return;
-                        }}
-                        if (!isToday(selectedDate)) {{
-                            return;
-                        }}
-                        refreshMarket();
+                        if (!isUsMarketHoursNow() || !isToday(selectedDate)) return;
+                        loadMarketSnapshot();
                     }}, 60000);
                 </script>
             </body>

@@ -131,6 +131,7 @@ from market_agent.schema_fields import (
     COL_NEWS_URL,
     COL_OUTPUT_LANGUAGE,
     COL_OUTPUT_TEXT,
+    COL_OUTPUT_JSON,
     COL_PROMPT_STYLE,
     COL_PROVIDER,
     COL_PAYLOAD,
@@ -144,6 +145,7 @@ from market_agent.schema_fields import (
     TBL_MARKET_NEWS_DAILY_SUMMARY,
     TBL_MARKET_NEWS_ITEM_ANALYSIS,
     TBL_MARKET_PRICE_DAILY_SNAPSHOT,
+    TBL_MARKET_PRICE_ANALYSIS_DAILY,
     TBL_MARKET_NEWS_RAW,
     TBL_MARKET_STORY_STATE,
     TBL_MARKET_STORY_UPDATE,
@@ -168,10 +170,15 @@ MARKET_INDEX_CONFIG: List[Tuple[str, List[str], str]] = [
     ("Nasdaq 100 ETF", ["QQQ"], "US"),
     ("Dow Jones ETF", ["DIA"], "US"),
     ("Russell 2000 ETF", ["IWM"], "US"),
+    ("UK ETF", ["EWU"], "UK"),
+    ("Germany ETF", ["EWG"], "DE"),
     ("China ETF", ["MCHI"], "CN"),
+    ("Hong Kong ETF", ["EWH"], "HK"),
     ("Korea ETF", ["EWY"], "KR"),
     ("Japan ETF", ["EWJ"], "JP"),
     ("Europe ETF", ["FEZ"], "EU"),
+    ("India ETF", ["INDA"], "IN"),
+    ("Taiwan ETF", ["EWT"], "TW"),
 ]
 
 
@@ -596,7 +603,10 @@ MARKET_BOND_CONFIG: List[Tuple[str, List[str]]] = [
 MARKET_COMMODITY_CONFIG: List[Tuple[str, List[str]]] = [
     ("Gold", ["OANDA:XAU_USD", "GLD"]),
     ("Silver", ["OANDA:XAG_USD", "SLV"]),
-    ("Crude Oil", ["OANDA:BCO_USD", "USO"]),
+    ("WTI Crude", ["NYMEX:CL1!", "USO"]),
+    ("Brent Crude", ["OANDA:BCO_USD", "BNO"]),
+    ("US Oil Fund", ["USO"]),
+    ("Copper", ["COMEX:HG1!", "CPER"]),
 ]
 
 MARKET_CRYPTO_CONFIG: List[Tuple[str, List[str]]] = [
@@ -966,11 +976,6 @@ async def market_page() -> str:
         list_news_models(),
         default_date=market_today,
     )
-
-
-@app.get("/calendar", response_class=HTMLResponse)
-async def calendar_page() -> str:
-    return render_calendar_page()
 
 
 @app.get("/person", response_class=HTMLResponse)
@@ -1626,6 +1631,48 @@ async def refresh_market_macro_api(
     )
     rows = list_market_macro_events(start_date=None, end_date=None, limit=2000)
     return {"events": rows, "description": "Refresh the stored calendar for the next 3 months.", **started}
+
+
+@app.get("/api/market/prices/analysis")
+async def get_market_prices_analysis_api(
+    date: Optional[str] = Query(None),
+    output_language: str = Query("zh-CN"),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    analysis = _get_market_price_analysis(
+        analysis_date=target_date,
+        provider=provider or "openai",
+        prompt_style="prices_v1",
+        output_language=output_language,
+    )
+    return {"date": target_date.isoformat(), "analysis": analysis}
+
+
+@app.post("/api/market/prices/analysis/generate")
+async def generate_market_prices_analysis_api(
+    date: Optional[str] = Query(None),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    provider_name = provider or "openai"
+    model_name = model or DEFAULT_MARKET_OPENAI_MODEL
+    analysis = _generate_market_prices_analysis(
+        target_date=target_date,
+        provider_name=provider_name,
+        model=model_name,
+        output_language=output_language,
+        prompt_style="prices_v1",
+    )
+    return {"date": target_date.isoformat(), "analysis": analysis}
 
 
 @app.post("/api/companies")
@@ -4840,6 +4887,192 @@ def _get_market_daily_summaries(summary_date: date) -> List[Dict[str, Any]]:
     ]
 
 
+def _ensure_market_price_analysis_schema() -> None:
+    ensure_database_schema()
+
+
+def _parse_json_object_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _normalize_market_prices_analysis_payload(raw_output: str) -> Dict[str, Any]:
+    payload = _parse_json_object_text(raw_output) or {}
+    main_narrative = str(
+        payload.get("main_narrative")
+        or payload.get("us_market_logic")
+        or payload.get("rotation_take")
+        or raw_output
+        or ""
+    ).strip()
+    section_notes_raw = payload.get("section_notes") if isinstance(payload.get("section_notes"), list) else []
+    section_notes: List[Dict[str, str]] = []
+    for item in section_notes_raw:
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary") or "").strip()
+        if not summary:
+            continue
+        section_notes.append(
+            {
+                "section_key": str(item.get("section_key") or "").strip(),
+                "section_label": str(item.get("section_label") or item.get("section_key") or "Section").strip(),
+                "summary": summary,
+            }
+        )
+    return {
+        "main_narrative": main_narrative,
+        "us_market_logic": str(payload.get("us_market_logic") or "").strip(),
+        "rotation_take": str(payload.get("rotation_take") or "").strip(),
+        "section_notes": section_notes,
+        "signals": [str(item).strip() for item in (payload.get("signals") or []) if str(item).strip()],
+        "risks": [str(item).strip() for item in (payload.get("risks") or []) if str(item).strip()],
+    }
+
+
+def _upsert_market_price_analysis(
+    *,
+    analysis_date: date,
+    provider: str,
+    model: str,
+    prompt_style: str,
+    output_language: str,
+    input_payload: Dict[str, Any],
+    output_json: Dict[str, Any],
+    output_text: str,
+) -> Dict[str, Any]:
+    _ensure_market_price_analysis_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {TBL_MARKET_PRICE_ANALYSIS_DAILY} (
+                    analysis_date,
+                    {COL_PROVIDER},
+                    {COL_MODEL},
+                    {COL_PROMPT_STYLE},
+                    {COL_OUTPUT_LANGUAGE},
+                    {COL_INPUT_PAYLOAD},
+                    {COL_OUTPUT_JSON},
+                    {COL_OUTPUT_TEXT}
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (analysis_date, {COL_PROVIDER}, {COL_PROMPT_STYLE}, {COL_OUTPUT_LANGUAGE})
+                DO UPDATE SET
+                    {COL_MODEL} = EXCLUDED.{COL_MODEL},
+                    {COL_INPUT_PAYLOAD} = EXCLUDED.{COL_INPUT_PAYLOAD},
+                    {COL_OUTPUT_JSON} = EXCLUDED.{COL_OUTPUT_JSON},
+                    {COL_OUTPUT_TEXT} = EXCLUDED.{COL_OUTPUT_TEXT},
+                    updated_at = NOW()
+                RETURNING
+                    id,
+                    analysis_date,
+                    {COL_PROVIDER},
+                    {COL_MODEL},
+                    {COL_PROMPT_STYLE},
+                    {COL_OUTPUT_LANGUAGE},
+                    {COL_INPUT_PAYLOAD},
+                    {COL_OUTPUT_JSON},
+                    {COL_OUTPUT_TEXT},
+                    created_at,
+                    updated_at
+                """,
+                (
+                    analysis_date,
+                    provider,
+                    model,
+                    prompt_style,
+                    output_language,
+                    json.dumps(input_payload, ensure_ascii=False),
+                    json.dumps(output_json, ensure_ascii=False),
+                    output_text,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    structured = _parse_json_object_text(row[COL_OUTPUT_JSON] or "") or {}
+    return {
+        "id": int(row["id"]),
+        "analysis_date": row["analysis_date"].isoformat(),
+        "provider": row[COL_PROVIDER],
+        "model": row[COL_MODEL],
+        "prompt_style": row[COL_PROMPT_STYLE],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "input_payload": _parse_json_object_text(row[COL_INPUT_PAYLOAD] or "") or {},
+        "output_json": structured,
+        "output_text": row[COL_OUTPUT_TEXT],
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _get_market_price_analysis(
+    *,
+    analysis_date: date,
+    provider: str = "openai",
+    prompt_style: str = "prices_v1",
+    output_language: str = "zh-CN",
+) -> Optional[Dict[str, Any]]:
+    _ensure_market_price_analysis_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    analysis_date,
+                    {COL_PROVIDER},
+                    {COL_MODEL},
+                    {COL_PROMPT_STYLE},
+                    {COL_OUTPUT_LANGUAGE},
+                    {COL_INPUT_PAYLOAD},
+                    {COL_OUTPUT_JSON},
+                    {COL_OUTPUT_TEXT},
+                    created_at,
+                    updated_at
+                FROM {TBL_MARKET_PRICE_ANALYSIS_DAILY}
+                WHERE analysis_date = %s
+                  AND {COL_PROVIDER} = %s
+                  AND {COL_PROMPT_STYLE} = %s
+                  AND {COL_OUTPUT_LANGUAGE} = %s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (analysis_date, provider, prompt_style, output_language),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    structured = _parse_json_object_text(row[COL_OUTPUT_JSON] or "") or {}
+    return {
+        "id": int(row["id"]),
+        "analysis_date": row["analysis_date"].isoformat(),
+        "provider": row[COL_PROVIDER],
+        "model": row[COL_MODEL],
+        "prompt_style": row[COL_PROMPT_STYLE],
+        "output_language": row[COL_OUTPUT_LANGUAGE],
+        "input_payload": _parse_json_object_text(row[COL_INPUT_PAYLOAD] or "") or {},
+        "output_json": structured,
+        "output_text": row[COL_OUTPUT_TEXT],
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def _get_market_summary_dates(
     *,
     start_date: date,
@@ -4914,6 +5147,113 @@ def _build_market_news_summary_prompt(
         "11. Sentiment\n\n"
         f"{language_line}"
         f"News items JSON:\n{news_json}\n"
+    )
+
+
+def _build_market_prices_analysis_prompt(
+    *,
+    context: Dict[str, Any],
+    output_language: str,
+) -> str:
+    language_line = _build_market_output_language_line(output_language)
+    return (
+        f"You are explaining what drove the US stock market on {context['analysis_date']}.\n"
+        "Use the structured market snapshot, nearby macro events, and same-day market news.\n"
+        "Focus on cross-asset logic and rotation, not just headlines.\n"
+        "The output must be US-centered, while using global markets as supporting context.\n"
+        "Explain what price action across equities, rates, commodities, crypto, and regions suggests about today's market regime.\n"
+        "Return strict JSON only with this schema:\n"
+        "{\n"
+        '  "main_narrative": string,\n'
+        '  "us_market_logic": string,\n'
+        '  "rotation_take": string,\n'
+        '  "section_notes": [\n'
+        '    {"section_key": string, "section_label": string, "summary": string}\n'
+        "  ],\n"
+        '  "signals": [string],\n'
+        '  "risks": [string]\n'
+        "}\n"
+        "Keep section_notes concise and decision-useful.\n"
+        f"{language_line}"
+        f"Context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def _build_market_prices_analysis_context(
+    *,
+    target_date: date,
+) -> Dict[str, Any]:
+    market_today = datetime.now(US_MARKET_TZ).date()
+    price_target_date = target_date
+    if not _is_us_trading_day(target_date):
+        price_target_date = _previous_us_trading_day(target_date)
+    elif target_date == market_today and _is_us_market_open_now():
+        price_target_date = _previous_us_trading_day(target_date)
+    sections, price_source, snapshot_exists = _resolve_market_price_sections(target_date=price_target_date)
+    macro_rows = list_market_macro_events(
+        start_date=target_date - timedelta(days=3),
+        end_date=target_date + timedelta(days=7),
+        limit=200,
+    )
+    trimmed_macro_rows = []
+    for item in macro_rows[:16]:
+        trimmed_macro_rows.append(
+            {
+                "event_name": item.get("event_name"),
+                "event_date_time": item.get("event_date_time"),
+                "country": item.get("country"),
+                "category": item.get("category"),
+                "actual_value": item.get("actual_value"),
+                "previous_value": item.get("previous_value"),
+                "consensus_value": item.get("consensus_value"),
+                "unit": item.get("unit"),
+            }
+        )
+    news_items = _fetch_market_news(target_date=target_date)
+    trimmed_news_items = []
+    for item in news_items[:24]:
+        trimmed_news_items.append(
+            {
+                "headline": item.get("headline"),
+                "source": item.get("source"),
+                "source_tag": item.get("source_tag"),
+                "datetime_text": item.get("datetime_text"),
+                "url": item.get("url"),
+                "summary": item.get("summary"),
+            }
+        )
+    return {
+        "analysis_date": target_date.isoformat(),
+        "price_date": price_target_date.isoformat(),
+        "price_data_source": price_source,
+        "price_snapshot_exists": bool(snapshot_exists),
+        "sections": sections,
+        "macro_events": trimmed_macro_rows,
+        "market_news": trimmed_news_items,
+    }
+
+
+def _generate_market_prices_analysis(
+    *,
+    target_date: date,
+    provider_name: str,
+    model: str,
+    output_language: str,
+    prompt_style: str = "prices_v1",
+) -> Dict[str, Any]:
+    context = _build_market_prices_analysis_context(target_date=target_date)
+    prompt = _build_market_prices_analysis_prompt(context=context, output_language=output_language)
+    raw_output = _run_market_news_summary(provider=provider_name, model=model, prompt=prompt)
+    structured = _normalize_market_prices_analysis_payload(raw_output)
+    return _upsert_market_price_analysis(
+        analysis_date=target_date,
+        provider=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        input_payload=context,
+        output_json=structured,
+        output_text=structured.get("main_narrative") or raw_output,
     )
 
 
