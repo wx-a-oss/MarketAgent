@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 
 from frontend.web.shared_page import BASE_PAGE_STYLES, render_nav
+from frontend.web.stock_chart_shared import (
+    STOCK_CHART_RANGE_KEYS,
+    render_shared_stock_chart_assets,
+    render_stock_range_buttons_html,
+)
 from market_agent.config.models import DEFAULT_COMPANY_OPENAI_MODEL, DEFAULT_OPENAI_MODEL
 from market_agent.news_sources import list_news_sources
 
@@ -38,6 +43,9 @@ def render_company_detail_page(
     indicator_models_json = json.dumps(indicator_models or [], ensure_ascii=False)
     default_openai_model_json = json.dumps(DEFAULT_OPENAI_MODEL, ensure_ascii=False)
     default_company_model_json = json.dumps(selected_company_model, ensure_ascii=False)
+    shared_chart_assets = render_shared_stock_chart_assets()
+    stock_range_buttons_html = render_stock_range_buttons_html()
+    stock_range_keys_json = json.dumps(list(STOCK_CHART_RANGE_KEYS), ensure_ascii=False)
     return f"""
         <html>
             <head>
@@ -896,11 +904,12 @@ def render_company_detail_page(
                         </div>
                         <div class="view-tabs" id="view-tabs">
                             <button class="view-tab active" type="button" data-view-mode="daily">Daily News</button>
-                            <button class="view-tab" type="button" data-view-mode="stories">Stories</button>
+                            <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
+                            <button class="view-tab" type="button" data-view-mode="monthly">Monthly Report</button>
                             <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
                             <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
                             <button class="view-tab" type="button" data-view-mode="earnings">Earnings</button>
-                            <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
+                            <button class="view-tab" type="button" data-view-mode="stories">Stories</button>
                         </div>
                         <div class="layout" id="company-layout">
                             <div class="timeline" id="timeline"></div>
@@ -913,6 +922,7 @@ def render_company_detail_page(
                 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
                 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+                {shared_chart_assets}
                 <script>
                     const stockModelChoices = {model_choices_json};
                     const companyModelChoices = {company_model_choices_json};
@@ -930,8 +940,8 @@ def render_company_detail_page(
                     const companyJobModelSelect = document.getElementById("company-job-model");
                     const refreshWrap = refreshBtn ? refreshBtn.closest(".refresh-wrap") : null;
                     const companyName = "{safe_company}";
-                    const VIEW_MODES = new Set(["daily", "stories", "stock", "indicators", "earnings", "weekly"]);
-                    const RANGE_KEYS = new Set(["1D", "5D", "1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"]);
+                    const VIEW_MODES = new Set(["daily", "weekly", "monthly", "stock", "indicators", "earnings", "stories"]);
+                    const RANGE_KEYS = new Set({stock_range_keys_json});
                     function normalizeViewMode(raw) {{
                         const token = String(raw || "").trim().toLowerCase();
                         return VIEW_MODES.has(token) ? token : "daily";
@@ -959,7 +969,7 @@ def render_company_detail_page(
                         const params = url.searchParams;
                         const mode = normalizeViewMode(viewMode || currentViewMode || "daily");
                         params.set("view", mode);
-                        if ((mode === "daily" || mode === "weekly") && groupKey) {{
+                        if ((mode === "daily" || mode === "weekly" || mode === "monthly") && groupKey) {{
                             params.set("group", String(groupKey));
                         }} else {{
                             params.delete("group");
@@ -986,7 +996,7 @@ def render_company_detail_page(
                     let allGroups = [];
                     const statusCache = {{}};
                     const storyCache = {{}};
-                    let stockChart = null;
+                    let stockChartController = null;
                     let storyPollTimer = null;
                     let storyJobStop = null;
                     let priceIntelligenceJobStop = null;
@@ -1282,6 +1292,9 @@ def render_company_detail_page(
                         }}
                         if (currentViewMode === "weekly") {{
                             return allGroups.filter((g) => g.type === "weekly");
+                        }}
+                        if (currentViewMode === "monthly") {{
+                            return allGroups.filter((g) => g.type === "monthly");
                         }}
                         return [];
                     }}
@@ -1772,34 +1785,13 @@ def render_company_detail_page(
                             const ongoingStories = Array.isArray(payload && payload.ongoing_stories) ? payload.ongoing_stories : [];
                             const finishedStories = Array.isArray(payload && payload.finished_stories) ? payload.finished_stories : [];
                             const latestStoryDate = String((payload && payload.latest_story_date) || "").trim();
-                            const summaryParts = [];
                             const detailParts = [];
                             if (warmup) {{
                                 const state = String(warmup.job_state || "not_started");
-                                const stage = String(warmup.current_stage || "idle");
                                 const elapsedValue = Number(warmup.elapsed_sec || 0);
                                 const elapsed = Number.isFinite(elapsedValue) ? elapsedValue.toFixed(1) : "0.0";
-                                const stateLabelMap = {{
-                                    not_started: "Story update not started",
-                                    running: "Story update running",
-                                    analyzing: "Story update analyzing stories",
-                                    completed: "Story update completed",
-                                    partial: "Story update paused",
-                                    failed: "Story update failed",
-                                }};
-                                const stageLabelMap = {{
-                                    fetching_raw: "Fetching raw news",
-                                    analyzing_stories: "Building stories",
-                                    done: "Done",
-                                    idle: "",
-                                }};
-                                summaryParts.push(stateLabelMap[state] || "Warm-up in progress");
-                                const stageLabel = stageLabelMap[stage] || "";
-                                if (stageLabel && state !== "completed") {{
-                                    summaryParts.push(stageLabel);
-                                }}
                                 if (warmup.total_slices) {{
-                                    detailParts.push(`Slices ${{warmup.completed_slices || 0}}/${{warmup.total_slices}}`);
+                                    detailParts.push(`Warm-up days ${{warmup.completed_slices || 0}}/${{warmup.total_slices}}`);
                                 }}
                                 if (latestStoryDate) {{
                                     detailParts.push(`Latest story date ${{latestStoryDate}}`);
@@ -1820,9 +1812,8 @@ def render_company_detail_page(
                             }}
                             detailParts.push(`${{ongoingStories.length}} ongoing stories`);
                             detailParts.push(`${{finishedStories.length}} finished stories`);
-                            const summary = summaryParts.join(" · ");
                             const details = detailParts.join(" · ");
-                            return [summary, details].filter(Boolean).join("\\n");
+                            return details;
                         }}
 
                         function renderStoryGroup(title, stories) {{
@@ -2016,7 +2007,7 @@ def render_company_detail_page(
                             }}
                             if (!listEl) return;
                             if (!stories.length) {{
-                                listEl.innerHTML = '<p class="placeholder">No stories yet. Warm-up is running in the background.</p>';
+                                listEl.innerHTML = '<p class="placeholder">No stories yet. Use Update Stories to refresh them manually.</p>';
                                 if (detailEl) {{
                                     detailEl.innerHTML = '<p class="placeholder">No story detail available.</p>';
                                 }}
@@ -2192,16 +2183,7 @@ def render_company_detail_page(
                                         <div class="stock-status" id="stock-status">Loading price series...</div>
                                     </div>
                                     <div class="stock-controls">
-                                        <button class="stock-range-btn" data-range="1D" type="button">1D</button>
-                                        <button class="stock-range-btn" data-range="5D" type="button">5D</button>
-                                        <button class="stock-range-btn" data-range="1M" type="button">1M</button>
-                                        <button class="stock-range-btn" data-range="3M" type="button">3M</button>
-                                        <button class="stock-range-btn" data-range="6M" type="button">6M</button>
-                                        <button class="stock-range-btn" data-range="8M" type="button">8M</button>
-                                        <button class="stock-range-btn active" data-range="1Y" type="button">1Y</button>
-                                        <button class="stock-range-btn" data-range="2Y" type="button">2Y</button>
-                                        <button class="stock-range-btn" data-range="3Y" type="button">3Y</button>
-                                        <button class="stock-range-btn" data-range="5Y" type="button">5Y</button>
+                                        {stock_range_buttons_html}
                                         <select class="stock-select" id="stock-analysis-model">${{modelOptions}}</select>
                                         <button class="status-btn" id="stock-analyze-btn" type="button">Analyze Moves</button>
                                     </div>
@@ -2255,7 +2237,6 @@ def render_company_detail_page(
                         const detailedRefresh = document.getElementById("detailed-report-refresh");
                         const detailedHistoryMeta = document.getElementById("detailed-report-history-meta");
                         const detailedHistory = document.getElementById("detailed-report-history");
-                        const rangeButtons = Array.from(contentEl.querySelectorAll(".stock-range-btn"));
                         let activeRange = defaultRange;
                         let latestSeries = [];
                         let latestTicker = "";
@@ -2269,94 +2250,6 @@ def render_company_detail_page(
                             const selected = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
                             if (!selected) return "openai";
                             return String(selected.dataset.provider || "openai");
-                        }}
-
-                        function renderChart(points) {{
-                            if (!chartEl || !window.Chart) return;
-                            const labels = points.map((p) => String(p.date || ""));
-                            const closeData = points.map((p) => (typeof p.close === "number" ? p.close : null));
-                            const volumeData = points.map((p) => (typeof p.volume === "number" ? p.volume : null));
-                            const ma20 = points.map((p) => (typeof p.ma_20 === "number" ? p.ma_20 : null));
-                            const ma50 = points.map((p) => (typeof p.ma_50 === "number" ? p.ma_50 : null));
-                            const ma200 = points.map((p) => (typeof p.ma_200 === "number" ? p.ma_200 : null));
-                            if (stockChart) {{
-                                stockChart.destroy();
-                                stockChart = null;
-                            }}
-                            stockChart = new window.Chart(chartEl, {{
-                                type: "line",
-                                data: {{
-                                    labels,
-                                    datasets: [
-                                        {{
-                                            label: "Close",
-                                            data: closeData,
-                                            borderColor: "#0f172a",
-                                            backgroundColor: "rgba(15,23,42,0.06)",
-                                            tension: 0.15,
-                                            pointRadius: 0,
-                                            yAxisID: "y",
-                                        }},
-                                        {{
-                                            label: "MA20",
-                                            data: ma20,
-                                            borderColor: "#2563eb",
-                                            borderDash: [5, 4],
-                                            tension: 0.1,
-                                            pointRadius: 0,
-                                            yAxisID: "y",
-                                        }},
-                                        {{
-                                            label: "MA50",
-                                            data: ma50,
-                                            borderColor: "#16a34a",
-                                            borderDash: [6, 5],
-                                            tension: 0.1,
-                                            pointRadius: 0,
-                                            yAxisID: "y",
-                                        }},
-                                        {{
-                                            label: "MA200",
-                                            data: ma200,
-                                            borderColor: "#dc2626",
-                                            borderDash: [8, 6],
-                                            tension: 0.1,
-                                            pointRadius: 0,
-                                            yAxisID: "y",
-                                        }},
-                                        {{
-                                            label: "Volume",
-                                            type: "bar",
-                                            data: volumeData,
-                                            backgroundColor: "rgba(59,130,246,0.18)",
-                                            borderWidth: 0,
-                                            yAxisID: "y1",
-                                        }},
-                                    ],
-                                }},
-                                options: {{
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    interaction: {{ mode: "index", intersect: false }},
-                                    plugins: {{
-                                        legend: {{ display: true, labels: {{ boxWidth: 14 }} }},
-                                    }},
-                                    scales: {{
-                                        y: {{
-                                            position: "left",
-                                            title: {{ display: true, text: "Price" }},
-                                        }},
-                                        y1: {{
-                                            position: "right",
-                                            grid: {{ drawOnChartArea: false }},
-                                            title: {{ display: true, text: "Volume" }},
-                                        }},
-                                        x: {{
-                                            ticks: {{ maxTicksLimit: 10 }},
-                                        }},
-                                    }},
-                                }},
-                            }});
                         }}
 
                         function renderAnalysisRows(rows) {{
@@ -2379,35 +2272,12 @@ def render_company_detail_page(
                         }}
 
                         async function loadSeries() {{
-                            if (statusEl) {{
-                                statusEl.textContent = `Loading ${{activeRange}} series...`;
-                            }}
-                            const response = await fetch(
-                                `/api/company/${{encodeURIComponent(companyName)}}/stock/series?range_key=${{encodeURIComponent(activeRange)}}`
-                            );
-                            const payload = await response.json();
-                            if (!response.ok || payload.error) {{
-                                if (statusEl) {{
-                                    statusEl.textContent = payload.error || "Failed to load stock series.";
-                                }}
-                                latestSeries = [];
-                                latestTicker = "";
+                            if (!stockChartController) return;
+                            try {{
+                                await stockChartController.load();
+                            }} catch (_error) {{
                                 renderAnalysisRows([]);
-                                if (stockChart) {{
-                                    stockChart.destroy();
-                                    stockChart = null;
-                                }}
-                                return;
                             }}
-                            latestSeries = Array.isArray(payload.points) ? payload.points : [];
-                            latestTicker = String(payload.ticker || "");
-                            const firstDate = latestSeries.length ? latestSeries[0].date : "";
-                            const lastDate = latestSeries.length ? latestSeries[latestSeries.length - 1].date : "";
-                            if (statusEl) {{
-                                statusEl.textContent = `${{latestTicker}} · ${{activeRange}} · ${{latestSeries.length}} points · ${{firstDate}} → ${{lastDate}}`;
-                            }}
-                            renderChart(latestSeries);
-                            renderAnalysisRows([]);
                         }}
 
                         async function analyzeMoves() {{
@@ -2711,20 +2581,34 @@ def render_company_detail_page(
                             }}
                         }}
 
-                        rangeButtons.forEach((btn) => {{
-                            const isActive = String(btn.dataset.range || "").toUpperCase() === activeRange;
-                            btn.classList.toggle("active", isActive);
-                            btn.addEventListener("click", async () => {{
-                                activeRange = String(btn.dataset.range || defaultRange);
-                                currentStockRange = normalizeRangeKey(activeRange);
+                        if (stockChartController) {{
+                            stockChartController.destroy();
+                            stockChartController = null;
+                        }}
+                        stockChartController = window.MarketAgentStockChart.createController({{
+                            companyName,
+                            controlsEl: contentEl.querySelector(".stock-controls"),
+                            statusEl,
+                            chartEl,
+                            initialRange: activeRange,
+                            onLoaded(payload, points) {{
+                                latestSeries = Array.isArray(points) ? points : [];
+                                latestTicker = String((payload && payload.ticker) || "");
+                                renderAnalysisRows([]);
+                            }},
+                            onError() {{
+                                latestSeries = [];
+                                latestTicker = "";
+                                renderAnalysisRows([]);
+                            }},
+                            onRangeChange(rangeKey) {{
+                                activeRange = normalizeRangeKey(rangeKey);
+                                currentStockRange = activeRange;
                                 updateUrlState({{
                                     viewMode: "stock",
                                     stockRange: currentStockRange,
                                 }});
-                                rangeButtons.forEach((b) => b.classList.remove("active"));
-                                btn.classList.add("active");
-                                await loadSeries();
-                            }});
+                            }},
                         }});
                         if (analyzeBtn) {{
                             analyzeBtn.addEventListener("click", analyzeMoves);
@@ -3251,9 +3135,129 @@ def render_company_detail_page(
                         }}
                     }}
 
+                    function renderMonthlyReport(report, label, startDate, endDate, items) {{
+                        if (!report) {{
+                            contentEl.innerHTML = `
+                                <h2>${{label}}</h2>
+                                <div class="news-meta">${{startDate}} → ${{endDate}}</div>
+                                <div class="news-card expanded">
+                                    <div class="news-content">
+                                        <p class="placeholder">No monthly report available.</p>
+                                        <button class="refresh-btn" id="generate-monthly-report-btn" type="button">
+                                            Generate monthly report
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                            const button = document.getElementById("generate-monthly-report-btn");
+                            if (button) {{
+                                button.addEventListener("click", async () => {{
+                                    button.disabled = true;
+                                    button.textContent = "Generating...";
+                                    try {{
+                                        const month = String(startDate || "").slice(0, 7);
+                                        const url = `/api/company/${{encodeURIComponent(companyName)}}/report/month?month=${{encodeURIComponent(month)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`;
+                                        const response = await fetch(url, {{ method: "POST" }});
+                                        const payload = await response.json();
+                                        const groups = payload.groups || [];
+                                        if (groups.length) {{
+                                            allGroups = groups;
+                                            renderTimeline(getFilteredGroups());
+                                        }}
+                                    }} finally {{
+                                        button.disabled = false;
+                                        button.textContent = "Generate monthly report";
+                                    }}
+                                }});
+                            }}
+                            return;
+                        }}
+                        const sections = [
+                            ["Summary", report.summary],
+                            ["Sentiment", report.sentiment],
+                            ["Facts", report.facts],
+                            ["Viewpoint", report.viewpoint],
+                            ["Reasoning", report.reasoning],
+                            ["Uncertainties", report.uncertainties],
+                            ["Short-term impact", report.short_term_impact],
+                            ["Long-term impact", report.long_term_impact],
+                            ["Priced in", report.priced_in],
+                            ["Insider signals", report.insider_signals],
+                            ["Trends", report.trends],
+                        ];
+                        const body = sections
+                            .map(([title, values]) => {{
+                                if (!values || !values.length) {{
+                                    return `<div><strong>${{title}}:</strong> —</div>`;
+                                }}
+                                const rows = values
+                                    .map((entry) => stripBullet(entry))
+                                    .map((entry) => `<li>${{entry}}</li>`)
+                                    .join("");
+                                return `<div><strong>${{title}}:</strong><ul>${{rows}}</ul></div>`;
+                            }})
+                            .join("");
+                        const sourceRows = (items || [])
+                            .filter((entry) => entry && entry.news_date_time)
+                            .map((entry) => `<li>${{String(entry.news_date_time).slice(0, 10)}} — ${{entry.news_title || "Weekly report"}}</li>`)
+                            .join("");
+                        const sourcesBlock = sourceRows
+                            ? `<div><strong>Weekly Inputs:</strong><ul>${{sourceRows}}</ul></div>`
+                            : "";
+                        contentEl.innerHTML = `
+                            <div class="header-row">
+                                <h2>${{label}}</h2>
+                                <button class="refresh-btn" id="rebuild-monthly-report-btn" type="button">Rebuild monthly report</button>
+                            </div>
+                            <div class="news-meta">${{startDate}} → ${{endDate}}</div>
+                            <div class="news-card expanded">
+                                <div class="news-content">
+                                    ${{body}}
+                                    ${{sourcesBlock}}
+                                </div>
+                            </div>
+                        `;
+                        const rebuildBtn = document.getElementById("rebuild-monthly-report-btn");
+                        if (rebuildBtn) {{
+                            rebuildBtn.addEventListener("click", async () => {{
+                                rebuildBtn.disabled = true;
+                                rebuildBtn.textContent = "Rebuilding...";
+                                try {{
+                                    const month = String(startDate || "").slice(0, 7);
+                                    const url = `/api/company/${{encodeURIComponent(companyName)}}/report/month?month=${{encodeURIComponent(month)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`;
+                                    const response = await fetch(url, {{ method: "POST" }});
+                                    const payload = await response.json();
+                                    const groups = payload.groups || [];
+                                    if (groups.length) {{
+                                        allGroups = groups;
+                                        renderTimeline(getFilteredGroups());
+                                    }}
+                                }} finally {{
+                                    rebuildBtn.disabled = false;
+                                    rebuildBtn.textContent = "Rebuild monthly report";
+                                }}
+                            }});
+                        }}
+                    }}
+
                     function renderGroup(group) {{
                         if (group.type === "weekly") {{
                             renderWeeklyReport(
+                                group.report,
+                                group.label,
+                                group.report_start,
+                                group.report_end,
+                                group.items
+                            );
+                            selectedGroupKey = group.key;
+                            updateUrlState({{
+                                viewMode: currentViewMode,
+                                groupKey: selectedGroupKey,
+                            }});
+                            return;
+                        }}
+                        if (group.type === "monthly") {{
+                            renderMonthlyReport(
                                 group.report,
                                 group.label,
                                 group.report_start,

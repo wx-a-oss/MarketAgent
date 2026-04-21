@@ -32,6 +32,7 @@ COL_OUTPUT_TEXT = "output_text"
 
 # Market daily price snapshot storage
 TBL_MARKET_PRICE_DAILY_SNAPSHOT = "market_price_daily_snapshot"
+TBL_MARKET_PRICE_ANALYSIS_DAILY = "market_price_analysis_daily"
 COL_SNAPSHOT_DATE = "snapshot_date"
 COL_PAYLOAD = "payload"
 
@@ -71,3 +72,7 @@ COL_POINT_DATE_TIME = "point_date_time"
 TBL_COMPANY_PRICE_DAILY = "company_price_daily"
 COL_TICKER = "ticker"
 COL_TRADE_DATE = "trade_date"
+
+# Company charts layout storage
+TBL_COMPANY_CHART_LAYOUT = "company_chart_layout"
+COL_POSITION_INDEX = "position_index"

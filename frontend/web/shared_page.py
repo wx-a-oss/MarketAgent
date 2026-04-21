@@ -109,8 +109,8 @@ BASE_PAGE_STYLES = """
 def render_nav(active: str) -> str:
     items = [
         ("market", "/market", "Market"),
-        ("calendar", "/calendar", "Calendar"),
         ("company", "/company", "Company"),
+        ("charts", "/charts", "Charts"),
         ("notes", "/notes", "Notes"),
         ("person", "/person", "Person"),
     ]

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from frontend.web.calendar_page import render_calendar_page  # noqa: E402
+from frontend.web.charts_page import render_charts_page  # noqa: E402
 from frontend.web.company_detail_page import render_company_detail_page  # noqa: E402
 from frontend.web.market_page import render_market_page  # noqa: E402
 from frontend.web.notes_page import render_notes_page  # noqa: E402
@@ -219,6 +219,52 @@ def test_company_price_intelligence_generate_endpoint_returns_run(monkeypatch) -
     assert payload["run"]["bottom_line"] == "Near fair with improving fundamentals"
     assert payload["run"]["medium_horizon"]["stance"] == "buy"
     assert payload["history_preview"][0]["id"] == 7
+
+
+def test_charts_layout_endpoint_returns_saved_order(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_chart_layout_rows",
+        lambda: [
+            {"company_name": "Nvidia", "ticker": "NVDA", "llm_model": "gpt-5.4-mini", "position_index": 0},
+            {"company_name": "Apple", "ticker": "AAPL", "llm_model": "gpt-5.4-mini", "position_index": 1},
+        ],
+    )
+    client = TestClient(app)
+    response = client.get("/api/charts/layout")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["company_names"] == ["Nvidia", "Apple"]
+    assert payload["companies"][0]["ticker"] == "NVDA"
+
+
+def test_charts_layout_update_endpoint_saves_order(monkeypatch) -> None:
+    captured = {}
+
+    def fake_save(company_names):
+        captured["company_names"] = company_names
+        return company_names
+
+    monkeypatch.setattr("frontend.web.server.save_company_chart_layout", fake_save)
+    monkeypatch.setattr(
+        "frontend.web.server.list_company_chart_layout_rows",
+        lambda: [
+            {"company_name": "Apple", "ticker": "AAPL", "llm_model": "gpt-5.4-mini", "position_index": 0},
+            {"company_name": "Microsoft", "ticker": "MSFT", "llm_model": "gpt-5.4-mini", "position_index": 1},
+        ],
+    )
+    client = TestClient(app)
+    response = client.put("/api/charts/layout", json={"company_names": ["Apple", "Microsoft"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert captured["company_names"] == ["Apple", "Microsoft"]
+    assert payload["companies"][1]["ticker"] == "MSFT"
+
+
+def test_render_charts_page_includes_charts_nav() -> None:
+    html = render_charts_page()
+    assert "/charts" in html
+    assert "Track all subscribed company charts in one place" in html
 
 
 def test_company_price_intelligence_history_endpoint_returns_runs(monkeypatch) -> None:
@@ -767,10 +813,11 @@ def test_company_detail_renders_earnings_tab_and_price_intelligence_panel() -> N
         model_choices_by_provider={"openai": ["gpt-5-mini"]},
         indicator_models=["gpt-5-mini"],
     )
-    assert ">Stories<" in html
     assert ">Daily News<" in html
     assert ">Weekly Report<" in html
+    assert ">Monthly Report<" in html
     assert ">Earnings<" in html
+    assert html.index(">Daily News<") < html.index(">Weekly Report<") < html.index(">Monthly Report<") < html.index(">Stories<")
     assert "Price Intelligence" in html
     assert "Generate Price Intelligence" in html
     assert "Technical Report" in html
@@ -824,6 +871,78 @@ def test_daily_worker_uses_market_model_and_company_model_separately(monkeypatch
 
     assert captured["market_model"] == "gpt-5.4"
     assert captured["company_model"] == "gpt-5.4-mini"
+
+
+def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> None:
+    monkeypatch.setattr("market_agent.app.company_updates.ensure_company_profile", lambda company_name: None)
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.get_company_story_warmup_state",
+        lambda *args, **kwargs: {"job_state": "completed"},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.is_company_story_warmup_invalid",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.refresh_company_news_for_range",
+        lambda *args, **kwargs: {"fetched_total": 3},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.generate_company_daily_report",
+        lambda *args, **kwargs: {"generated": True},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.refresh_company_daily_clusters",
+        lambda *args, **kwargs: {"generated": True},
+    )
+    captured = {}
+
+    def fake_weekly(company_name, *, start_date, end_date, **kwargs):
+        captured["company_name"] = company_name
+        captured["start_date"] = start_date
+        captured["end_date"] = end_date
+        return {"summary": ["ok"]}
+
+    monkeypatch.setattr("market_agent.app.company_updates.generate_weekly_report", fake_weekly)
+    from market_agent.app.company_updates import run_company_daily_update
+
+    result = run_company_daily_update("Google", target_date=date(2026, 4, 17))
+    assert result["weekly_report_stats"]["generated"] is True
+    assert captured["company_name"] == "Google"
+    assert captured["start_date"] == date(2026, 4, 11)
+    assert captured["end_date"] == date(2026, 4, 17)
+
+
+def test_company_daily_update_skips_weekly_report_on_non_friday(monkeypatch) -> None:
+    monkeypatch.setattr("market_agent.app.company_updates.ensure_company_profile", lambda company_name: None)
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.get_company_story_warmup_state",
+        lambda *args, **kwargs: {"job_state": "completed"},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.is_company_story_warmup_invalid",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.refresh_company_news_for_range",
+        lambda *args, **kwargs: {"fetched_total": 3},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.generate_company_daily_report",
+        lambda *args, **kwargs: {"generated": True},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.refresh_company_daily_clusters",
+        lambda *args, **kwargs: {"generated": True},
+    )
+    monkeypatch.setattr(
+        "market_agent.app.company_updates.generate_weekly_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    from market_agent.app.company_updates import run_company_daily_update
+
+    result = run_company_daily_update("Google", target_date=date(2026, 4, 16))
+    assert result["weekly_report_stats"] is None
 
 
 def test_market_story_generation_uses_chunk_fallback(monkeypatch) -> None:

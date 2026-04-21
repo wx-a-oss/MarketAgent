@@ -16,6 +16,7 @@ from market_agent.analysis.company.news import (
     ensure_company_profile,
     ensure_company_story_warmup_started,
     generate_company_daily_report,
+    generate_weekly_report,
     get_latest_company_story_update_date,
     get_company_story_warmup_state,
     is_company_story_warmup_invalid,
@@ -24,7 +25,6 @@ from market_agent.analysis.company.news import (
     rebuild_company_story_warmup,
     refresh_company_daily_clusters,
     refresh_company_news_for_range,
-    refresh_company_story_states,
 )
 from market_agent.analysis.company.news.service import _upsert_story_warmup_state
 from .market_updates import run_market_daily_update
@@ -309,14 +309,22 @@ def run_company_daily_update(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    story_stats = refresh_company_story_states(
-        company_name,
-        provider_name=provider_name,
-        model=model,
-        prompt_style=prompt_style,
-        output_language=output_language,
-        window_days=story_window_days,
-    )
+    weekly_report_stats = None
+    if run_date.weekday() == 4:
+        week_start = run_date - timedelta(days=6)
+        weekly_report = generate_weekly_report(
+            company_name,
+            start_date=week_start,
+            end_date=run_date,
+            output_language=output_language,
+            provider_name=provider_name,
+            model=model,
+        )
+        weekly_report_stats = {
+            "generated": bool(weekly_report),
+            "start_date": week_start.isoformat(),
+            "end_date": run_date.isoformat(),
+        }
     return {
         "company_name": company_name,
         "target_date": run_date.isoformat(),
@@ -324,7 +332,7 @@ def run_company_daily_update(
         "refresh_stats": refresh_stats,
         "daily_report_stats": daily_report_stats,
         "cluster_stats": cluster_stats,
-        "story_stats": story_stats,
+        "weekly_report_stats": weekly_report_stats,
     }
 
 
@@ -361,7 +369,7 @@ def _run_company_daily_update_job(
                 "current_stage": "fetching_raw",
                 "window_days": max(1, int(story_window_days)),
                 "slice_days": 1,
-                "analysis_started": False,
+                "analysis_started": True,
                 "analysis_completed": False,
                 "raw_fetched_count": int(refresh_stats.get("fetched_total", 0)),
                 "raw_stored_count": int(refresh_stats.get("stored_total", 0) or refresh_stats.get("fetched_total", 0)),
@@ -387,45 +395,16 @@ def _run_company_daily_update_job(
             prompt_style=prompt_style,
             output_language=output_language,
         )
-        _upsert_story_warmup_state(
-            company_name,
-            provider_name=provider_name,
-            model=model,
-            prompt_style=prompt_style,
-            output_language=output_language,
-            updates={
-                "job_state": "analyzing",
-                "current_stage": "analyzing_stories",
-                "window_days": max(1, int(story_window_days)),
-                "slice_days": 1,
-                "analysis_started": True,
-                "analysis_completed": False,
-                "last_error": "",
-                "failed_stage": "",
-                "completed_at": None,
-            },
-        )
-        refresh_company_story_states(
-            company_name,
-            provider_name=provider_name,
-            model=model,
-            prompt_style=prompt_style,
-            output_language=output_language,
-            window_days=story_window_days,
-        )
-        stories = list_company_story_states(
-            company_name,
-            provider_name=provider_name,
-            prompt_style=prompt_style,
-            output_language=output_language,
-        )
-        ongoing_count = sum(
-            1
-            for story in stories
-            if str(story.get("story_status") or "").strip().lower()
-            not in {"resolved", "finished", "closed"}
-        )
-        finished_count = len(stories) - ongoing_count
+        if target_date.weekday() == 4:
+            week_start = target_date - timedelta(days=6)
+            generate_weekly_report(
+                company_name,
+                start_date=week_start,
+                end_date=target_date,
+                output_language=output_language,
+                provider_name=provider_name,
+                model=model,
+            )
         _upsert_story_warmup_state(
             company_name,
             provider_name=provider_name,
@@ -439,8 +418,8 @@ def _run_company_daily_update_job(
                 "slice_days": 1,
                 "analysis_started": True,
                 "analysis_completed": True,
-                "ongoing_story_count": ongoing_count,
-                "finished_story_count": finished_count,
+                "ongoing_story_count": 0,
+                "finished_story_count": 0,
                 "last_error": "",
                 "failed_stage": "",
                 "completed_at": datetime.now(timezone.utc),

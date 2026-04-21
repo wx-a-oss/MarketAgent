@@ -29,7 +29,7 @@ from market_agent.config.models import (
 )
 from frontend.common import StockFrontendClient
 from market_agent.app import market_updates as market_updates_module
-from frontend.web.calendar_page import render_calendar_page
+from frontend.web.charts_page import render_charts_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -65,6 +65,7 @@ from market_agent.analysis.company.news import (
     add_company_to_watchlist,
     delete_company_news,
     generate_weekly_report,
+    generate_monthly_report,
     generate_company_daily_report,
     generate_company_price_intelligence_run,
     generate_company_status_snapshot,
@@ -82,6 +83,7 @@ from market_agent.analysis.company.news import (
     list_company_status_snapshots,
     get_company_story_warmup_state,
     get_news_report,
+    list_company_chart_layout_rows,
     list_watchlist_company_rows,
     ensure_company_profile,
     filter_company_news_day,
@@ -90,6 +92,7 @@ from market_agent.analysis.company.news import (
     refresh_company_news_for_range,
     refresh_company_news_if_needed,
     remove_company_from_watchlist,
+    save_company_chart_layout,
     set_company_ticker,
     ask_company_story_question,
     attach_news_to_company_story,
@@ -285,8 +288,6 @@ def _wait_for_company_warmup(
             "raw_fetched_count": int(state.get("raw_fetched_count") or 0),
             "raw_stored_count": int(state.get("raw_stored_count") or 0),
             "filtered_kept_count": int(state.get("filtered_kept_count") or 0),
-            "ongoing_story_count": int(state.get("ongoing_story_count") or 0),
-            "finished_story_count": int(state.get("finished_story_count") or 0),
         }
         if stage != last_stage:
             tracker.mark_running(stage or "idle", metrics=metrics)
@@ -521,8 +522,6 @@ def _run_company_rebuild_warmup_job(
             "raw_fetched_count": int(state.get("raw_fetched_count", 0) or 0),
             "raw_stored_count": int(state.get("raw_stored_count", 0) or 0),
             "filtered_kept_count": int(state.get("filtered_kept_count", 0) or 0),
-            "ongoing_story_count": int(state.get("ongoing_story_count", 0) or 0),
-            "finished_story_count": int(state.get("finished_story_count", 0) or 0),
         },
     }
 
@@ -955,6 +954,11 @@ async def company() -> str:
     )
 
 
+@app.get("/charts", response_class=HTMLResponse)
+async def charts_page() -> str:
+    return render_charts_page()
+
+
 @app.get("/market", response_class=HTMLResponse)
 async def market_page() -> str:
     market_today = datetime.now(US_MARKET_TZ).date().isoformat()
@@ -1010,6 +1014,35 @@ async def list_companies() -> Dict[str, Any]:
     return {
         "companies": companies,
         "company_names": [item["company_name"] for item in companies],
+    }
+
+
+@app.get("/api/charts/layout")
+async def get_charts_layout_api() -> Dict[str, Any]:
+    companies = list_company_chart_layout_rows()
+    return {
+        "companies": companies,
+        "company_names": [item["company_name"] for item in companies],
+    }
+
+
+@app.put("/api/charts/layout")
+async def update_charts_layout_api(request: Request) -> Dict[str, Any]:
+    payload = await request.json()
+    company_names = payload.get("company_names")
+    if not isinstance(company_names, list):
+        return {"error": "company_names must be a list"}
+    if any(not isinstance(item, str) for item in company_names):
+        return {"error": "company_names must contain only strings"}
+    try:
+        ordered = save_company_chart_layout(company_names)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    companies = list_company_chart_layout_rows()
+    return {
+        "ok": True,
+        "company_names": ordered,
+        "companies": companies,
     }
 
 
@@ -1769,6 +1802,76 @@ async def generate_company_report(
     return {"company": company_name, "groups": groups}
 
 
+def _parse_month_window(month_value: str) -> Optional[tuple[date, date]]:
+    text = str(month_value or "").strip()
+    try:
+        month_start = datetime.strptime(text, "%Y-%m").date()
+    except ValueError:
+        return None
+    if month_start.month == 12:
+        next_month = date(month_start.year + 1, 1, 1)
+    else:
+        next_month = date(month_start.year, month_start.month + 1, 1)
+    return month_start, next_month - timedelta(days=1)
+
+
+@app.get("/api/company/{company_name}/report/month")
+async def get_company_monthly_report_api(
+    company_name: str,
+    month: str = Query(...),
+    output_language: str = Query("zh-CN"),
+) -> Dict[str, Any]:
+    window = _parse_month_window(month)
+    if not window:
+        return {"error": "month must be YYYY-MM"}
+    month_start, month_end = window
+    report = get_news_report(company_name, beginning_date=month_start, end_date=month_end)
+    articles = get_company_news(company_name, output_language=output_language)
+    groups = _group_news_items(company_name, articles)
+    return {
+        "company": company_name,
+        "month": month,
+        "report_start": month_start.isoformat(),
+        "report_end": month_end.isoformat(),
+        "report": report,
+        "groups": groups,
+    }
+
+
+@app.post("/api/company/{company_name}/report/month")
+async def generate_company_monthly_report_api(
+    company_name: str,
+    month: str = Query(...),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    window = _parse_month_window(month)
+    if not window:
+        return {"error": "month must be YYYY-MM"}
+    month_start, month_end = window
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
+    report = generate_monthly_report(
+        company_name,
+        month_start=month_start,
+        month_end=month_end,
+        output_language=output_language,
+        provider_name=selected_provider,
+        model=selected_model,
+    )
+    articles = get_company_news(company_name, output_language=output_language)
+    groups = _group_news_items(company_name, articles)
+    return {
+        "company": company_name,
+        "month": month,
+        "report_start": month_start.isoformat(),
+        "report_end": month_end.isoformat(),
+        "report": report,
+        "groups": groups,
+    }
+
+
 @app.post("/api/company/{company_name}/report/day")
 async def generate_company_daily_report_api(
     company_name: str,
@@ -2010,6 +2113,7 @@ async def get_company_stories_api(
         model=selected_model,
         prompt_style=prompt_style,
         output_language=output_language,
+        start_warmup_if_needed=False,
     )
     return overview
 
@@ -4948,11 +5052,13 @@ def _group_news_items(
 ) -> List[Dict[str, Any]]:
     daily: Dict[date, List[Dict[str, Any]]] = {}
     weekly: Dict[date, List[Dict[str, Any]]] = {}
+    monthly: Dict[date, List[Dict[str, Any]]] = {}
     today = datetime.now().date()
 
     for article in articles:
         news_date = article.news_date_time.date()
         week_start = news_date - timedelta(days=news_date.weekday())
+        month_start = news_date.replace(day=1)
         item = {
             "id": article.id,
             "news_title": article.news_title,
@@ -4971,12 +5077,57 @@ def _group_news_items(
         item["publisher"] = item["content"].get("publisher")
         daily.setdefault(news_date, []).append(item)
         weekly.setdefault(week_start, []).append(item)
+        monthly.setdefault(month_start, []).append(item)
 
     groups: List[Dict[str, Any]] = []
     added_weeks: set[date] = set()
+    added_months: set[date] = set()
     for day in sorted(daily.keys(), reverse=True):
         week_start = day - timedelta(days=day.weekday())
         week_end = week_start + timedelta(days=6)
+        month_start = day.replace(day=1)
+        next_month = date(month_start.year + (1 if month_start.month == 12 else 0), 1 if month_start.month == 12 else month_start.month + 1, 1)
+        month_end = next_month - timedelta(days=1)
+        if month_start not in added_months:
+            month_items: List[Dict[str, Any]] = []
+            cursor = month_start
+            while cursor <= month_end:
+                if cursor.weekday() == 4:
+                    week_start = cursor - timedelta(days=6)
+                    week_report = get_news_report(
+                        company_name,
+                        beginning_date=week_start,
+                        end_date=cursor,
+                    )
+                    if week_report:
+                        month_items.append(
+                            {
+                                "news_title": f"Week of {week_start.isoformat()}",
+                                "news_date_time": cursor.isoformat(),
+                                "report_start": week_start.isoformat(),
+                                "report_end": cursor.isoformat(),
+                                "report": week_report,
+                            }
+                        )
+                cursor += timedelta(days=1)
+            monthly_report = get_news_report(
+                company_name,
+                beginning_date=month_start,
+                end_date=month_end,
+            )
+            month_label = month_start.strftime("%Y-%m")
+            groups.append(
+                {
+                    "type": "monthly",
+                    "key": f"month-{month_start.isoformat()}",
+                    "label": month_label,
+                    "items": month_items,
+                    "report": monthly_report,
+                    "report_start": month_start.isoformat(),
+                    "report_end": month_end.isoformat(),
+                }
+            )
+            added_months.add(month_start)
         if week_start not in added_weeks:
             week_items = weekly.get(week_start, [])
             report = get_news_report(

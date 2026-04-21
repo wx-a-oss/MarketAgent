@@ -36,6 +36,7 @@ from market_agent.analysis.company.news.prompts import (
     _build_incremental_new_story_prompt,
     _build_output_language_line,
 )
+from market_agent.llms.news.prompts.news_analysis_structured import ANALYSIS_FIELDS
 from market_agent.schema_fields import (
     COL_OUTPUT_JSON,
     COL_OUTPUT_LANGUAGE,
@@ -63,10 +64,10 @@ FINNHUB_AUTO_ANALYZE_LIMIT = 10
 ANALYZE_DAY_BATCH_SIZE = 3
 FILTER_DAY_BATCH_SIZE = 10
 DEFAULT_STORY_WARMUP_DAYS = max(
-    1, int(os.getenv("COMPANY_STORY_WARMUP_DAYS", "10").strip() or "10")
+    1, int(os.getenv("COMPANY_STORY_WARMUP_DAYS", "14").strip() or "14")
 )
 DEFAULT_STORY_WARMUP_SLICE_DAYS = max(
-    1, int(os.getenv("COMPANY_STORY_WARMUP_SLICE_DAYS", "10").strip() or "10")
+    1, int(os.getenv("COMPANY_STORY_WARMUP_SLICE_DAYS", "1").strip() or "1")
 )
 DEFAULT_STORY_WARMUP_MAX_RETRIES = max(
     1, int(os.getenv("COMPANY_STORY_WARMUP_MAX_RETRIES", "3").strip() or "3")
@@ -142,6 +143,92 @@ def list_watchlist_company_rows() -> List[Dict[str, Optional[str]]]:
                     }
                 )
             return rows
+
+
+def list_company_chart_layout_rows() -> List[Dict[str, Optional[str]]]:
+    ensure_database_schema()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    w.company_name,
+                    COALESCE(NULLIF(TRIM(w.llm_model), ''), %s) AS llm_model,
+                    p.ticker,
+                    l.position_index
+                FROM company_watchlist AS w
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(
+                            cp.ticker,
+                            cp.properties_extension->>'symbol',
+                            cp.properties_extension->>'ticker'
+                        ) AS ticker
+                    FROM company_profile AS cp
+                    WHERE cp.company_name = w.company_name
+                       OR LOWER(cp.company_name) = LOWER(w.company_name)
+                    ORDER BY
+                        CASE WHEN cp.company_name = w.company_name THEN 0 ELSE 1 END,
+                        cp.fetched_at DESC
+                    LIMIT 1
+                ) AS p ON TRUE
+                LEFT JOIN company_chart_layout AS l
+                    ON l.company_name = w.company_name
+                ORDER BY
+                    CASE WHEN l.position_index IS NULL THEN 1 ELSE 0 END,
+                    l.position_index ASC,
+                    w.added_at DESC
+                """,
+                (DEFAULT_COMPANY_OPENAI_MODEL,),
+            )
+            rows = []
+            for row in cur.fetchall():
+                rows.append(
+                    {
+                        "company_name": row["company_name"],
+                        "llm_model": str(row.get("llm_model") or DEFAULT_COMPANY_OPENAI_MODEL),
+                        "ticker": _normalize_ticker(row.get("ticker")),
+                        "position_index": int(row["position_index"]) if row.get("position_index") is not None else None,
+                    }
+                )
+            return rows
+
+
+def save_company_chart_layout(company_names: Iterable[str]) -> List[str]:
+    ensure_database_schema()
+    normalized_names: List[str] = []
+    seen: set[str] = set()
+    for item in company_names:
+        normalized = _normalize_company_name(item)
+        if not normalized:
+            continue
+        if normalized in seen:
+            raise ValueError(f"duplicate company_name in layout: {normalized}")
+        seen.add(normalized)
+        normalized_names.append(normalized)
+
+    current_rows = list_watchlist_company_rows()
+    current_names = [
+        str(row.get("company_name") or "").strip()
+        for row in current_rows
+        if str(row.get("company_name") or "").strip()
+    ]
+    if set(normalized_names) != set(current_names) or len(normalized_names) != len(current_names):
+        raise ValueError("layout must contain every subscribed company exactly once")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM company_chart_layout")
+            if normalized_names:
+                cur.executemany(
+                    """
+                    INSERT INTO company_chart_layout (company_name, position_index, updated_at)
+                    VALUES (%s, %s, NOW())
+                    """,
+                    [(company_name, idx) for idx, company_name in enumerate(normalized_names)],
+                )
+        conn.commit()
+    return normalized_names
 
 
 def get_company_watchlist_model(company_name: str) -> str:
@@ -1184,6 +1271,53 @@ def generate_weekly_report(
         company_name,
         start_date=start_date,
         end_date=end_date,
+        report_payload=report,
+    )
+    return report
+
+
+def generate_monthly_report(
+    company_name: str,
+    *,
+    month_start: date,
+    month_end: date,
+    output_language: str = "zh-CN",
+    provider_name: str = DEFAULT_PROVIDER,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.2,
+    timeout_sec: int = 60,
+) -> Optional[Dict[str, Any]]:
+    company_name = _normalize_company_name(company_name)
+    if not company_name:
+        return None
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=temperature,
+        timeout_sec=timeout_sec,
+    )
+    weekly_reports = _build_monthly_report_input_items(
+        company_name,
+        month_start=month_start,
+        month_end=month_end,
+    )
+    if not weekly_reports:
+        return None
+    prompt = _build_company_monthly_report_prompt(
+        company_name,
+        month_start=month_start,
+        month_end=month_end,
+        weekly_reports=weekly_reports,
+        output_language=output_language,
+    )
+    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    report = _normalize_structured_period_report(payload)
+    if not any(report.values()):
+        return None
+    _store_weekly_report(
+        company_name,
+        start_date=month_start,
+        end_date=month_end,
         report_payload=report,
     )
     return report
@@ -4541,54 +4675,106 @@ def _build_weekly_report_input_items(
         prompt_style="simple",
     )
     daily_reports = all_daily_reports[:PRICE_ANALYSIS_REPORT_LIMIT]
-    if daily_reports:
-        items: List[Dict[str, Any]] = []
-        for report in sorted(daily_reports, key=lambda x: x["report_date"]):
-            items.append(
-                {
-                    "news_title": f"Daily report for {company_name}",
-                    "news_date_time": report["report_date"],
-                    "news_source": "company_daily_report",
-                    "news_source_link": None,
-                    "summary": report["output_text"],
-                    "facts": [],
-                    "viewpoint": [],
-                    "reasoning": [],
-                    "uncertainties": [],
-                    "short_term_impact": [],
-                    "long_term_impact": [],
-                    "priced_in": [],
-                    "insider_signals": [],
-                    "trends": [],
-                    "sentiment": [],
-                }
-            )
-        return items
-
-    articles = get_company_news_for_range(
-        company_name,
-        start_date=start_date,
-        end_date=end_date,
-        llm_model=llm_model,
-    )
-    if not articles:
+    if not daily_reports:
         return []
     items: List[Dict[str, Any]] = []
-    seen_keys: set[tuple[str, datetime]] = set()
-    for article in articles:
-        article_key = (article.news_title, article.news_date_time)
-        if article_key in seen_keys:
-            continue
-        seen_keys.add(article_key)
-        content = _decode_llm_content(
-            article.llm_analyzed_content,
-            article.original_content,
+    for report in sorted(daily_reports, key=lambda x: x["report_date"]):
+        items.append(
+            {
+                "news_title": f"Daily report for {company_name}",
+                "news_date_time": report["report_date"],
+                "news_source": "company_daily_report",
+                "news_source_link": None,
+                "summary": report["output_text"],
+                "facts": [],
+                "viewpoint": [],
+                "reasoning": [],
+                "uncertainties": [],
+                "short_term_impact": [],
+                "long_term_impact": [],
+                "priced_in": [],
+                "insider_signals": [],
+                "trends": [],
+                "sentiment": [],
+            }
         )
-        content["news_title"] = article.news_title
-        content["news_date_time"] = article.news_date_time.isoformat()
-        content["original_content"] = article.original_content
-        items.append(content)
     return items
+
+
+def _build_monthly_report_input_items(
+    company_name: str,
+    *,
+    month_start: date,
+    month_end: date,
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    current_day = month_start
+    while current_day <= month_end:
+        if current_day.weekday() == 4:
+            week_start = current_day - timedelta(days=6)
+            report = get_news_report(
+                company_name,
+                beginning_date=week_start,
+                end_date=current_day,
+            )
+            if report:
+                items.append(
+                    {
+                        "week_start": week_start.isoformat(),
+                        "week_end": current_day.isoformat(),
+                        "summary": _render_period_report_as_text(report),
+                        "report": report,
+                    }
+                )
+        current_day += timedelta(days=1)
+    return items
+
+
+def _render_period_report_as_text(report: Dict[str, Any]) -> str:
+    if not isinstance(report, dict):
+        return ""
+    parts: List[str] = []
+    for field, _ in ANALYSIS_FIELDS:
+        values = report.get(field)
+        if not isinstance(values, list) or not values:
+            continue
+        bullets = [str(item).strip() for item in values if str(item).strip()]
+        if not bullets:
+            continue
+        parts.append(f"{field}: " + " | ".join(bullets))
+    return "\n".join(parts)
+
+
+def _normalize_structured_period_report(payload: Dict[str, Any]) -> Dict[str, List[str]]:
+    normalized: Dict[str, List[str]] = {}
+    for field, _ in ANALYSIS_FIELDS:
+        raw_items = payload.get(field)
+        if not isinstance(raw_items, list):
+            normalized[field] = []
+            continue
+        normalized[field] = [str(item).strip() for item in raw_items if str(item).strip()]
+    return normalized
+
+
+def _build_company_monthly_report_prompt(
+    company_name: str,
+    *,
+    month_start: date,
+    month_end: date,
+    weekly_reports: List[Dict[str, Any]],
+    output_language: str,
+) -> str:
+    section_lines = "\n".join(f"- {field}" for field, _ in ANALYSIS_FIELDS)
+    return (
+        f"You are compiling a monthly report for {company_name} covering {month_start.isoformat()} to {month_end.isoformat()}.\n"
+        "Use only the provided weekly reports as inputs.\n"
+        "Synthesize the month coherently, remove repetition across weeks, and preserve the most important developments.\n"
+        f"{_build_output_language_line(output_language)}"
+        "Return a JSON object where each section below is present, and each value is an array of concise bullet points:\n"
+        f"{section_lines}\n"
+        "Weekly reports JSON:\n"
+        f"{json.dumps(weekly_reports, ensure_ascii=False, indent=2)}\n"
+    )
 
 
 def _build_company_price_intelligence_input(
@@ -6273,13 +6459,9 @@ def _run_company_story_warmup_job_inner(
     company_name = _normalize_company_name(company_name)
     end_date = datetime.now(timezone.utc).date()
     safe_warmup_days = max(1, int(warmup_days))
-    safe_slice_days = max(1, int(slice_days))
-    slices = _build_story_warmup_slices(
-        end_date=end_date,
-        warmup_days=safe_warmup_days,
-        slice_days=safe_slice_days,
-    )
-    start_date = slices[0][0]
+    safe_slice_days = 1
+    start_date = end_date - timedelta(days=safe_warmup_days - 1)
+    run_days = [start_date + timedelta(days=index) for index in range(safe_warmup_days)]
     state = get_company_story_warmup_state(
         company_name,
         provider_name=provider_name,
@@ -6293,22 +6475,22 @@ def _run_company_story_warmup_job_inner(
         prompt_style=prompt_style,
         output_language=output_language,
         updates={
-            "job_state": "analyzing" if state.get("analysis_started") and not state.get("analysis_completed") else "running",
-            "current_stage": "analyzing_stories" if state.get("analysis_started") and not state.get("analysis_completed") else "fetching_raw",
+            "job_state": "running",
+            "current_stage": "fetching_raw",
             "window_days": safe_warmup_days,
             "slice_days": safe_slice_days,
             "window_start_date": start_date,
             "window_end_date": end_date,
-            "total_slices": len(slices),
+            "total_slices": len(run_days),
             "started_at": datetime.now(timezone.utc),
             "retry_count": int(state.get("retry_count") or 0),
             "raw_fetched_count": int(state.get("raw_fetched_count") or 0),
             "raw_stored_count": int(state.get("raw_stored_count") or 0),
             "filtered_kept_count": int(state.get("filtered_kept_count") or 0),
-            "ongoing_story_count": int(state.get("ongoing_story_count") or 0),
-            "finished_story_count": int(state.get("finished_story_count") or 0),
-            "analysis_started": bool(state.get("analysis_started")),
-            "analysis_completed": bool(state.get("analysis_completed")),
+            "ongoing_story_count": 0,
+            "finished_story_count": 0,
+            "analysis_started": True,
+            "analysis_completed": False,
             "completed_slices": int(state.get("completed_slices") or 0),
             "last_completed_slice_end_date": _parse_iso_date(state.get("last_completed_slice_end_date")),
             "last_error": "",
@@ -6316,255 +6498,34 @@ def _run_company_story_warmup_job_inner(
             "completed_at": None,
         },
     )
+    provider = get_news_provider(
+        provider_name,
+        model=model,
+        temperature=0.2,
+        timeout_sec=180,
+    )
+    last_completed_slice_end = _parse_iso_date(state.get("last_completed_slice_end_date"))
+    fetched_total = int(state.get("raw_fetched_count") or 0)
+    raw_stored_count = int(state.get("raw_stored_count") or 0)
+    filtered_kept_count = int(state.get("filtered_kept_count") or 0)
+    completed_slices = int(state.get("completed_slices") or 0)
+    finnhub_source = get_news_source("finnhub")
+    ticker: Optional[str] = None
 
-    if not state.get("analysis_completed"):
-        provider = get_news_provider(
-            provider_name,
-            model=model,
-            temperature=0.2,
-            timeout_sec=180,
-        )
-        last_completed_slice_end = _parse_iso_date(state.get("last_completed_slice_end_date"))
-        fetched_total = int(state.get("raw_fetched_count") or 0)
-        raw_stored_count = int(state.get("raw_stored_count") or 0)
-        filtered_kept_count = int(state.get("filtered_kept_count") or 0)
-        completed_slices = int(state.get("completed_slices") or 0)
-
-        if not state.get("analysis_started"):
-            finnhub_source = get_news_source("finnhub")
-            ticker: Optional[str] = None
-            for slice_index, (slice_start, slice_end) in enumerate(slices, start=1):
-                if last_completed_slice_end and slice_end <= last_completed_slice_end:
-                    continue
-                retries = 0
-                while True:
-                    fetch_ranges = _build_fetch_ranges_for_slice(
-                        company_name,
-                        slice_start=slice_start,
-                        slice_end=slice_end,
-                        today=end_date,
-                    )
-                    if fetch_ranges and not ticker:
-                        ticker = _resolve_company_ticker(company_name)
-                    if fetch_ranges and not ticker:
-                        _upsert_story_warmup_state(
-                            company_name,
-                            provider_name=provider_name,
-                            model=model,
-                            prompt_style=prompt_style,
-                            output_language=output_language,
-                            updates={
-                                "job_state": "failed",
-                                "current_stage": "fetching_raw",
-                                "window_days": safe_warmup_days,
-                                "slice_days": safe_slice_days,
-                                "window_start_date": start_date,
-                                "window_end_date": end_date,
-                                "total_slices": len(slices),
-                                "completed_slices": completed_slices,
-                                "current_slice_start_date": slice_start,
-                                "current_slice_end_date": slice_end,
-                                "analysis_started": False,
-                                "analysis_completed": False,
-                                "raw_fetched_count": fetched_total,
-                                "raw_stored_count": raw_stored_count,
-                                "filtered_kept_count": filtered_kept_count,
-                                "last_error": "No valid ticker available for company warm-up.",
-                                "failed_stage": "fetching_raw",
-                                "completed_at": datetime.now(timezone.utc),
-                            },
-                        )
-                        logger.warning("Story warm-up aborted: company=%s no valid ticker", company_name)
-                        return
-                    _upsert_story_warmup_state(
-                        company_name,
-                        provider_name=provider_name,
-                        model=model,
-                        prompt_style=prompt_style,
-                        output_language=output_language,
-                        updates={
-                            "job_state": "running",
-                            "current_stage": "fetching_raw",
-                            "window_days": safe_warmup_days,
-                            "slice_days": safe_slice_days,
-                            "window_start_date": start_date,
-                            "window_end_date": end_date,
-                            "total_slices": len(slices),
-                            "completed_slices": completed_slices,
-                            "current_slice_start_date": slice_start,
-                            "current_slice_end_date": slice_end,
-                            "last_completed_slice_end_date": last_completed_slice_end,
-                            "raw_fetched_count": fetched_total,
-                            "raw_stored_count": raw_stored_count,
-                            "filtered_kept_count": filtered_kept_count,
-                            "retry_count": retries,
-                            "last_error": "",
-                            "failed_stage": "",
-                            "analysis_started": False,
-                            "analysis_completed": False,
-                        },
-                    )
-                    logger.info(
-                        "Story warm-up fetch start: company=%s slice=%d/%d range=%s..%s",
-                        company_name,
-                        slice_index,
-                        len(slices),
-                        slice_start.isoformat(),
-                        slice_end.isoformat(),
-                    )
-                    try:
-                        for fetch_start, fetch_end in fetch_ranges:
-                            logger.info(
-                                "Story warm-up fetch subrange: company=%s slice=%d/%d range=%s..%s",
-                                company_name,
-                                slice_index,
-                                len(slices),
-                                fetch_start.isoformat(),
-                                fetch_end.isoformat(),
-                            )
-                            raw_items = finnhub_source.fetch_news(
-                                company_name=ticker,
-                                start_date=fetch_start.isoformat(),
-                                end_date=fetch_end.isoformat(),
-                            )
-                            fetched_total += len(raw_items)
-                            raw_articles = _news_items_from_provider(
-                                company_name,
-                                _tag_source(raw_items, "finnhub"),
-                                end_date=fetch_end,
-                                analyzed=False,
-                            )
-                            _store_articles(
-                                raw_articles,
-                                llm_model=model,
-                                output_language=output_language,
-                            )
-                            raw_stored_count += len(raw_articles)
-                        kept_count = _filter_company_news_range_raw(
-                            company_name=company_name,
-                            start_date=slice_start,
-                            end_date=slice_end,
-                            provider=provider,
-                            llm_model=model,
-                        )
-                        filtered_kept_count += kept_count
-                        completed_slices += 1
-                        last_completed_slice_end = slice_end
-                        _upsert_story_warmup_state(
-                            company_name,
-                            provider_name=provider_name,
-                            model=model,
-                            prompt_style=prompt_style,
-                            output_language=output_language,
-                            updates={
-                                "job_state": "running",
-                                "current_stage": "fetching_raw",
-                                "window_days": safe_warmup_days,
-                                "slice_days": safe_slice_days,
-                                "window_start_date": start_date,
-                                "window_end_date": end_date,
-                                "total_slices": len(slices),
-                                "completed_slices": completed_slices,
-                                "current_slice_start_date": None,
-                                "current_slice_end_date": None,
-                                "last_completed_slice_end_date": last_completed_slice_end,
-                                "raw_fetched_count": fetched_total,
-                                "raw_stored_count": raw_stored_count,
-                                "filtered_kept_count": filtered_kept_count,
-                                "retry_count": 0,
-                                "analysis_started": False,
-                                "analysis_completed": False,
-                            },
-                        )
-                        logger.info(
-                            "Story warm-up fetch end: company=%s slice=%d/%d fetched=%d kept=%d reused_raw=%s",
-                            company_name,
-                            slice_index,
-                            len(slices),
-                            fetched_total,
-                            kept_count,
-                            "yes" if not fetch_ranges else "no",
-                        )
-                        break
-                    except Exception as exc:
-                        retries += 1
-                        is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower()
-                        _upsert_story_warmup_state(
-                            company_name,
-                            provider_name=provider_name,
-                            model=model,
-                            prompt_style=prompt_style,
-                            output_language=output_language,
-                            updates={
-                                "job_state": "partial" if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES else "running",
-                                "current_stage": "fetching_raw",
-                                "window_days": safe_warmup_days,
-                                "slice_days": safe_slice_days,
-                                "window_start_date": start_date,
-                                "window_end_date": end_date,
-                                "total_slices": len(slices),
-                                "completed_slices": completed_slices,
-                                "current_slice_start_date": slice_start,
-                                "current_slice_end_date": slice_end,
-                                "last_completed_slice_end_date": last_completed_slice_end,
-                                "raw_fetched_count": fetched_total,
-                                "raw_stored_count": raw_stored_count,
-                                "filtered_kept_count": filtered_kept_count,
-                                "retry_count": retries,
-                                "last_retry_at": datetime.now(timezone.utc),
-                                "last_error": str(exc),
-                                "failed_stage": "fetching_raw",
-                                "analysis_started": False,
-                                "analysis_completed": False,
-                            },
-                        )
-                        logger.warning(
-                            "Story warm-up fetch error: company=%s slice=%d/%d retry=%d error=%s",
-                            company_name,
-                            slice_index,
-                            len(slices),
-                            retries,
-                            exc,
-                        )
-                        if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES:
-                            if is_rate_limit:
-                                _upsert_story_warmup_state(
-                                    company_name,
-                                    provider_name=provider_name,
-                                    model=model,
-                                    prompt_style=prompt_style,
-                                    output_language=output_language,
-                                    updates={
-                                        "job_state": "failed",
-                                        "current_stage": "fetching_raw",
-                                        "window_days": safe_warmup_days,
-                                        "slice_days": safe_slice_days,
-                                        "window_start_date": start_date,
-                                        "window_end_date": end_date,
-                                        "total_slices": len(slices),
-                                        "completed_slices": completed_slices,
-                                        "current_slice_start_date": slice_start,
-                                        "current_slice_end_date": slice_end,
-                                        "last_completed_slice_end_date": last_completed_slice_end,
-                                        "raw_fetched_count": fetched_total,
-                                        "raw_stored_count": raw_stored_count,
-                                        "filtered_kept_count": filtered_kept_count,
-                                        "retry_count": retries,
-                                        "last_retry_at": datetime.now(timezone.utc),
-                                        "last_error": f"Warm-up stopped after repeated rate limiting: {exc}",
-                                        "failed_stage": "fetching_raw",
-                                        "analysis_started": False,
-                                        "analysis_completed": False,
-                                        "completed_at": datetime.now(timezone.utc),
-                                    },
-                                )
-                                return
-                            raise
-                        if is_rate_limit:
-                            pytime.sleep(DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC)
-                            continue
-                        raise
-            if _count_company_raw_for_range(company_name, start_date, end_date) <= 0:
+    for current_day in run_days:
+        if last_completed_slice_end and current_day <= last_completed_slice_end:
+            continue
+        retries = 0
+        while True:
+            fetch_ranges = _build_fetch_ranges_for_slice(
+                company_name,
+                slice_start=current_day,
+                slice_end=current_day,
+                today=end_date,
+            )
+            if fetch_ranges and not ticker:
+                ticker = _resolve_company_ticker(company_name)
+            if fetch_ranges and not ticker:
                 _upsert_story_warmup_state(
                     company_name,
                     provider_name=provider_name,
@@ -6578,81 +6539,22 @@ def _run_company_story_warmup_job_inner(
                         "slice_days": safe_slice_days,
                         "window_start_date": start_date,
                         "window_end_date": end_date,
-                        "total_slices": len(slices),
+                        "total_slices": len(run_days),
                         "completed_slices": completed_slices,
-                        "current_slice_start_date": None,
-                        "current_slice_end_date": None,
-                        "last_completed_slice_end_date": last_completed_slice_end,
-                        "analysis_started": False,
+                        "current_slice_start_date": current_day,
+                        "current_slice_end_date": current_day,
+                        "analysis_started": True,
                         "analysis_completed": False,
                         "raw_fetched_count": fetched_total,
                         "raw_stored_count": raw_stored_count,
                         "filtered_kept_count": filtered_kept_count,
-                        "last_error": "Warm-up fetched zero news items. Check the company ticker and rebuild warm-up.",
+                        "last_error": "No valid ticker available for company warm-up.",
                         "failed_stage": "fetching_raw",
                         "completed_at": datetime.now(timezone.utc),
                     },
                 )
-                logger.warning("Story warm-up failed: company=%s fetched zero raw news", company_name)
+                logger.warning("Company warm-up aborted: company=%s no valid ticker", company_name)
                 return
-
-        _upsert_story_warmup_state(
-            company_name,
-            provider_name=provider_name,
-            model=model,
-            prompt_style=prompt_style,
-            output_language=output_language,
-            updates={
-                "job_state": "analyzing",
-                "current_stage": "analyzing_stories",
-                "window_days": safe_warmup_days,
-                "slice_days": safe_slice_days,
-                "window_start_date": start_date,
-                "window_end_date": end_date,
-                "total_slices": len(slices),
-                "completed_slices": len(slices),
-                "last_completed_slice_end_date": end_date,
-                "analysis_started": True,
-                "analysis_completed": False,
-                "raw_fetched_count": fetched_total,
-                "raw_stored_count": raw_stored_count,
-                "filtered_kept_count": filtered_kept_count,
-                "retry_count": 0,
-                "last_error": "",
-                "failed_stage": "",
-            },
-        )
-        current_day = start_date
-        while current_day <= end_date:
-            generate_company_daily_report(
-                company_name,
-                target_date=current_day,
-                provider_name=provider_name,
-                model=model,
-                prompt_style=prompt_style,
-                output_language=output_language,
-            )
-            refresh_company_daily_clusters(
-                company_name,
-                target_date=current_day,
-                provider_name=provider_name,
-                model=model,
-                prompt_style=prompt_style,
-                output_language=output_language,
-            )
-            current_day += timedelta(days=1)
-        logger.info("Story warm-up analyze start: company=%s", company_name)
-        try:
-            analysis_result = _generate_company_story_warmup_story_map(
-                company_name,
-                start_date=start_date,
-                end_date=end_date,
-                provider_name=provider_name,
-                model=model,
-                prompt_style=prompt_style,
-                output_language=output_language,
-            )
-        except Exception as exc:
             _upsert_story_warmup_state(
                 company_name,
                 provider_name=provider_name,
@@ -6660,23 +6562,211 @@ def _run_company_story_warmup_job_inner(
                 prompt_style=prompt_style,
                 output_language=output_language,
                 updates={
-                    "job_state": "failed",
-                    "current_stage": "analyzing_stories",
+                    "job_state": "running",
+                    "current_stage": "fetching_raw",
                     "window_days": safe_warmup_days,
                     "slice_days": safe_slice_days,
                     "window_start_date": start_date,
                     "window_end_date": end_date,
-                    "total_slices": len(slices),
-                    "completed_slices": len(slices),
-                    "last_completed_slice_end_date": end_date,
+                    "total_slices": len(run_days),
+                    "completed_slices": completed_slices,
+                    "current_slice_start_date": current_day,
+                    "current_slice_end_date": current_day,
+                    "last_completed_slice_end_date": last_completed_slice_end,
+                    "raw_fetched_count": fetched_total,
+                    "raw_stored_count": raw_stored_count,
+                    "filtered_kept_count": filtered_kept_count,
+                    "retry_count": retries,
+                    "last_error": "",
+                    "failed_stage": "",
                     "analysis_started": True,
                     "analysis_completed": False,
-                    "last_error": str(exc),
-                    "failed_stage": "analyzing_stories",
                 },
             )
-            logger.exception("Story warm-up analyze failed: company=%s", company_name)
-            return
+            try:
+                for fetch_start, fetch_end in fetch_ranges:
+                    raw_items = finnhub_source.fetch_news(
+                        company_name=ticker,
+                        start_date=fetch_start.isoformat(),
+                        end_date=fetch_end.isoformat(),
+                    )
+                    fetched_total += len(raw_items)
+                    raw_articles = _news_items_from_provider(
+                        company_name,
+                        _tag_source(raw_items, "finnhub"),
+                        end_date=fetch_end,
+                        analyzed=False,
+                    )
+                    _store_articles(
+                        raw_articles,
+                        llm_model=model,
+                        output_language=output_language,
+                    )
+                    raw_stored_count += len(raw_articles)
+
+                kept_count = _filter_company_news_range_raw(
+                    company_name=company_name,
+                    start_date=current_day,
+                    end_date=current_day,
+                    provider=provider,
+                    llm_model=model,
+                )
+                filtered_kept_count += kept_count
+
+                _upsert_story_warmup_state(
+                    company_name,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                    updates={
+                        "job_state": "running",
+                        "current_stage": "building_reports",
+                        "window_days": safe_warmup_days,
+                        "slice_days": safe_slice_days,
+                        "window_start_date": start_date,
+                        "window_end_date": end_date,
+                        "total_slices": len(run_days),
+                        "completed_slices": completed_slices,
+                        "current_slice_start_date": current_day,
+                        "current_slice_end_date": current_day,
+                        "last_completed_slice_end_date": last_completed_slice_end,
+                        "raw_fetched_count": fetched_total,
+                        "raw_stored_count": raw_stored_count,
+                        "filtered_kept_count": filtered_kept_count,
+                        "retry_count": 0,
+                        "analysis_started": True,
+                        "analysis_completed": False,
+                    },
+                )
+
+                generate_company_daily_report(
+                    company_name,
+                    target_date=current_day,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                )
+                refresh_company_daily_clusters(
+                    company_name,
+                    target_date=current_day,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                )
+                if current_day.weekday() == 4:
+                    generate_weekly_report(
+                        company_name,
+                        start_date=current_day - timedelta(days=6),
+                        end_date=current_day,
+                        output_language=output_language,
+                        provider_name=provider_name,
+                        model=model,
+                    )
+
+                completed_slices += 1
+                last_completed_slice_end = current_day
+                _upsert_story_warmup_state(
+                    company_name,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                    updates={
+                        "job_state": "running",
+                        "current_stage": "building_reports",
+                        "window_days": safe_warmup_days,
+                        "slice_days": safe_slice_days,
+                        "window_start_date": start_date,
+                        "window_end_date": end_date,
+                        "total_slices": len(run_days),
+                        "completed_slices": completed_slices,
+                        "current_slice_start_date": None,
+                        "current_slice_end_date": None,
+                        "last_completed_slice_end_date": last_completed_slice_end,
+                        "raw_fetched_count": fetched_total,
+                        "raw_stored_count": raw_stored_count,
+                        "filtered_kept_count": filtered_kept_count,
+                        "retry_count": 0,
+                        "analysis_started": True,
+                        "analysis_completed": False,
+                    },
+                )
+                break
+            except Exception as exc:
+                retries += 1
+                is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower()
+                _upsert_story_warmup_state(
+                    company_name,
+                    provider_name=provider_name,
+                    model=model,
+                    prompt_style=prompt_style,
+                    output_language=output_language,
+                    updates={
+                        "job_state": "partial" if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES else "running",
+                        "current_stage": "fetching_raw",
+                        "window_days": safe_warmup_days,
+                        "slice_days": safe_slice_days,
+                        "window_start_date": start_date,
+                        "window_end_date": end_date,
+                        "total_slices": len(run_days),
+                        "completed_slices": completed_slices,
+                        "current_slice_start_date": current_day,
+                        "current_slice_end_date": current_day,
+                        "last_completed_slice_end_date": last_completed_slice_end,
+                        "raw_fetched_count": fetched_total,
+                        "raw_stored_count": raw_stored_count,
+                        "filtered_kept_count": filtered_kept_count,
+                        "retry_count": retries,
+                        "last_retry_at": datetime.now(timezone.utc),
+                        "last_error": str(exc),
+                        "failed_stage": "fetching_raw",
+                        "analysis_started": True,
+                        "analysis_completed": False,
+                    },
+                )
+                if retries >= DEFAULT_STORY_WARMUP_MAX_RETRIES:
+                    if is_rate_limit:
+                        _upsert_story_warmup_state(
+                            company_name,
+                            provider_name=provider_name,
+                            model=model,
+                            prompt_style=prompt_style,
+                            output_language=output_language,
+                            updates={
+                                "job_state": "failed",
+                                "current_stage": "fetching_raw",
+                                "window_days": safe_warmup_days,
+                                "slice_days": safe_slice_days,
+                                "window_start_date": start_date,
+                                "window_end_date": end_date,
+                                "total_slices": len(run_days),
+                                "completed_slices": completed_slices,
+                                "current_slice_start_date": current_day,
+                                "current_slice_end_date": current_day,
+                                "last_completed_slice_end_date": last_completed_slice_end,
+                                "raw_fetched_count": fetched_total,
+                                "raw_stored_count": raw_stored_count,
+                                "filtered_kept_count": filtered_kept_count,
+                                "retry_count": retries,
+                                "last_retry_at": datetime.now(timezone.utc),
+                                "last_error": f"Warm-up stopped after repeated rate limiting: {exc}",
+                                "failed_stage": "fetching_raw",
+                                "analysis_started": True,
+                                "analysis_completed": False,
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                        return
+                    raise
+                if is_rate_limit:
+                    pytime.sleep(DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC)
+                    continue
+                raise
+
+    if _count_company_raw_for_range(company_name, start_date, end_date) <= 0:
         _upsert_story_warmup_state(
             company_name,
             provider_name=provider_name,
@@ -6684,35 +6774,60 @@ def _run_company_story_warmup_job_inner(
             prompt_style=prompt_style,
             output_language=output_language,
             updates={
-                "job_state": "completed",
-                "current_stage": "done",
+                "job_state": "failed",
+                "current_stage": "fetching_raw",
                 "window_days": safe_warmup_days,
                 "slice_days": safe_slice_days,
                 "window_start_date": start_date,
                 "window_end_date": end_date,
-                "total_slices": len(slices),
-                "completed_slices": len(slices),
+                "total_slices": len(run_days),
+                "completed_slices": completed_slices,
                 "current_slice_start_date": None,
                 "current_slice_end_date": None,
-                "last_completed_slice_end_date": end_date,
+                "last_completed_slice_end_date": last_completed_slice_end,
                 "analysis_started": True,
-                "analysis_completed": True,
-                "raw_fetched_count": int(analysis_result.get("raw_fetched_count", fetched_total)),
-                "raw_stored_count": int(analysis_result.get("raw_stored_count", raw_stored_count)),
-                "filtered_kept_count": int(analysis_result.get("filtered_kept_count", filtered_kept_count)),
-                "ongoing_story_count": int(analysis_result.get("ongoing_story_count", 0)),
-                "finished_story_count": int(analysis_result.get("finished_story_count", 0)),
-                "last_error": "",
-                "failed_stage": "",
+                "analysis_completed": False,
+                "raw_fetched_count": fetched_total,
+                "raw_stored_count": raw_stored_count,
+                "filtered_kept_count": filtered_kept_count,
+                "last_error": "Warm-up fetched zero news items. Check the company ticker and rebuild warm-up.",
+                "failed_stage": "fetching_raw",
                 "completed_at": datetime.now(timezone.utc),
             },
         )
-        logger.info(
-            "Story warm-up analyze end: company=%s ongoing=%d finished=%d",
-            company_name,
-            int(analysis_result.get("ongoing_story_count", 0)),
-            int(analysis_result.get("finished_story_count", 0)),
-        )
+        logger.warning("Company warm-up failed: company=%s fetched zero raw news", company_name)
+        return
+
+    _upsert_story_warmup_state(
+        company_name,
+        provider_name=provider_name,
+        model=model,
+        prompt_style=prompt_style,
+        output_language=output_language,
+        updates={
+            "job_state": "completed",
+            "current_stage": "done",
+            "window_days": safe_warmup_days,
+            "slice_days": safe_slice_days,
+            "window_start_date": start_date,
+            "window_end_date": end_date,
+            "total_slices": len(run_days),
+            "completed_slices": len(run_days),
+            "current_slice_start_date": None,
+            "current_slice_end_date": None,
+            "last_completed_slice_end_date": end_date,
+            "analysis_started": True,
+            "analysis_completed": True,
+            "raw_fetched_count": fetched_total,
+            "raw_stored_count": raw_stored_count,
+            "filtered_kept_count": filtered_kept_count,
+            "ongoing_story_count": 0,
+            "finished_story_count": 0,
+            "last_error": "",
+            "failed_stage": "",
+            "completed_at": datetime.now(timezone.utc),
+        },
+    )
 
 
 def _extract_profile_extension(profile: Dict[str, Any]) -> Dict[str, Any]:
