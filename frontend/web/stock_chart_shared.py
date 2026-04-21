@@ -153,6 +153,10 @@ def render_shared_stock_chart_assets() -> str:
                     return payload;
                 }}
 
+                function sleep(ms) {{
+                    return new Promise((resolve) => window.setTimeout(resolve, ms));
+                }}
+
                 class StockChartController {{
                     constructor(options) {{
                         this.companyName = String((options && options.companyName) || "");
@@ -162,6 +166,8 @@ def render_shared_stock_chart_assets() -> str:
                         this.onLoaded = options && typeof options.onLoaded === "function" ? options.onLoaded : null;
                         this.onError = options && typeof options.onError === "function" ? options.onError : null;
                         this.onRangeChange = options && typeof options.onRangeChange === "function" ? options.onRangeChange : null;
+                        this.retryCount = Number.isFinite(Number(options && options.retryCount)) ? Math.max(0, Number(options.retryCount)) : 0;
+                        this.retryDelayMs = Number.isFinite(Number(options && options.retryDelayMs)) ? Math.max(0, Number(options.retryDelayMs)) : 600;
                         this.activeRange = normalizeRangeKey(options && options.initialRange);
                         this.chart = null;
                         this.latestSeries = [];
@@ -198,34 +204,45 @@ def render_shared_stock_chart_assets() -> str:
                         if (this.statusEl) {{
                             this.statusEl.textContent = `Loading ${{this.activeRange}} series...`;
                         }}
-                        try {{
-                            const payload = await fetchSeries(this.companyName, this.activeRange);
-                            const points = Array.isArray(payload.points) ? payload.points : [];
-                            this.latestPayload = payload;
-                            this.latestSeries = points;
-                            if (this.statusEl) {{
-                                this.statusEl.textContent = formatStatus(payload, points, this.activeRange);
+                        let lastError = null;
+                        for (let attempt = 0; attempt <= this.retryCount; attempt += 1) {{
+                            try {{
+                                const payload = await fetchSeries(this.companyName, this.activeRange);
+                                const points = Array.isArray(payload.points) ? payload.points : [];
+                                this.latestPayload = payload;
+                                this.latestSeries = points;
+                                if (this.statusEl) {{
+                                    this.statusEl.textContent = formatStatus(payload, points, this.activeRange);
+                                }}
+                                this.chart = renderChart(this.chartEl, this.chart, points);
+                                if (this.onLoaded) {{
+                                    this.onLoaded(payload, points);
+                                }}
+                                return payload;
+                            }} catch (error) {{
+                                lastError = error;
+                                if (attempt < this.retryCount) {{
+                                    if (this.statusEl) {{
+                                        this.statusEl.textContent = `Retrying ${{this.activeRange}} series...`;
+                                    }}
+                                    await sleep(this.retryDelayMs);
+                                    continue;
+                                }}
                             }}
-                            this.chart = renderChart(this.chartEl, this.chart, points);
-                            if (this.onLoaded) {{
-                                this.onLoaded(payload, points);
-                            }}
-                            return payload;
-                        }} catch (error) {{
-                            if (this.statusEl) {{
-                                this.statusEl.textContent = error && error.message ? error.message : "Failed to load stock series.";
-                            }}
-                            this.latestPayload = null;
-                            this.latestSeries = [];
-                            if (this.chart) {{
-                                this.chart.destroy();
-                                this.chart = null;
-                            }}
-                            if (this.onError) {{
-                                this.onError(error);
-                            }}
-                            throw error;
                         }}
+                        if (this.statusEl) {{
+                            this.statusEl.textContent = lastError && lastError.message ? lastError.message : "Failed to load stock series.";
+                        }}
+                        this.latestPayload = null;
+                        this.latestSeries = [];
+                        if (this.chart) {{
+                            this.chart.destroy();
+                            this.chart = null;
+                        }}
+                        if (this.onError) {{
+                            this.onError(lastError);
+                        }}
+                        throw lastError || new Error("Failed to load stock series.");
                     }}
 
                     async setRange(nextRange, options) {{

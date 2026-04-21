@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import json
 import os
@@ -118,6 +119,9 @@ from market_agent.app.background_jobs import (
     run_job_async,
 )
 from market_agent.analysis import analyze_single_stock_sections
+
+
+logger = logging.getLogger("uvicorn.error")
 from market_agent.llms.news.registry import list_news_models
 from market_agent.llms.openai import chat_completion
 from market_agent.llms.registry import get_provider, list_models
@@ -3768,7 +3772,14 @@ def _fetch_yahoo_price_history_by_range(symbol: str, *, range_key: str) -> List[
         try:
             with urllib.request.urlopen(req, timeout=20) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Yahoo price fetch failed: symbol=%s range=%s host=%s error=%s",
+                symbol,
+                range_key,
+                host,
+                exc,
+            )
             continue
         points = _parse_yahoo_chart_payload(payload, intraday=(interval != "1d"))
         if points:
@@ -3824,66 +3835,75 @@ def _parse_yahoo_chart_payload(payload: Dict[str, Any], *, intraday: bool) -> Li
 
 def _fetch_price_points_for_range(symbol: str, range_key: str) -> List[Dict[str, Any]]:
     normalized = _normalize_price_range_key(range_key)
-    points = _fetch_yahoo_price_history_by_range(symbol, range_key=normalized)
-    if points:
-        points = _trim_points_for_range(points, normalized)
-        points = _attach_pct_change(points)
-        return points
-    # Stooq fallback (daily bars, no API key) when Yahoo is unavailable/rate-limited.
-    stooq_daily = _fetch_stooq_daily_price_history(symbol)
-    if stooq_daily:
-        if normalized == "1D":
-            stooq_daily = stooq_daily[-2:]
-        elif normalized == "5D":
-            stooq_daily = stooq_daily[-5:]
-        elif normalized == "1M":
-            stooq_daily = stooq_daily[-31:]
-        elif normalized == "3M":
-            stooq_daily = stooq_daily[-93:]
-        elif normalized == "6M":
-            stooq_daily = stooq_daily[-186:]
-        elif normalized == "8M":
-            stooq_daily = stooq_daily[-248:]
-        elif normalized == "1Y":
-            stooq_daily = stooq_daily[-366:]
-        elif normalized == "2Y":
-            stooq_daily = stooq_daily[-(366 * 2):]
-        elif normalized == "3Y":
-            stooq_daily = stooq_daily[-(366 * 3):]
-        elif normalized == "5Y":
-            stooq_daily = stooq_daily[-(366 * 5):]
-        points = _attach_pct_change(stooq_daily)
+    for attempt in range(2):
+        points = _fetch_yahoo_price_history_by_range(symbol, range_key=normalized)
         if points:
+            points = _trim_points_for_range(points, normalized)
+            points = _attach_pct_change(points)
             return points
-    # Finnhub fallback for daily windows only.
-    if normalized in {"1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"}:
-        api_key = os.getenv("FINNHUB_API_KEY", "").strip()
-        if api_key:
-            if normalized in {"1M", "3M", "6M", "8M", "1Y"}:
-                years = 1
-            elif normalized in {"2Y"}:
-                years = 2
-            elif normalized in {"3Y"}:
-                years = 3
-            else:
-                years = 5
-            history = _fetch_finnhub_daily_price_history(symbol, years=years, api_key=api_key)
-            if normalized == "1M":
-                history = history[-31:]
+        # Stooq fallback (daily bars, no API key) when Yahoo is unavailable/rate-limited.
+        stooq_daily = _fetch_stooq_daily_price_history(symbol)
+        if stooq_daily:
+            if normalized == "1D":
+                stooq_daily = stooq_daily[-2:]
+            elif normalized == "5D":
+                stooq_daily = stooq_daily[-5:]
+            elif normalized == "1M":
+                stooq_daily = stooq_daily[-31:]
             elif normalized == "3M":
-                history = history[-93:]
+                stooq_daily = stooq_daily[-93:]
             elif normalized == "6M":
-                history = history[-186:]
+                stooq_daily = stooq_daily[-186:]
             elif normalized == "8M":
-                history = history[-248:]
+                stooq_daily = stooq_daily[-248:]
             elif normalized == "1Y":
-                history = history[-366:]
+                stooq_daily = stooq_daily[-366:]
             elif normalized == "2Y":
-                history = history[-(366 * 2):]
+                stooq_daily = stooq_daily[-(366 * 2):]
             elif normalized == "3Y":
-                history = history[-(366 * 3):]
-            points = _attach_pct_change(history)
-            return points
+                stooq_daily = stooq_daily[-(366 * 3):]
+            elif normalized == "5Y":
+                stooq_daily = stooq_daily[-(366 * 5):]
+            points = _attach_pct_change(stooq_daily)
+            if points:
+                return points
+        # Finnhub fallback for daily windows only.
+        if normalized in {"1M", "3M", "6M", "8M", "1Y", "2Y", "3Y", "5Y"}:
+            api_key = os.getenv("FINNHUB_API_KEY", "").strip()
+            if api_key:
+                if normalized in {"1M", "3M", "6M", "8M", "1Y"}:
+                    years = 1
+                elif normalized in {"2Y"}:
+                    years = 2
+                elif normalized in {"3Y"}:
+                    years = 3
+                else:
+                    years = 5
+                history = _fetch_finnhub_daily_price_history(symbol, years=years, api_key=api_key)
+                if normalized == "1M":
+                    history = history[-31:]
+                elif normalized == "3M":
+                    history = history[-93:]
+                elif normalized == "6M":
+                    history = history[-186:]
+                elif normalized == "8M":
+                    history = history[-248:]
+                elif normalized == "1Y":
+                    history = history[-366:]
+                elif normalized == "2Y":
+                    history = history[-(366 * 2):]
+                elif normalized == "3Y":
+                    history = history[-(366 * 3):]
+                points = _attach_pct_change(history)
+                if points:
+                    return points
+        if attempt == 0:
+            logger.warning(
+                "Company price fetch returned no points on first attempt: symbol=%s range=%s; retrying",
+                symbol,
+                normalized,
+            )
+            pytime.sleep(0.6)
     return []
 
 
@@ -4223,7 +4243,8 @@ def _fetch_stooq_daily_price_history(symbol: str) -> List[Dict[str, Any]]:
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
             csv_text = response.read().decode("utf-8", errors="ignore")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Stooq price fetch failed: symbol=%s error=%s", symbol, exc)
         return []
     rows = [line.strip() for line in csv_text.splitlines() if line.strip()]
     if len(rows) <= 1:

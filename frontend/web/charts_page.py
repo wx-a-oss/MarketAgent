@@ -274,6 +274,7 @@ def render_charts_page() -> str:
                     let orderedCompanies = [];
                     let activeDragCompany = "";
                     let modalController = null;
+                    const INITIAL_CHART_LOAD_CONCURRENCY = 2;
 
                     function escapeHtml(value) {{
                         return String(value || "")
@@ -337,6 +338,8 @@ def render_charts_page() -> str:
                             statusEl: modalStatusEl,
                             chartEl: modalCanvasEl,
                             initialRange: company.currentRange || window.MarketAgentStockChart.DEFAULT_RANGE,
+                            retryCount: 2,
+                            retryDelayMs: 800,
                             onRangeChange(rangeKey) {{
                                 company.currentRange = rangeKey;
                                 if (company.controller && company.controller.activeRange !== rangeKey) {{
@@ -408,6 +411,8 @@ def render_charts_page() -> str:
                             statusEl,
                             chartEl,
                             initialRange: company.currentRange || window.MarketAgentStockChart.DEFAULT_RANGE,
+                            retryCount: 2,
+                            retryDelayMs: 800,
                             onRangeChange(rangeKey) {{
                                 company.currentRange = rangeKey;
                                 if (
@@ -420,7 +425,6 @@ def render_charts_page() -> str:
                                 }}
                             }},
                         }});
-                        company.controller.load().catch(() => {{}});
                         if (expandBtn) {{
                             expandBtn.addEventListener("click", () => openModal(company));
                         }}
@@ -486,6 +490,14 @@ def render_charts_page() -> str:
                         }});
                     }}
 
+                    async function loadChartsInBatches() {{
+                        const pending = orderedCompanies.filter((company) => company && company.ticker && company.controller);
+                        for (let index = 0; index < pending.length; index += INITIAL_CHART_LOAD_CONCURRENCY) {{
+                            const batch = pending.slice(index, index + INITIAL_CHART_LOAD_CONCURRENCY);
+                            await Promise.all(batch.map((company) => company.controller.load().catch(() => null)));
+                        }}
+                    }}
+
                     async function init() {{
                         try {{
                             const payload = await fetchLayout();
@@ -498,6 +510,7 @@ def render_charts_page() -> str:
                                 }}))
                                 : [];
                             renderGrid();
+                            await loadChartsInBatches();
                         }} catch (error) {{
                             renderEmptyState(true);
                             if (metaEl) {{
