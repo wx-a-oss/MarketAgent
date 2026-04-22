@@ -30,7 +30,8 @@ sudo cp deploy/systemd/marketagent-worker.timer /etc/systemd/system/marketagent-
 sudo systemctl daemon-reload
 
 sudo systemctl restart marketagent-web.service
-sudo systemctl restart marketagent-worker.service || true
+# Do not run the one-shot worker during deploy. It can take long enough to
+# block the SSH action and fail an otherwise healthy release.
 sudo systemctl restart marketagent-worker.timer
 
 for _ in $(seq 1 30); do
