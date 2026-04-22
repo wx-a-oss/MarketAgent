@@ -659,6 +659,7 @@ def render_market_page(
                     let dailyNewsJobStop = null;
                     let marketStoriesJobStop = null;
                     let macroJobStop = null;
+                    let pricesAnalysisJobStop = null;
                     let reportDateSet = new Set();
                     const datePickers = [];
 
@@ -955,7 +956,7 @@ def render_market_page(
                         const selectedProvider = getSelectedPricesAnalysisProvider();
                         const endpoint = refresh
                             ? `/api/market/prices/analysis/generate?date=${{encodeURIComponent(selectedDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedProvider)}}&model=${{encodeURIComponent(selectedModel)}}`
-                            : `/api/market/prices/analysis?date=${{encodeURIComponent(selectedDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedProvider)}}`;
+                            : `/api/market/prices/analysis?date=${{encodeURIComponent(selectedDate)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&provider=${{encodeURIComponent(selectedProvider)}}&model=${{encodeURIComponent(selectedModel)}}`;
                         const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
                         const payload = await response.json();
                         if (!response.ok || payload.error) {{
@@ -963,13 +964,54 @@ def render_market_page(
                             renderPricesAnalysis(null);
                             return;
                         }}
+                        const job = payload.job || null;
+                        const running = job && ["queued", "running"].includes(String(job.status || ""));
+                        if (refreshPricesAnalysisBtn) {{
+                            refreshPricesAnalysisBtn.disabled = Boolean(running);
+                            refreshPricesAnalysisBtn.textContent = running ? "Generating..." : "Generate Analysis";
+                        }}
+                        if (running) {{
+                            if (pricesAnalysisStatusEl) {{
+                                pricesAnalysisStatusEl.textContent = formatJobText(job) || "Generating prices analysis...";
+                            }}
+                            if (pricesAnalysisJobStop) pricesAnalysisJobStop();
+                            pricesAnalysisJobStop = pollJob(job.job_id, (nextJob) => {{
+                                const nextRunning = nextJob && ["queued", "running"].includes(String(nextJob.status || ""));
+                                if (pricesAnalysisStatusEl) {{
+                                    pricesAnalysisStatusEl.textContent = formatJobText(nextJob) || "Generating prices analysis...";
+                                }}
+                                if (refreshPricesAnalysisBtn) {{
+                                    refreshPricesAnalysisBtn.disabled = Boolean(nextRunning);
+                                    refreshPricesAnalysisBtn.textContent = nextRunning ? "Generating..." : "Generate Analysis";
+                                }}
+                            }}, async () => {{
+                                if (refreshPricesAnalysisBtn) {{
+                                    refreshPricesAnalysisBtn.disabled = false;
+                                    refreshPricesAnalysisBtn.textContent = "Generate Analysis";
+                                }}
+                                await loadPricesAnalysis(false);
+                            }});
+                            renderPricesAnalysis(payload.analysis || null);
+                            return;
+                        }} else if (pricesAnalysisJobStop) {{
+                            pricesAnalysisJobStop();
+                            pricesAnalysisJobStop = null;
+                        }}
                         if (!refresh && !payload.analysis) {{
-                            await loadPricesAnalysis(true);
+                            renderPricesAnalysis(null);
+                            if (pricesAnalysisStatusEl) {{
+                                const terminalStatus = job && !["queued", "running", "completed"].includes(String(job.status || ""))
+                                    ? formatJobText(job)
+                                    : "";
+                                pricesAnalysisStatusEl.textContent = terminalStatus || "No stored prices analysis.";
+                            }}
                             return;
                         }}
                         renderPricesAnalysis(payload.analysis || null);
                         if (pricesAnalysisStatusEl) {{
-                            pricesAnalysisStatusEl.textContent = payload.analysis
+                            pricesAnalysisStatusEl.textContent = running
+                                ? (formatJobText(job) || "Generating prices analysis...")
+                                : payload.analysis
                                 ? `stored for ${{payload.analysis.analysis_date}}`
                                 : "No stored prices analysis.";
                         }}

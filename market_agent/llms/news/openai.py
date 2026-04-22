@@ -428,7 +428,7 @@ def generate_text_with_web_search(
 ) -> str:
     if OpenAI is None:
         raise RuntimeError("openai package is required for web_search tool usage.")
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    client = OpenAI(api_key=api_key, timeout=timeout_sec, max_retries=0)
     response = client.responses.create(
         model=model,
         input=prompt,
@@ -447,7 +447,7 @@ def _fetch_news_with_web_search(
 ) -> List[Dict[str, Any]]:
     if OpenAI is None:
         raise RuntimeError("openai package is required for web_search tool usage.")
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, max_retries=0)
     prompt = _build_web_search_prompt(company_name, start_date, end_date)
     logger.info(
         "OpenAI web_search fetch start: company=%s range=%s..%s",

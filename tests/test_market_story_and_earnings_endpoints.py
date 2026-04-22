@@ -689,6 +689,7 @@ def test_calendar_route_removed() -> None:
 
 
 def test_market_prices_analysis_get_endpoint_returns_saved_analysis(monkeypatch) -> None:
+    monkeypatch.setattr("frontend.web.server.find_latest_job", lambda **kwargs: None)
     monkeypatch.setattr(
         "frontend.web.server._get_market_price_analysis",
         lambda **kwargs: {
@@ -716,7 +717,7 @@ def test_market_prices_analysis_get_endpoint_returns_saved_analysis(monkeypatch)
 
 def test_market_prices_analysis_generate_endpoint_returns_generated_analysis(monkeypatch) -> None:
     monkeypatch.setattr(
-        "frontend.web.server._generate_market_prices_analysis",
+        "frontend.web.server._get_market_price_analysis",
         lambda **kwargs: {
             "id": 4,
             "analysis_date": "2026-03-12",
@@ -732,12 +733,21 @@ def test_market_prices_analysis_generate_endpoint_returns_generated_analysis(mon
             "updated_at": "2026-03-12 11:00:00",
         },
     )
+    monkeypatch.setattr(
+        "frontend.web.server._start_background_job",
+        lambda **kwargs: {
+            "mode": "started",
+            "job": {"job_id": 15, "status": "running", "current_stage": "generating_analysis"},
+        },
+    )
     client = TestClient(app)
     response = client.post("/api/market/prices/analysis/generate", params={"date": "2026-03-12"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["analysis"]["model"] == "gpt-5.4"
     assert payload["analysis"]["output_json"]["section_notes"][0]["section_key"] == "commodities"
+    assert payload["job"]["job_id"] == 15
+    assert payload["job"]["status"] == "running"
 
 
 def test_company_monthly_report_get_endpoint_returns_saved_report(monkeypatch) -> None:

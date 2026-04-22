@@ -6517,6 +6517,7 @@ def _run_company_story_warmup_job_inner(
             continue
         retries = 0
         while True:
+            current_operation = "fetching_raw"
             fetch_ranges = _build_fetch_ranges_for_slice(
                 company_name,
                 slice_start=current_day,
@@ -6584,6 +6585,7 @@ def _run_company_story_warmup_job_inner(
                 },
             )
             try:
+                current_operation = "fetching_raw"
                 for fetch_start, fetch_end in fetch_ranges:
                     raw_items = finnhub_source.fetch_news(
                         company_name=ticker,
@@ -6604,6 +6606,7 @@ def _run_company_story_warmup_job_inner(
                     )
                     raw_stored_count += len(raw_articles)
 
+                current_operation = "filtering_news"
                 kept_count = _filter_company_news_range_raw(
                     company_name=company_name,
                     start_date=current_day,
@@ -6640,6 +6643,7 @@ def _run_company_story_warmup_job_inner(
                     },
                 )
 
+                current_operation = "generating_daily_report"
                 generate_company_daily_report(
                     company_name,
                     target_date=current_day,
@@ -6648,6 +6652,7 @@ def _run_company_story_warmup_job_inner(
                     prompt_style=prompt_style,
                     output_language=output_language,
                 )
+                current_operation = "refreshing_daily_clusters"
                 refresh_company_daily_clusters(
                     company_name,
                     target_date=current_day,
@@ -6657,6 +6662,7 @@ def _run_company_story_warmup_job_inner(
                     output_language=output_language,
                 )
                 if current_day.weekday() == 4:
+                    current_operation = "generating_weekly_report"
                     generate_weekly_report(
                         company_name,
                         start_date=current_day - timedelta(days=6),
@@ -6696,6 +6702,43 @@ def _run_company_story_warmup_job_inner(
                 )
                 break
             except Exception as exc:
+                if current_operation != "fetching_raw":
+                    _upsert_story_warmup_state(
+                        company_name,
+                        provider_name=provider_name,
+                        model=model,
+                        prompt_style=prompt_style,
+                        output_language=output_language,
+                        updates={
+                            "job_state": "failed",
+                            "current_stage": current_operation,
+                            "window_days": safe_warmup_days,
+                            "slice_days": safe_slice_days,
+                            "window_start_date": start_date,
+                            "window_end_date": end_date,
+                            "total_slices": len(run_days),
+                            "completed_slices": completed_slices,
+                            "current_slice_start_date": current_day,
+                            "current_slice_end_date": current_day,
+                            "last_completed_slice_end_date": last_completed_slice_end,
+                            "raw_fetched_count": fetched_total,
+                            "raw_stored_count": raw_stored_count,
+                            "filtered_kept_count": filtered_kept_count,
+                            "retry_count": 0,
+                            "last_error": str(exc),
+                            "failed_stage": current_operation,
+                            "analysis_started": True,
+                            "analysis_completed": False,
+                            "completed_at": datetime.now(timezone.utc),
+                        },
+                    )
+                    logger.exception(
+                        "Company warm-up stopped without retry after paid/analysis stage failed: company=%s day=%s stage=%s",
+                        company_name,
+                        current_day.isoformat(),
+                        current_operation,
+                    )
+                    return
                 retries += 1
                 is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower()
                 _upsert_story_warmup_state(

@@ -449,6 +449,47 @@ def _run_market_macro_refresh_job(
     }
 
 
+def _run_market_prices_analysis_job(
+    tracker: JobTracker,
+    *,
+    target_date: date,
+    provider_name: str,
+    model: str,
+    output_language: str,
+) -> Dict[str, Any]:
+    tracker.mark_running(
+        "generating_analysis",
+        metrics={
+            "target_date": target_date.isoformat(),
+            "provider": provider_name,
+            "model": model,
+        },
+    )
+    analysis = _generate_market_prices_analysis(
+        target_date=target_date,
+        provider_name=provider_name,
+        model=model,
+        output_language=output_language,
+        prompt_style="prices_v1",
+    )
+    output_json = analysis.get("output_json") if isinstance(analysis.get("output_json"), dict) else {}
+    section_notes = output_json.get("section_notes") if isinstance(output_json.get("section_notes"), list) else []
+    return {
+        "result_summary": f"Market prices analysis generated for {target_date.isoformat()}",
+        "metrics": {
+            "target_date": target_date.isoformat(),
+            "provider": provider_name,
+            "model": model,
+        },
+        "counts": {
+            "updated": 1,
+            "section_note_count": len(section_notes),
+        },
+        "input_char_count": len(str(analysis.get("input_payload") or "")),
+        "output_char_count": len(str(analysis.get("output_text") or "")),
+    }
+
+
 def _run_company_story_update_job(
     tracker: JobTracker,
     *,
@@ -1642,18 +1683,27 @@ async def get_market_prices_analysis_api(
     date: Optional[str] = Query(None),
     output_language: str = Query("zh-CN"),
     provider: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     try:
         target_date = datetime.fromisoformat(date).date() if date else datetime.now().date()
     except ValueError:
         return {"error": "date must be YYYY-MM-DD"}
+    provider_name = provider or "openai"
     analysis = _get_market_price_analysis(
         analysis_date=target_date,
-        provider=provider or "openai",
+        provider=provider_name,
         prompt_style="prices_v1",
         output_language=output_language,
     )
-    return {"date": target_date.isoformat(), "analysis": analysis}
+    model_name = model or DEFAULT_MARKET_OPENAI_MODEL
+    job = _safe_job(
+        find_latest_job(
+            job_key=_job_key("market_prices_analysis", target_date.isoformat(), provider_name, output_language, model_name),
+            include_finished=True,
+        )
+    )
+    return {"date": target_date.isoformat(), "analysis": analysis, "job": job}
 
 
 @app.post("/api/market/prices/analysis/generate")
@@ -1669,14 +1719,29 @@ async def generate_market_prices_analysis_api(
         return {"error": "date must be YYYY-MM-DD"}
     provider_name = provider or "openai"
     model_name = model or DEFAULT_MARKET_OPENAI_MODEL
-    analysis = _generate_market_prices_analysis(
-        target_date=target_date,
-        provider_name=provider_name,
+    analysis = _get_market_price_analysis(
+        analysis_date=target_date,
+        provider=provider_name,
+        prompt_style="prices_v1",
+        output_language=output_language,
+    )
+    started = _start_background_job(
+        job_type="market_prices_analysis_generate",
+        job_key=_job_key("market_prices_analysis", target_date.isoformat(), provider_name, output_language, model_name),
+        provider=provider_name,
         model=model_name,
         output_language=output_language,
         prompt_style="prices_v1",
+        target_date=target_date,
+        worker=lambda tracker: _run_market_prices_analysis_job(
+            tracker,
+            target_date=target_date,
+            provider_name=provider_name,
+            model=model_name,
+            output_language=output_language,
+        ),
     )
-    return {"date": target_date.isoformat(), "analysis": analysis}
+    return {"date": target_date.isoformat(), "analysis": analysis, **started}
 
 
 @app.post("/api/companies")
