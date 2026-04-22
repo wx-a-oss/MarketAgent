@@ -11,6 +11,11 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
+sudo systemctl stop marketagent-worker.timer || true
+# Fast-iteration mode: cancel any in-flight worker job so deploy is never
+# blocked by scheduled or manually triggered background work.
+sudo systemctl stop marketagent-worker.service || true
+
 source "${CONDA_DIR}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 pip install -e .
@@ -30,8 +35,6 @@ sudo cp deploy/systemd/marketagent-worker.timer /etc/systemd/system/marketagent-
 sudo systemctl daemon-reload
 
 sudo systemctl restart marketagent-web.service
-# Do not run the one-shot worker during deploy. It can take long enough to
-# block the SSH action and fail an otherwise healthy release.
 sudo systemctl restart marketagent-worker.timer
 
 for _ in $(seq 1 30); do
