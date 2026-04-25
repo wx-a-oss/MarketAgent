@@ -385,15 +385,27 @@ def render_market_page(
                     }}
                     .macro-calendar-wrap {{
                         display: grid;
+                        grid-template-columns: minmax(520px, 1fr) minmax(320px, 400px);
+                        gap: 1.25rem;
+                        align-items: start;
+                    }}
+                    .macro-calendar-main {{
+                        display: grid;
                         gap: 1rem;
+                    }}
+                    .macro-month-card {{
+                        border: 1px solid #e2e8f0;
+                        border-radius: 0.75rem;
+                        background: #fff;
+                        padding: 0.85rem;
                     }}
                     .macro-month-grid {{
                         display: grid;
                         grid-template-columns: repeat(7, minmax(0, 1fr));
-                        gap: 0.4rem;
+                        gap: 0.35rem;
                     }}
                     .macro-month-title {{
-                        margin: 0 0 0.45rem;
+                        margin: 0 0 0.65rem;
                         font-size: 1rem;
                         font-weight: 700;
                         color: #0f172a;
@@ -403,18 +415,20 @@ def render_market_page(
                         color: #64748b;
                         text-transform: uppercase;
                         letter-spacing: 0.04em;
-                        padding: 0.12rem 0.2rem;
+                        padding: 0.1rem 0.2rem;
+                        text-align: center;
                     }}
                     .macro-day-cell {{
-                        min-height: 102px;
+                        min-height: 74px;
                         border: 1px solid #e5e7eb;
-                        border-radius: 0.65rem;
-                        padding: 0.45rem;
+                        border-radius: 0.55rem;
+                        padding: 0.42rem;
                         background: #fff;
                         display: flex;
                         flex-direction: column;
-                        gap: 0.28rem;
+                        gap: 0.3rem;
                         cursor: pointer;
+                        min-width: 0;
                     }}
                     .macro-day-cell.empty {{
                         background: transparent;
@@ -436,39 +450,44 @@ def render_market_page(
                         color: #0f172a;
                     }}
                     .macro-day-events {{
-                        display: grid;
-                        gap: 0.18rem;
+                        display: flex;
+                        align-items: center;
+                        flex-wrap: wrap;
+                        gap: 0.22rem;
                     }}
                     .macro-pill {{
-                        font-size: 0.68rem;
-                        line-height: 1.2;
-                        padding: 0.14rem 0.32rem;
+                        font-size: 0.62rem;
+                        line-height: 1;
+                        padding: 0.2rem 0.28rem;
                         border-radius: 999px;
                         background: #e2e8f0;
                         color: #334155;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                        white-space: nowrap;
+                        max-width: 100%;
                     }}
                     .macro-overflow {{
-                        font-size: 0.68rem;
-                        color: #64748b;
+                        font-size: 0.62rem;
+                        color: #0f766e;
+                        font-weight: 700;
                     }}
                     .macro-detail-card {{
                         border: 1px solid #dbeafe;
                         background: #f8fbff;
                         border-radius: 0.8rem;
                         padding: 0.8rem 0.9rem;
+                        position: sticky;
+                        top: 1rem;
+                        align-self: start;
                     }}
                     .macro-detail-date {{
-                        font-size: 0.88rem;
+                        font-size: 0.95rem;
+                        font-weight: 700;
                         color: #475569;
-                        margin-bottom: 0.55rem;
+                        margin-bottom: 0.65rem;
                     }}
                     .macro-detail-item {{
                         border-top: 1px solid #e2e8f0;
-                        padding: 0.55rem 0 0;
-                        margin-top: 0.55rem;
+                        padding: 0.75rem 0 0;
+                        margin-top: 0.75rem;
                     }}
                     .macro-detail-item:first-child {{
                         border-top: none;
@@ -476,20 +495,16 @@ def render_market_page(
                         padding-top: 0;
                     }}
                     .macro-detail-item h3 {{
-                        margin: 0 0 0.22rem;
+                        margin: 0 0 0.35rem;
                         font-size: 0.95rem;
+                        line-height: 1.35;
                         color: #0f172a;
                     }}
                     .macro-detail-meta {{
                         color: #64748b;
-                        font-size: 0.78rem;
-                        margin-bottom: 0.2rem;
-                    }}
-                    .macro-detail-values {{
-                        display: grid;
-                        gap: 0.14rem;
-                        font-size: 0.82rem;
-                        color: #334155;
+                        font-size: 0.8rem;
+                        margin-bottom: 0.4rem;
+                        overflow-wrap: anywhere;
                     }}
                     .macro-detail-link a {{
                         color: #475569;
@@ -528,11 +543,18 @@ def render_market_page(
                         .stories-side {{
                             max-height: none;
                         }}
-                        .macro-month-grid {{
-                            grid-template-columns: repeat(1, minmax(0, 1fr));
+                        .macro-calendar-wrap {{
+                            grid-template-columns: minmax(0, 1fr);
                         }}
-                        .macro-weekday {{
-                            display: none;
+                        .macro-detail-card {{
+                            position: static;
+                        }}
+                        .macro-day-cell {{
+                            min-height: 62px;
+                            padding: 0.34rem;
+                        }}
+                        .macro-pill {{
+                            font-size: 0.58rem;
                         }}
                     }}
                 </style>
@@ -610,7 +632,7 @@ def render_market_page(
                             <div class="view-toolbar">
                                 <h2>Market Macro</h2>
                                 <div class="view-toolbar-right">
-                                    <button id="refresh-market-macro" class="refresh-btn" type="button">Refresh 3 Months</button>
+                                    <button id="refresh-market-macro" class="refresh-btn" type="button">Update 3 Months</button>
                                 </div>
                             </div>
                             <div id="market-macro-status" class="view-status-row"></div>
@@ -1399,8 +1421,25 @@ def render_market_page(
                             eventsByDate.get(dateKey).push(item);
                         }}
                         const dateKeys = Array.from(eventsByDate.keys()).sort();
-                        if (!selectedMacroDate || !eventsByDate.has(selectedMacroDate)) {{
-                            selectedMacroDate = dateKeys[0] || "";
+                        const firstRenderableDate = dateKeys[0] || "";
+                        const lastRenderableDate = dateKeys[dateKeys.length - 1] || "";
+                        const selectedWithinRange = !!(
+                            selectedMacroDate &&
+                            firstRenderableDate &&
+                            lastRenderableDate &&
+                            selectedMacroDate >= firstRenderableDate &&
+                            selectedMacroDate <= lastRenderableDate
+                        );
+                        if (!selectedWithinRange) {{
+                            const todayText = localDateText();
+                            const pastDates = dateKeys.filter((item) => item < todayText);
+                            const futureDates = dateKeys.filter((item) => item > todayText);
+                            selectedMacroDate =
+                                (todayText && firstRenderableDate && lastRenderableDate && todayText >= firstRenderableDate && todayText <= lastRenderableDate)
+                                    ? todayText
+                                    : (eventsByDate.has(todayText)
+                                        ? todayText
+                                        : (pastDates.length ? pastDates[pastDates.length - 1] : (futureDates[0] || dateKeys[0] || "")));
                         }}
                         const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
                         const firstDate = new Date(`${{dateKeys[0]}}T00:00:00`);
@@ -1428,8 +1467,12 @@ def render_market_page(
                                 const classes = ["macro-day-cell"];
                                 if (dayEvents.length) classes.push("has-events");
                                 if (key === selectedMacroDate) classes.push("selected");
-                                const labels = dayEvents.slice(0, 3).map((item) => `<div class="macro-pill" title="${{String(item.event_name || "").replace(/"/g, "&quot;")}}">${{formatMacroCellLabel(item.event_name)}}</div>`).join("");
-                                const overflow = dayEvents.length > 3 ? `<div class="macro-overflow">+${{dayEvents.length - 3}}</div>` : "";
+                                const visibleEvents = dayEvents.slice(0, 2);
+                                const labels = visibleEvents.map((item) => {{
+                                    const label = formatMacroCellLabel(item.event_name);
+                                    return `<div class="macro-pill" title="${{escapeHtml(item.event_name || label)}}">${{escapeHtml(label)}}</div>`;
+                                }}).join("");
+                                const overflow = dayEvents.length > visibleEvents.length ? `<div class="macro-overflow">More</div>` : "";
                                 cells.push(`
                                     <button type="button" class="${{classes.join(" ")}}" data-macro-date="${{key}}">
                                         <div class="macro-day-num">${{day}}</div>
@@ -1438,7 +1481,7 @@ def render_market_page(
                                 `);
                             }}
                             return `
-                                <section>
+                                <section class="macro-month-card">
                                     <h3 class="macro-month-title">${{monthLabel}}</h3>
                                     <div class="macro-month-grid">
                                         ${{weekdays.map((label) => `<div class="macro-weekday">${{label}}</div>`).join("")}}
@@ -1452,19 +1495,14 @@ def render_market_page(
                             ? selectedEvents.map((item) => `
                                 <div class="macro-detail-item">
                                     <h3>${{item.event_name || "Event"}}</h3>
-                                    <div class="macro-detail-meta">${{item.country || "US"}} · ${{item.category || "macro"}} · ${{item.event_date_time || ""}}</div>
-                                    <div class="macro-detail-values">
-                                        <div><strong>Actual:</strong> ${{item.actual_value || "—"}}${{item.unit ? ` ${{item.unit}}` : ""}}</div>
-                                        <div><strong>Prior:</strong> ${{item.previous_value || "—"}}</div>
-                                        <div><strong>Expectation:</strong> ${{item.consensus_value || "—"}}</div>
-                                    </div>
+                                    <div class="macro-detail-meta">${{item.country || "US"}} · ${{item.category || "macro"}}</div>
                                     ${{item.source_url ? `<div class="macro-detail-link"><a href="${{item.source_url}}" target="_blank" rel="noopener noreferrer">Source</a></div>` : ""}}
                                 </div>
                             `).join("")
                             : '<p class="summary-status">Select a day with events.</p>';
                         marketMacroEventsEl.innerHTML = `
                             <div class="macro-calendar-wrap">
-                                ${{monthHtml}}
+                                <div class="macro-calendar-main">${{monthHtml}}</div>
                                 <div class="macro-detail-card">
                                     <div class="macro-detail-date">${{selectedMacroDate || "Selected day"}}</div>
                                     ${{detailHtml}}
@@ -1482,7 +1520,7 @@ def render_market_page(
                     async function loadCalendar(refresh = false) {{
                         const endpoint = refresh
                             ? `/api/market/macro/refresh?output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                            : "/api/market/macro";
+                            : "/api/market/macro?calendar_window=true";
                         const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
                         const payload = await response.json();
                         renderMacroEvents(payload.events || []);
@@ -1490,14 +1528,14 @@ def render_market_page(
                         if (payload.job && refreshMacroBtn) {{
                             const running = ["queued", "running"].includes(String(payload.job.status || ""));
                             refreshMacroBtn.disabled = running;
-                            refreshMacroBtn.textContent = running ? "Refresh Running..." : "Refresh 3 Months";
+                            refreshMacroBtn.textContent = running ? "Update Running..." : "Update 3 Months";
                             if (running) {{
                                 if (macroJobStop) macroJobStop();
                                 macroJobStop = pollJob(payload.job.job_id, (job) => {{
                                     if (marketMacroStatus) marketMacroStatus.textContent = formatJobText(job);
                                 }}, async () => {{
                                     refreshMacroBtn.disabled = false;
-                                    refreshMacroBtn.textContent = "Refresh 3 Months";
+                                    refreshMacroBtn.textContent = "Update 3 Months";
                                     await loadCalendar(false);
                                 }});
                             }}
@@ -1559,8 +1597,8 @@ def render_market_page(
                         datePickers.forEach((picker) => {{
                             if (picker && typeof picker.setDate === "function") picker.setDate(selectedDate, false);
                         }});
-                        await loadMarketSnapshot();
                         if (currentMarketView === "overview") {{
+                            await loadMarketSnapshot();
                             await loadPricesAnalysis(false);
                         }} else if (currentMarketView === "daily-news") {{
                             await ensureDailyNewsLoaded();
@@ -1636,8 +1674,12 @@ def render_market_page(
                         }});
                     }}
 
-                    Promise.all([loadSummaryDates(), loadMarketSnapshot()]).then(async () => {{
-                        setMarketView(initialState.view || "overview");
+                    setMarketView(initialState.view || "overview");
+                    const initialLoads = [loadSummaryDates()];
+                    if (currentMarketView === "overview") {{
+                        initialLoads.push(loadMarketSnapshot());
+                    }}
+                    Promise.all(initialLoads).then(async () => {{
                         if (currentMarketView === "overview") {{
                             await loadPricesAnalysis(false);
                         }} else if (currentMarketView === "daily-news") {{
