@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from market_agent.analysis.stock.interfaces import AnalysisProvider
-from market_agent.config.models import DEFAULT_OPENAI_MODEL
+from market_agent.config.models import OPENAI_ANALYSIS_MODELS
 from market_agent.llms.openai import resolve_openai_provider
 
 
@@ -29,13 +29,7 @@ def get_provider(
 
 
 def list_models() -> Dict[str, List[str]]:
-    return {
-        "openai": [
-            DEFAULT_OPENAI_MODEL,
-            "gpt-5.2",
-            "gpt-5.4",
-        ]
-    }
+    return {"openai": list(OPENAI_ANALYSIS_MODELS)}
 
 
 def list_providers() -> List[str]:
