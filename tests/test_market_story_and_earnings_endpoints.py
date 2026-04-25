@@ -108,7 +108,7 @@ def test_market_macro_refresh_endpoint_returns_events(monkeypatch) -> None:
     assert payload["mode"] == "started"
     assert payload["job"]["job_id"] == 12
     assert len(payload["events"]) == 2
-    assert payload["description"] == "Refresh the stored calendar for the next 3 months."
+    assert payload["description"] == "Update the stored calendar for the current month and next 2 months."
 
 
 def test_market_macro_endpoint_returns_date_window(monkeypatch) -> None:
@@ -1227,10 +1227,11 @@ def test_market_warmup_generates_daily_reports_and_clusters(monkeypatch) -> None
 
 
 def test_market_macro_refresh_uses_llm_calendar(monkeypatch) -> None:
-    monkeypatch.setattr(
-        market_updates,
-        "_generate_market_research_text",
-        lambda provider_name, model, prompt: json.dumps(
+    captured_prompt = {}
+
+    def fake_research_text(provider_name, model, prompt):
+        captured_prompt["text"] = prompt
+        return json.dumps(
             [
                 {
                     "event_name": "US CPI",
@@ -1243,7 +1244,12 @@ def test_market_macro_refresh_uses_llm_calendar(monkeypatch) -> None:
                     "source_url": "https://example.com/cpi",
                 }
             ]
-        ),
+        )
+
+    monkeypatch.setattr(
+        market_updates,
+        "_generate_market_research_text",
+        fake_research_text,
     )
     monkeypatch.setattr(
         market_updates,
@@ -1261,19 +1267,70 @@ def test_market_macro_refresh_uses_llm_calendar(monkeypatch) -> None:
         "_upsert_market_macro_event",
         lambda item, summary_text, provider_name, model, output_language: upserts.append(item) or 1,
     )
+    monkeypatch.setattr(market_updates, "list_market_macro_events", lambda **kwargs: [])
 
     stats = market_updates.refresh_market_macro_events(extend_window=True)
 
     assert stats["updated"] == 1
     assert stats["event_count"] == 1
     assert upserts[0]["event_name"] == "US CPI"
+    assert "Existing stored events JSON" in captured_prompt["text"]
 
 
-def test_market_macro_extension_window_uses_today_plus_3_months(monkeypatch) -> None:
+def test_market_macro_refresh_skips_existing_semantic_duplicates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        market_updates,
+        "list_market_macro_events",
+        lambda **kwargs: [
+            {
+                "event_name": "FOMC Rate Decision",
+                "event_date_time": "2026-04-29T18:00:00+00:00",
+                "category": "central_bank",
+                "country": "US",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        market_updates,
+        "_generate_market_research_text",
+        lambda provider_name, model, prompt: json.dumps(
+            [
+                {
+                    "event_name": "US FOMC Statement",
+                    "event_date_time": "2026-04-29T18:00:00+00:00",
+                    "category": "central_bank",
+                    "country": "US",
+                    "source_url": "https://example.com/fomc",
+                },
+                {
+                    "event_name": "US CPI",
+                    "event_date_time": "2026-04-10T12:30:00+00:00",
+                    "category": "inflation",
+                    "country": "US",
+                    "source_url": "https://example.com/cpi",
+                },
+            ]
+        ),
+    )
+    upserts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        market_updates,
+        "_upsert_market_macro_event",
+        lambda item, summary_text, provider_name, model, output_language: upserts.append(item) or 1,
+    )
+
+    stats = market_updates.refresh_market_macro_events(extend_window=True)
+
+    assert stats["updated"] == 1
+    assert stats["event_count"] == 1
+    assert [item["event_name"] for item in upserts] == ["US CPI"]
+
+
+def test_market_macro_extension_window_uses_current_month_plus_next_two_months(monkeypatch) -> None:
     monkeypatch.setattr(market_updates, "_current_app_date", lambda: date(2026, 3, 29))
     start, end = market_updates._resolve_macro_extension_window()
-    assert start.isoformat() == "2026-03-29"
-    assert end.isoformat() == "2026-06-26"
+    assert start.isoformat() == "2026-03-01"
+    assert end.isoformat() == "2026-05-31"
 
 
 def test_market_story_state_batch_clears_inactive_rows_before_rollover(monkeypatch) -> None:

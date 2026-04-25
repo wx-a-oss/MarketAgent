@@ -52,6 +52,7 @@ from market_agent.app import (
     refresh_company_earnings,
     refresh_market_daily_clusters,
     refresh_market_macro_events,
+    resolve_market_macro_calendar_window,
     run_market_daily_update,
     start_market_story_warmup,
     update_market_story_priority,
@@ -435,7 +436,7 @@ def _run_market_macro_refresh_job(
         extend_window=True,
     )
     return {
-        "result_summary": "Calendar refreshed for the next 3 months.",
+        "result_summary": "Calendar updated for the current month and next 2 months.",
         "metrics": {
             "window_start": stats.get("window_start", ""),
             "window_end": stats.get("window_end", ""),
@@ -1636,9 +1637,13 @@ async def attach_market_news_to_story_api(
 async def get_market_macro_api(
     lookback_days: Optional[int] = Query(None, ge=0, le=3650),
     lookahead_days: Optional[int] = Query(None, ge=0, le=3650),
+    calendar_window: bool = Query(False),
 ) -> Dict[str, Any]:
     today = datetime.now().date()
-    if lookback_days is None and lookahead_days is None:
+    if calendar_window:
+        start_date, end_date = resolve_market_macro_calendar_window()
+        rows = list_market_macro_events(start_date=start_date, end_date=end_date, limit=500)
+    elif lookback_days is None and lookahead_days is None:
         rows = list_market_macro_events(start_date=None, end_date=None, limit=2000)
         if rows:
             start_date = min(datetime.fromisoformat(str(item["event_date_time"]).replace("Z", "+00:00")).date() for item in rows if item.get("event_date_time"))
@@ -1674,8 +1679,13 @@ async def refresh_market_macro_api(
             output_language=output_language,
         ),
     )
-    rows = list_market_macro_events(start_date=None, end_date=None, limit=2000)
-    return {"events": rows, "description": "Refresh the stored calendar for the next 3 months.", **started}
+    window_start, window_end = resolve_market_macro_calendar_window()
+    rows = list_market_macro_events(
+        start_date=window_start,
+        end_date=window_end,
+        limit=500,
+    )
+    return {"events": rows, "description": "Update the stored calendar for the current month and next 2 months.", **started}
 
 
 @app.get("/api/market/prices/analysis")
