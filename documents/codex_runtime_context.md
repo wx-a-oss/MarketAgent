@@ -221,9 +221,8 @@ The worker service runs:
 Current timer definition:
 
 - intended schedule: daily at `23:00:00` America/Los_Angeles
+- timer calendar: `OnCalendar=*-*-* 23:00:00 America/Los_Angeles`
 - service unit: `marketagent-worker.service`
-
-Note: the timer file currently uses `Timezone=America/Los_Angeles`. Systemd on the EC2 host has previously warned that `Timezone` is an unknown key. If schedule behavior is questioned, inspect the actual timer state with `systemctl list-timers` and logs.
 
 ## Deploy Flow
 
