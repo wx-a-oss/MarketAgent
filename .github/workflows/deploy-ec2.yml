@@ -24,7 +24,7 @@ jobs:
         run: pip install -e .
 
       - name: Syntax checks
-        run: python -m py_compile frontend/web/server.py market_agent/analysis/company/news/service.py market_agent/jobs/company_updates.py
+        run: python -m py_compile frontend/web/server.py market_agent/services/company/service.py market_agent/workflows/company_updates.py market_agent/jobs/company_updates.py
 
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.2.0
