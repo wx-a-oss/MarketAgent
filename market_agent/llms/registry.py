@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from market_agent.analysis.stock.interfaces import AnalysisProvider
+from market_agent.llms.interfaces import AnalysisProvider
 from market_agent.config.models import OPENAI_ANALYSIS_MODELS
-from market_agent.llms.openai import resolve_openai_provider
+from market_agent.llms.openai_analysis import resolve_openai_provider
 
 
 def get_provider(

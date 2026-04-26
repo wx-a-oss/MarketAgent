@@ -1,22 +1,5 @@
-"""Datamodels for company news."""
+"""Backward-compatible re-exports. NewsArticle now lives in market_agent.schemas.news."""
 
-from __future__ import annotations
+from market_agent.schemas.news import NewsArticle
 
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
-
-
-@dataclass(frozen=True)
-class NewsArticle:
-    company_name: str
-    news_date_time: datetime
-    news_title: str
-    original_content: Optional[str]
-    llm_analyzed_content: Optional[str] = None
-    news_source_link: Optional[str] = None
-    news_source: Optional[str] = None
-    id: Optional[int] = None
-    is_analyzed: bool = False
-    is_filtered: bool = False
-    analyzed_output_language: Optional[str] = None
+__all__ = ["NewsArticle"]

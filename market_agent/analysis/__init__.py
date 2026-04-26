@@ -1,10 +1,10 @@
-"""Analysis helpers for MarketAgent."""
+"""Backward-compatible re-exports. Logic now lives in market_agent.services."""
 
-from .stock import (
+from market_agent.services import (
     AnalysisProvider,
     OpenAIProvider,
-    analyze_single_stock_sections,
     resolve_openai_provider,
+    analyze_single_stock_sections,
 )
 
 __all__ = [

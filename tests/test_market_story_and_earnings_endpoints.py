@@ -16,8 +16,14 @@ from frontend.web.market_page import render_market_page  # noqa: E402
 from frontend.web.notes_page import render_notes_page  # noqa: E402
 from frontend.web.server import app  # noqa: E402
 from market_agent.app.company_updates import run_daily_updates_for_watchlist  # noqa: E402
-from market_agent.app import market_updates  # noqa: E402
+from market_agent.workflows import market_updates  # noqa: E402
+from market_agent.workflows import market_updates as _market_updates_mod  # noqa: E402
 from market_agent.analysis.company.news import service as company_news_service  # noqa: E402
+from market_agent.services.company import story_warmup as _story_warmup_mod  # noqa: E402
+from market_agent.services.company import profiles as _profiles_mod  # noqa: E402
+from market_agent.services.company import news_crud as _news_crud_mod  # noqa: E402
+from market_agent.services.company import reports as _reports_mod  # noqa: E402
+from market_agent.services.company import status_snapshot as _status_snapshot_mod  # noqa: E402
 from market_agent.analysis.stock.single_stock import analyze_single_stock_sections  # noqa: E402
 
 
@@ -330,26 +336,22 @@ def test_company_stories_endpoint_returns_latest_story_date(monkeypatch) -> None
 
 def test_company_story_warmup_invalid_when_running_state_is_stale(monkeypatch) -> None:
     stale_time = datetime.now(timezone.utc) - timedelta(hours=4)
-    monkeypatch.setattr(
-        company_news_service,
-        "get_company_story_warmup_state",
-        lambda *args, **kwargs: {
-            "job_state": "running",
-            "current_stage": "fetching_raw",
-            "analysis_started": False,
-            "analysis_completed": False,
-            "raw_fetched_count": 12,
-            "failed_stage": "",
-            "last_error": "",
-            "started_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
-        },
-    )
-    monkeypatch.setattr(
-        company_news_service,
-        "get_company_profile",
-        lambda company_name: {"ticker": "GOOGL"},
-    )
+    fake_state = lambda *args, **kwargs: {
+        "job_state": "running",
+        "current_stage": "fetching_raw",
+        "analysis_started": False,
+        "analysis_completed": False,
+        "raw_fetched_count": 12,
+        "failed_stage": "",
+        "last_error": "",
+        "started_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": stale_time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    fake_profile = lambda company_name: {"ticker": "GOOGL"}
+    monkeypatch.setattr(company_news_service, "get_company_story_warmup_state", fake_state)
+    monkeypatch.setattr(company_news_service, "get_company_profile", fake_profile)
+    monkeypatch.setattr(_story_warmup_mod, "get_company_story_warmup_state", fake_state)
+    monkeypatch.setattr(_story_warmup_mod, "get_company_profile", fake_profile)
     assert company_news_service.is_company_story_warmup_invalid("Google") is True
 
 
@@ -390,6 +392,19 @@ def test_ensure_company_story_warmup_started_invalidates_stale_running_state(mon
     )
     monkeypatch.setattr(
         company_news_service,
+        "_ensure_story_warmup_thread",
+        lambda company_name, **kwargs: thread_calls.append((company_name, kwargs)),
+    )
+    # Also patch the actual sub-module where the function body runs
+    monkeypatch.setattr(_story_warmup_mod, "get_company_story_warmup_state", fake_get_state)
+    monkeypatch.setattr(_story_warmup_mod, "get_company_profile", lambda company_name: {"ticker": "GOOGL"})
+    monkeypatch.setattr(
+        _story_warmup_mod,
+        "_upsert_story_warmup_state",
+        lambda company_name, **kwargs: upserts.append(kwargs["updates"]) or {"job_state": "failed"},
+    )
+    monkeypatch.setattr(
+        _story_warmup_mod,
         "_ensure_story_warmup_thread",
         lambda company_name, **kwargs: thread_calls.append((company_name, kwargs)),
     )
@@ -442,6 +457,27 @@ def test_company_story_warmup_rate_limit_marks_failed(monkeypatch) -> None:
         "_upsert_story_warmup_state",
         lambda company_name, **kwargs: updates.append(kwargs["updates"]) or kwargs["updates"],
     )
+    # Also patch the actual sub-modules where function bodies run
+    fake_state = lambda *args, **kwargs: {
+        "analysis_started": False, "analysis_completed": False, "retry_count": 0,
+        "raw_fetched_count": 0, "raw_stored_count": 0, "filtered_kept_count": 0,
+        "ongoing_story_count": 0, "finished_story_count": 0, "completed_slices": 0,
+        "last_completed_slice_end_date": "",
+    }
+    fake_upsert = lambda company_name, **kwargs: updates.append(kwargs["updates"]) or kwargs["updates"]
+    monkeypatch.setattr(_story_warmup_mod, "_ensure_news_schema", lambda: None)
+    monkeypatch.setattr(_story_warmup_mod, "_build_story_warmup_slices", lambda **kwargs: [(now, now)])
+    monkeypatch.setattr(_story_warmup_mod, "get_company_story_warmup_state", fake_state)
+    monkeypatch.setattr(_story_warmup_mod, "get_news_provider", lambda *args, **kwargs: object())
+    monkeypatch.setattr(_story_warmup_mod, "get_news_source", lambda name: DummySource())
+    monkeypatch.setattr(_story_warmup_mod, "_build_fetch_ranges_for_slice", lambda *args, **kwargs: [(now, now)])
+    monkeypatch.setattr(_story_warmup_mod, "_resolve_company_ticker", lambda company_name: "GOOGL")
+    monkeypatch.setattr(_story_warmup_mod, "_news_items_from_provider", lambda *args, **kwargs: [])
+    monkeypatch.setattr(_story_warmup_mod, "_store_articles", lambda *args, **kwargs: None)
+    monkeypatch.setattr(_story_warmup_mod, "_filter_company_news_range_raw", lambda **kwargs: 0)
+    monkeypatch.setattr(_story_warmup_mod, "DEFAULT_STORY_WARMUP_MAX_RETRIES", 1)
+    monkeypatch.setattr(_story_warmup_mod, "DEFAULT_STORY_WARMUP_RETRY_DELAY_SEC", 1)
+    monkeypatch.setattr(_story_warmup_mod, "_upsert_story_warmup_state", fake_upsert)
 
     company_news_service._run_company_story_warmup_job_inner(
         company_name="Google",
@@ -538,34 +574,26 @@ def test_indicator_analysis_skips_quote_section() -> None:
 
 
 def test_company_analysis_inputs_drop_story_and_earnings_context(monkeypatch) -> None:
-    monkeypatch.setattr(
-        company_news_service,
-        "get_company_daily_reports_for_range",
-        lambda *args, **kwargs: [
-            {"report_date": "2026-03-10", "output_text": "Report 1"},
-            {"report_date": "2026-03-11", "output_text": "Report 2"},
-        ],
-    )
-    monkeypatch.setattr(
-        company_news_service,
-        "_build_company_status_raw_news_fallback",
-        lambda *args, **kwargs: [{"news_title": "Fallback"}],
-    )
-    monkeypatch.setattr(
-        company_news_service,
-        "_build_company_status_price_context",
-        lambda *args, **kwargs: {"point_count": 12, "latest_close": 123.4, "recent_points": [{"trade_date": "2026-03-11", "close": 123.4}]},
-    )
-    monkeypatch.setattr(
-        company_news_service,
-        "_build_company_status_market_story_context",
-        lambda *args, **kwargs: [{"story_title": "Rates repricing"}],
-    )
-    monkeypatch.setattr(
-        company_news_service,
-        "_build_company_status_market_daily_summary_context",
-        lambda *args, **kwargs: [{"summary_date": "2026-03-11", "output_text": "Market summary"}],
-    )
+    fake_reports = lambda *args, **kwargs: [
+        {"report_date": "2026-03-10", "output_text": "Report 1"},
+        {"report_date": "2026-03-11", "output_text": "Report 2"},
+    ]
+    fake_fallback = lambda *args, **kwargs: [{"news_title": "Fallback"}]
+    fake_price = lambda *args, **kwargs: {"point_count": 12, "latest_close": 123.4, "recent_points": [{"trade_date": "2026-03-11", "close": 123.4}]}
+    fake_stories = lambda *args, **kwargs: [{"story_title": "Rates repricing"}]
+    fake_summaries = lambda *args, **kwargs: [{"summary_date": "2026-03-11", "output_text": "Market summary"}]
+    # Patch on the shim (for direct attribute access in assertions)
+    monkeypatch.setattr(company_news_service, "get_company_daily_reports_for_range", fake_reports)
+    monkeypatch.setattr(company_news_service, "_build_company_status_raw_news_fallback", fake_fallback)
+    monkeypatch.setattr(company_news_service, "_build_company_status_price_context", fake_price)
+    monkeypatch.setattr(company_news_service, "_build_company_status_market_story_context", fake_stories)
+    monkeypatch.setattr(company_news_service, "_build_company_status_market_daily_summary_context", fake_summaries)
+    # Patch on the actual sub-module where the function body runs
+    monkeypatch.setattr(_status_snapshot_mod, "get_company_daily_reports_for_range", fake_reports)
+    monkeypatch.setattr(_status_snapshot_mod, "_build_company_status_raw_news_fallback", fake_fallback)
+    monkeypatch.setattr(_status_snapshot_mod, "_build_company_status_price_context", fake_price)
+    monkeypatch.setattr(_status_snapshot_mod, "_build_company_status_market_story_context", fake_stories)
+    monkeypatch.setattr(_status_snapshot_mod, "_build_company_status_market_daily_summary_context", fake_summaries)
     detailed = company_news_service._build_company_price_intelligence_input(
         "Nvidia",
         start_date=date(2026, 3, 1),
@@ -857,7 +885,9 @@ def test_build_fetch_ranges_for_slice_skips_covered_past_days() -> None:
         return target_date in covered_days
 
     original = company_news_service._has_company_raw_for_day
+    original_profiles = _profiles_mod._has_company_raw_for_day
     company_news_service._has_company_raw_for_day = fake_has_raw
+    _profiles_mod._has_company_raw_for_day = fake_has_raw
     try:
         ranges = company_news_service._build_fetch_ranges_for_slice(
             "Nvidia",
@@ -867,6 +897,7 @@ def test_build_fetch_ranges_for_slice_skips_covered_past_days() -> None:
         )
     finally:
         company_news_service._has_company_raw_for_day = original
+        _profiles_mod._has_company_raw_for_day = original_profiles
 
     assert ranges == [
         (date(2026, 3, 9), date(2026, 3, 9)),
@@ -887,6 +918,11 @@ def test_company_story_incremental_items_include_kept_filtered_rows(monkeypatch)
     )
     monkeypatch.setattr(
         company_news_service,
+        "get_company_news_for_range",
+        lambda *args, **kwargs: [article],
+    )
+    monkeypatch.setattr(
+        _reports_mod,
         "get_company_news_for_range",
         lambda *args, **kwargs: [article],
     )
@@ -923,11 +959,11 @@ def test_daily_worker_runs_market_before_companies(monkeypatch) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "market_agent.app.company_updates.run_market_daily_update",
+        "market_agent.workflows.company_updates.run_market_daily_update",
         lambda **kwargs: calls.append("market") or {"scope": "market", "updated": True},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.run_company_daily_update",
+        "market_agent.workflows.company_updates.run_company_daily_update",
         lambda company_name, **kwargs: calls.append(company_name)
         or {"company_name": company_name, "updated": True},
     )
@@ -952,11 +988,11 @@ def test_daily_worker_uses_market_model_and_company_model_separately(monkeypatch
         return {"company_name": company_name, "updated": True}
 
     monkeypatch.setattr(
-        "market_agent.app.company_updates.run_market_daily_update",
+        "market_agent.workflows.company_updates.run_market_daily_update",
         _fake_market_update,
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.run_company_daily_update",
+        "market_agent.workflows.company_updates.run_company_daily_update",
         _fake_company_update,
     )
 
@@ -967,25 +1003,25 @@ def test_daily_worker_uses_market_model_and_company_model_separately(monkeypatch
 
 
 def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> None:
-    monkeypatch.setattr("market_agent.app.company_updates.ensure_company_profile", lambda company_name: None)
+    monkeypatch.setattr("market_agent.workflows.company_updates.ensure_company_profile", lambda company_name: None)
     monkeypatch.setattr(
-        "market_agent.app.company_updates.get_company_story_warmup_state",
+        "market_agent.workflows.company_updates.get_company_story_warmup_state",
         lambda *args, **kwargs: {"job_state": "completed"},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.is_company_story_warmup_invalid",
+        "market_agent.workflows.company_updates.is_company_story_warmup_invalid",
         lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.refresh_company_news_for_range",
+        "market_agent.workflows.company_updates.refresh_company_news_for_range",
         lambda *args, **kwargs: {"fetched_total": 3},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.generate_company_daily_report",
+        "market_agent.workflows.company_updates.generate_company_daily_report",
         lambda *args, **kwargs: {"generated": True},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.refresh_company_daily_clusters",
+        "market_agent.workflows.company_updates.refresh_company_daily_clusters",
         lambda *args, **kwargs: {"generated": True},
     )
     captured = {}
@@ -996,7 +1032,7 @@ def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> 
         captured["end_date"] = end_date
         return {"summary": ["ok"]}
 
-    monkeypatch.setattr("market_agent.app.company_updates.generate_weekly_report", fake_weekly)
+    monkeypatch.setattr("market_agent.workflows.company_updates.generate_weekly_report", fake_weekly)
     from market_agent.app.company_updates import run_company_daily_update
 
     result = run_company_daily_update("Google", target_date=date(2026, 4, 17))
@@ -1007,29 +1043,29 @@ def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> 
 
 
 def test_company_daily_update_skips_weekly_report_on_non_friday(monkeypatch) -> None:
-    monkeypatch.setattr("market_agent.app.company_updates.ensure_company_profile", lambda company_name: None)
+    monkeypatch.setattr("market_agent.workflows.company_updates.ensure_company_profile", lambda company_name: None)
     monkeypatch.setattr(
-        "market_agent.app.company_updates.get_company_story_warmup_state",
+        "market_agent.workflows.company_updates.get_company_story_warmup_state",
         lambda *args, **kwargs: {"job_state": "completed"},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.is_company_story_warmup_invalid",
+        "market_agent.workflows.company_updates.is_company_story_warmup_invalid",
         lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.refresh_company_news_for_range",
+        "market_agent.workflows.company_updates.refresh_company_news_for_range",
         lambda *args, **kwargs: {"fetched_total": 3},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.generate_company_daily_report",
+        "market_agent.workflows.company_updates.generate_company_daily_report",
         lambda *args, **kwargs: {"generated": True},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.refresh_company_daily_clusters",
+        "market_agent.workflows.company_updates.refresh_company_daily_clusters",
         lambda *args, **kwargs: {"generated": True},
     )
     monkeypatch.setattr(
-        "market_agent.app.company_updates.generate_weekly_report",
+        "market_agent.workflows.company_updates.generate_weekly_report",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
     )
     from market_agent.app.company_updates import run_company_daily_update

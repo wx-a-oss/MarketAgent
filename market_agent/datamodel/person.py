@@ -1,13 +1,6 @@
-"""Person datamodels for future expansion."""
+"""Backward-compatible re-exports. Types now live in market_agent.schemas.person."""
 
-from __future__ import annotations
+from market_agent.schemas.person import *  # noqa: F401,F403
+from market_agent.schemas.person import Person
 
-from dataclasses import dataclass
-from typing import Optional
-
-
-@dataclass(frozen=True)
-class Person:
-    name: str
-    role: Optional[str] = None
-    description: Optional[str] = None
+__all__ = ["Person"]

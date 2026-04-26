@@ -1,13 +1,6 @@
-"""Company datamodels for future expansion."""
+"""Backward-compatible re-exports. Types now live in market_agent.schemas.company."""
 
-from __future__ import annotations
+from market_agent.schemas.company import *  # noqa: F401,F403
+from market_agent.schemas.company import Company
 
-from dataclasses import dataclass
-from typing import Optional
-
-
-@dataclass(frozen=True)
-class Company:
-    name: str
-    ticker: Optional[str] = None
-    description: Optional[str] = None
+__all__ = ["Company"]
