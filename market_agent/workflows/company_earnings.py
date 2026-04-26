@@ -7,11 +7,11 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from market_agent.analysis.company.news import ensure_company_profile, get_company_profile
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
+from market_agent.services.company import ensure_company_profile, get_company_profile
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
 from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.datasources.finnhub.finnhub_client import FinnhubClient
-from market_agent.llms.news.registry import get_news_provider
+from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_EARNINGS_DATE,
     COL_MODEL,

@@ -6,7 +6,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from market_agent.analysis.company.news import (
+from market_agent.services.company import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     DEFAULT_SOURCE,
@@ -26,7 +26,7 @@ from market_agent.analysis.company.news import (
     refresh_company_daily_clusters,
     refresh_company_news_for_range,
 )
-from market_agent.analysis.company.news.service import _upsert_story_warmup_state
+from market_agent.services.company.story_warmup import _upsert_story_warmup_state
 from .market_updates import run_market_daily_update
 from market_agent.config.models import DEFAULT_COMPANY_OPENAI_MODEL, DEFAULT_MARKET_OPENAI_MODEL
 

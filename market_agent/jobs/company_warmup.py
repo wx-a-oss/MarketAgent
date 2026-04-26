@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Optional
 
-from market_agent.app import start_company_story_warmup
+from market_agent.workflows import start_company_story_warmup
 from market_agent.config.models import DEFAULT_OPENAI_MODEL
 
 

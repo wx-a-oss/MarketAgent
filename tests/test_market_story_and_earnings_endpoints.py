@@ -15,16 +15,16 @@ from frontend.web.company_detail_page import render_company_detail_page  # noqa:
 from frontend.web.market_page import render_market_page  # noqa: E402
 from frontend.web.notes_page import render_notes_page  # noqa: E402
 from frontend.web.server import app  # noqa: E402
-from market_agent.app.company_updates import run_daily_updates_for_watchlist  # noqa: E402
+from market_agent.workflows.company_updates import run_daily_updates_for_watchlist  # noqa: E402
 from market_agent.workflows import market_updates  # noqa: E402
 from market_agent.workflows import market_updates as _market_updates_mod  # noqa: E402
-from market_agent.analysis.company.news import service as company_news_service  # noqa: E402
+from market_agent.services.company import service as company_news_service  # noqa: E402
 from market_agent.services.company import story_warmup as _story_warmup_mod  # noqa: E402
 from market_agent.services.company import profiles as _profiles_mod  # noqa: E402
 from market_agent.services.company import news_crud as _news_crud_mod  # noqa: E402
 from market_agent.services.company import reports as _reports_mod  # noqa: E402
 from market_agent.services.company import status_snapshot as _status_snapshot_mod  # noqa: E402
-from market_agent.analysis.stock.single_stock import analyze_single_stock_sections  # noqa: E402
+from market_agent.services.stock.single_stock import analyze_single_stock_sections  # noqa: E402
 
 
 def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
@@ -1033,7 +1033,7 @@ def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> 
         return {"summary": ["ok"]}
 
     monkeypatch.setattr("market_agent.workflows.company_updates.generate_weekly_report", fake_weekly)
-    from market_agent.app.company_updates import run_company_daily_update
+    from market_agent.workflows.company_updates import run_company_daily_update
 
     result = run_company_daily_update("Google", target_date=date(2026, 4, 17))
     assert result["weekly_report_stats"]["generated"] is True
@@ -1068,7 +1068,7 @@ def test_company_daily_update_skips_weekly_report_on_non_friday(monkeypatch) -> 
         "market_agent.workflows.company_updates.generate_weekly_report",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
     )
-    from market_agent.app.company_updates import run_company_daily_update
+    from market_agent.workflows.company_updates import run_company_daily_update
 
     result = run_company_daily_update("Google", target_date=date(2026, 4, 16))
     assert result["weekly_report_stats"] is None

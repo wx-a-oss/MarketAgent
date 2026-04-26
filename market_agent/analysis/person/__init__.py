@@ -1,1 +1,0 @@
-"""Person analysis modules (placeholder)."""

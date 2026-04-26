@@ -15,8 +15,8 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
-from market_agent.llms.openai import chat_completion
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
+from market_agent.llms.openai_analysis import chat_completion
 from market_agent.schema_fields import (
     COL_HEADLINE,
     COL_INPUT_PAYLOAD,
@@ -699,7 +699,7 @@ def _build_market_prices_analysis_context(
         _previous_us_trading_day,
         _resolve_market_price_sections,
     )
-    from market_agent.app import list_market_macro_events
+    from market_agent.workflows import list_market_macro_events
 
     market_today = datetime.now(US_MARKET_TZ).date()
     price_target_date = target_date
@@ -800,7 +800,7 @@ def _build_market_single_news_prompt(
 
 
 def _resolve_news_provider_for_model(model: str) -> str:
-    from market_agent.llms.news.registry import list_news_models
+    from market_agent.llms.news_registry import list_news_models
     normalized_model = str(model or "").strip()
     for provider, models in list_news_models().items():
         if normalized_model in models:
@@ -909,7 +909,7 @@ def _group_news_items(
     company_name: str,
     articles: List[Any],
 ) -> List[Dict[str, Any]]:
-    from market_agent.analysis.company.news import (
+    from market_agent.services.company import (
         get_company_daily_report,
         get_news_report,
         list_company_daily_clusters,

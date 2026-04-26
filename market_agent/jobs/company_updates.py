@@ -9,7 +9,7 @@ from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from market_agent.app import run_daily_updates_for_watchlist
+from market_agent.workflows import run_daily_updates_for_watchlist
 from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
 
 

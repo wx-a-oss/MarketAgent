@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     COL_POINT_DATE_TIME,
@@ -830,7 +830,7 @@ def _build_company_price_move_prompt(
     range_key: str,
     output_language: str,
 ) -> str:
-    from market_agent.analysis.company.news import get_company_daily_report, get_news_report
+    from market_agent.services.company import get_company_daily_report, get_news_report
     from frontend.web._market_data import _fetch_market_news, _resolve_market_price_sections
     from frontend.web._market_analysis import _build_market_output_language_line
 

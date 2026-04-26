@@ -7,12 +7,12 @@ import logging
 from datetime import date, datetime
 from typing import Any, Dict, List
 
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
-from market_agent.analysis.company.news.service import (
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
+from market_agent.services.company._helpers import (
     _build_output_language_line,
     _parse_json_object,
 )
-from market_agent.llms.news.registry import get_news_provider
+from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     TBL_MARKET_NEWS_DAILY_CLUSTER,

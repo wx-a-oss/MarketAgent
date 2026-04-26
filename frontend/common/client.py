@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from market_agent.api import StockIndicatorSnapshot, query_stock_indicators
+from market_agent import StockIndicatorSnapshot, query_stock_indicators
 
 
 class StockFrontendClient:

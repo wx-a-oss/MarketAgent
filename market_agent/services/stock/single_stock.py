@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from market_agent.api import StockIndicatorSnapshot
+from market_agent import StockIndicatorSnapshot
 
 from .interfaces import AnalysisProvider
-from market_agent.llms.openai import resolve_openai_provider
+from market_agent.llms.openai_analysis import resolve_openai_provider
 from .schema import normalize_section_result
 
 

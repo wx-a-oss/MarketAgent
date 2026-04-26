@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 import pytest
 from openai import OpenAI
 
-from market_agent.analysis.company.news.db import get_connection
+from market_agent.db.bootstrap import get_connection
 
 OPENAI_DEFAULT_MODEL = "gpt-5-mini"
 PERPLEXITY_DEFAULT_MODEL = "sonar-pro"

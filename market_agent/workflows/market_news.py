@@ -17,12 +17,12 @@ from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
-from market_agent.analysis.company.news.service import (
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
+from market_agent.services.company._helpers import (
     _build_output_language_line,
 )
-from market_agent.llms.news.openai import generate_text_with_web_search
-from market_agent.llms.news.registry import get_news_provider
+from market_agent.llms.openai_news import generate_text_with_web_search
+from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     TBL_MARKET_NEWS_RAW,

@@ -29,5 +29,5 @@ from market_agent.workflows.market_stories import (  # noqa: F401
 
 # Infrastructure names that sub-modules look up through _shim() and tests
 # may monkeypatch on this shim module.
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection  # noqa: F401
-from market_agent.llms.news.registry import get_news_provider  # noqa: F401
+from market_agent.db.bootstrap import ensure_database_schema, get_connection  # noqa: F401
+from market_agent.llms.news_registry import get_news_provider  # noqa: F401

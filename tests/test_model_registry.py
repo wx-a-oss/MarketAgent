@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from market_agent.config.models import OPENAI_ANALYSIS_MODELS
-from market_agent.llms.news.registry import list_news_models
+from market_agent.llms.news_registry import list_news_models
 from market_agent.llms.registry import list_models
 
 

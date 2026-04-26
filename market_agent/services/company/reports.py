@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from market_agent.db.bootstrap import get_connection
-from market_agent.llms.news import get_news_provider
-from market_agent.llms.news.prompts.news_analysis_structured import ANALYSIS_FIELDS
+from market_agent.llms.news_registry import get_news_provider
+from market_agent.llms.prompts.news_analysis_structured import ANALYSIS_FIELDS
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     COL_STORY_KEY,

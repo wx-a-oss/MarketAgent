@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from market_agent.datamodel.indicators import (
+from market_agent.schemas.indicators import (
     StockAnalysisIndicators,
     StockBaseIndicators,
 )

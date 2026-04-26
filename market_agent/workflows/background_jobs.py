@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
 
 _STATUS_RUNNING = {"queued", "running"}
 _ACTIVE_THREADS: dict[int, threading.Thread] = {}

@@ -10,13 +10,13 @@ from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
-from market_agent.analysis.company.news.db import ensure_database_schema, get_connection
-from market_agent.analysis.company.news.service import (
+from market_agent.db.bootstrap import ensure_database_schema, get_connection
+from market_agent.services.company._helpers import (
     _build_output_language_line,
     _parse_json_object,
 )
-from market_agent.llms.news.openai import generate_text_with_web_search
-from market_agent.llms.news.registry import get_news_provider
+from market_agent.llms.openai_news import generate_text_with_web_search
+from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_EVENT_DATE_TIME,
     COL_OUTPUT_LANGUAGE,

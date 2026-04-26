@@ -11,7 +11,7 @@ from frontend.web.stock_chart_shared import (
     render_stock_range_buttons_html,
 )
 from market_agent.config.models import DEFAULT_COMPANY_OPENAI_MODEL, DEFAULT_OPENAI_MODEL
-from market_agent.news_sources import list_news_sources
+from market_agent.datasources.finnhub import list_news_sources
 
 
 def render_company_detail_page(

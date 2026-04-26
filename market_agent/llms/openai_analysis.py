@@ -25,8 +25,8 @@ class OpenAIProvider:
     name: str = "openai"
 
     def analyze_section(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        from market_agent.analysis.stock.prompt import SYSTEM_PROMPT, build_user_prompt
-        from market_agent.analysis.stock.schema import normalize_section_result
+        from market_agent.services.stock.prompt import SYSTEM_PROMPT, build_user_prompt
+        from market_agent.services.stock.schema import normalize_section_result
 
         response_text = _openai_chat(
             api_key=self.api_key,

@@ -20,7 +20,7 @@ from market_agent.config.models import (
     get_default_model,
 )
 from frontend.common import StockFrontendClient
-from market_agent.app import market_updates as market_updates_module
+from market_agent.workflows import market_updates as market_updates_module
 from frontend.web.charts_page import render_charts_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
@@ -30,7 +30,7 @@ from frontend.web.market_page import render_market_page
 from frontend.web.notes_page import render_notes_page
 from frontend.web.person_page import render_person_page
 from frontend.web.shared_page import render_nav
-from market_agent.app import (
+from market_agent.workflows import (
     attach_news_to_market_story,
     create_market_story_from_news,
     generate_market_daily_report,
@@ -54,7 +54,7 @@ from market_agent.app import (
     start_company_daily_update,
     start_company_story_warmup,
 )
-from market_agent.analysis.company.news import (
+from market_agent.services.company import (
     add_company_to_watchlist,
     delete_company_news,
     generate_weekly_report,
@@ -102,7 +102,7 @@ from market_agent.analysis.company.news import (
     list_user_notes,
     list_user_note_tags,
 )
-from market_agent.app.background_jobs import (
+from market_agent.workflows.background_jobs import (
     JobTracker,
     create_job,
     find_latest_job,
@@ -110,7 +110,7 @@ from market_agent.app.background_jobs import (
     mark_interrupted_jobs,
     run_job_async,
 )
-from market_agent.analysis import analyze_single_stock_sections
+from market_agent.services.stock.single_stock import analyze_single_stock_sections
 
 # --- Extracted modules ---
 from frontend.web._indicator_helpers import (
@@ -218,7 +218,7 @@ from frontend.web._market_analysis import (
 )
 
 logger = logging.getLogger("uvicorn.error")
-from market_agent.llms.news.registry import list_news_models
+from market_agent.llms.news_registry import list_news_models
 from market_agent.llms.registry import get_provider, list_models
 
 app = FastAPI(
