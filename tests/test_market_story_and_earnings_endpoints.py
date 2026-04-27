@@ -1074,6 +1074,121 @@ def test_company_daily_update_skips_weekly_report_on_non_friday(monkeypatch) -> 
     assert result["weekly_report_stats"] is None
 
 
+def _stub_daily_pipeline(monkeypatch):
+    """Shared stubs for the daily pipeline steps before weekly/monthly logic."""
+    monkeypatch.setattr("market_agent.workflows.company_updates.ensure_company_profile", lambda company_name: None)
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.get_company_story_warmup_state",
+        lambda *args, **kwargs: {"job_state": "completed"},
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.is_company_story_warmup_invalid",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.refresh_company_news_for_range",
+        lambda *args, **kwargs: {"fetched_total": 0},
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.generate_company_daily_report",
+        lambda *args, **kwargs: {"generated": True},
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.refresh_company_daily_clusters",
+        lambda *args, **kwargs: {"generated": True},
+    )
+
+
+def test_monthly_report_backfills_missing_weekly_reports(monkeypatch) -> None:
+    _stub_daily_pipeline(monkeypatch)
+    weekly_calls = []
+
+    def fake_weekly(company_name, *, start_date, end_date, **kwargs):
+        weekly_calls.append({"start_date": start_date, "end_date": end_date})
+        return {"summary": ["backfilled"]}
+
+    # May 1 2026 is a Friday — but we're testing monthly logic, not the regular Friday trigger.
+    # Use May 1 2026 to trigger monthly for April.
+    monkeypatch.setattr("market_agent.workflows.company_updates.generate_weekly_report", fake_weekly)
+    monkeypatch.setattr("market_agent.workflows.company_updates.get_news_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.generate_monthly_report",
+        lambda *args, **kwargs: {"key_events": ["event"]},
+    )
+
+    from market_agent.workflows.company_updates import run_company_daily_update
+
+    result = run_company_daily_update("Google", target_date=date(2026, 5, 1))
+    stats = result["monthly_report_stats"]
+    assert stats["generated"] is True
+    assert stats["month_start"] == "2026-04-01"
+    assert stats["month_end"] == "2026-04-30"
+    # April 2026 has Fridays on 3, 10, 17, 24 — 4 missing weeks to backfill.
+    # Plus May 1 is a Friday so weekly_calls also includes the regular Friday trigger.
+    backfilled = stats["backfilled_weeks"]
+    assert len(backfilled) == 4
+    assert all(w["generated"] is True for w in backfilled)
+    backfill_ends = [w["week_end"] for w in backfilled]
+    assert backfill_ends == ["2026-04-03", "2026-04-10", "2026-04-17", "2026-04-24"]
+
+
+def test_monthly_report_skips_existing_weekly_reports(monkeypatch) -> None:
+    _stub_daily_pipeline(monkeypatch)
+    weekly_calls = []
+
+    def fake_weekly(company_name, *, start_date, end_date, **kwargs):
+        weekly_calls.append(end_date)
+        return {"summary": ["backfilled"]}
+
+    existing_weeks = {
+        (date(2026, 3, 28), date(2026, 4, 3)),
+        (date(2026, 4, 11), date(2026, 4, 17)),
+    }
+
+    def fake_get_report(company_name, *, beginning_date, end_date):
+        if (beginning_date, end_date) in existing_weeks:
+            return {"summary": ["already exists"]}
+        return None
+
+    monkeypatch.setattr("market_agent.workflows.company_updates.generate_weekly_report", fake_weekly)
+    monkeypatch.setattr("market_agent.workflows.company_updates.get_news_report", fake_get_report)
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.generate_monthly_report",
+        lambda *args, **kwargs: {"key_events": ["event"]},
+    )
+
+    from market_agent.workflows.company_updates import run_company_daily_update
+
+    result = run_company_daily_update("Google", target_date=date(2026, 5, 1))
+    backfilled = result["monthly_report_stats"]["backfilled_weeks"]
+    # Only 2 of 4 Fridays missing — Apr 10 and Apr 24
+    assert len(backfilled) == 2
+    backfill_ends = [w["week_end"] for w in backfilled]
+    assert backfill_ends == ["2026-04-10", "2026-04-24"]
+
+
+def test_monthly_report_skipped_on_non_first(monkeypatch) -> None:
+    _stub_daily_pipeline(monkeypatch)
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.generate_weekly_report",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.generate_monthly_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    monkeypatch.setattr(
+        "market_agent.workflows.company_updates.get_news_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    from market_agent.workflows.company_updates import run_company_daily_update
+
+    # April 15 is not the 1st — monthly should not trigger
+    result = run_company_daily_update("Google", target_date=date(2026, 4, 15))
+    assert result["monthly_report_stats"] is None
+
+
 def test_market_story_generation_uses_chunk_fallback(monkeypatch) -> None:
     monkeypatch.setattr(market_updates, "MARKET_STORY_PROMPT_JSON_LIMIT", 1)
     monkeypatch.setattr(market_updates, "MARKET_STORY_CHUNK_SIZE", 2)

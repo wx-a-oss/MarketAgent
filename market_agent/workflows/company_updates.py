@@ -20,6 +20,7 @@ from market_agent.services.company import (
     generate_weekly_report,
     get_latest_company_story_update_date,
     get_company_story_warmup_state,
+    get_news_report,
     is_company_story_warmup_invalid,
     list_company_story_states,
     list_watchlist_company_rows,
@@ -330,6 +331,27 @@ def run_company_daily_update(
     if run_date.day == 1:
         prev_month_end = run_date - timedelta(days=1)
         prev_month_start = prev_month_end.replace(day=1)
+        backfilled_weeks = []
+        current_day = prev_month_start
+        while current_day <= prev_month_end:
+            if current_day.weekday() == 4:
+                week_start = current_day - timedelta(days=6)
+                existing = get_news_report(company_name, beginning_date=week_start, end_date=current_day)
+                if not existing:
+                    result = generate_weekly_report(
+                        company_name,
+                        start_date=week_start,
+                        end_date=current_day,
+                        output_language=output_language,
+                        provider_name=provider_name,
+                        model=model,
+                    )
+                    backfilled_weeks.append({
+                        "week_start": week_start.isoformat(),
+                        "week_end": current_day.isoformat(),
+                        "generated": bool(result),
+                    })
+            current_day += timedelta(days=1)
         monthly_report = generate_monthly_report(
             company_name,
             month_start=prev_month_start,
@@ -342,6 +364,7 @@ def run_company_daily_update(
             "generated": bool(monthly_report),
             "month_start": prev_month_start.isoformat(),
             "month_end": prev_month_end.isoformat(),
+            "backfilled_weeks": backfilled_weeks,
         }
     return {
         "company_name": company_name,
