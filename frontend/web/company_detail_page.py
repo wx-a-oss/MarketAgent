@@ -906,7 +906,7 @@ def render_company_detail_page(
                             <button class="view-tab active" type="button" data-view-mode="daily">Daily News</button>
                             <button class="view-tab" type="button" data-view-mode="weekly">Weekly Report</button>
                             <button class="view-tab" type="button" data-view-mode="monthly">Monthly Report</button>
-                            <button class="view-tab" type="button" data-view-mode="stock">Stock</button>
+                            <button class="view-tab" type="button" data-view-mode="stock">Price Intelligence</button>
                             <button class="view-tab" type="button" data-view-mode="indicators">Indicators</button>
                             <button class="view-tab" type="button" data-view-mode="earnings">Earnings</button>
                             <button class="view-tab" type="button" data-view-mode="stories">Stories</button>
@@ -2179,7 +2179,7 @@ def render_company_detail_page(
                             <div class="stock-panel">
                                 <div class="status-panel-header">
                                     <div class="status-header-main">
-                                        <h2 style="margin:0;">Company Stock</h2>
+                                        <h2 style="margin:0;">Price Intelligence</h2>
                                         <div class="stock-status" id="stock-status">Loading price series...</div>
                                     </div>
                                     <div class="stock-controls">
@@ -2191,7 +2191,7 @@ def render_company_detail_page(
                                 <div class="stock-chart-wrap">
                                     <canvas id="stock-chart" height="120"></canvas>
                                 </div>
-                                <div class="status-panel" style="margin-top:0.9rem;">
+                                <div class="status-panel" id="price-intelligence" style="margin-top:0.9rem;">
                                     <div class="status-panel-header">
                                         <div class="status-header-main">
                                             <h2 style="margin:0;">Price Intelligence</h2>

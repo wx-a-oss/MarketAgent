@@ -285,8 +285,8 @@ def render_charts_page() -> str:
                             .replaceAll("'", "&#39;");
                     }}
 
-                    function companyHref(companyName) {{
-                        return `/company/${{encodeURIComponent(companyName)}}`;
+                    function companyPriceIntelligenceHref(companyName) {{
+                        return `/company/${{encodeURIComponent(companyName)}}?view=stock#price-intelligence`;
                     }}
 
                     async function fetchLayout() {{
@@ -374,12 +374,12 @@ def render_charts_page() -> str:
                                         <div class="chart-card-ticker">No ticker</div>
                                     </div>
                                     <div class="chart-card-actions">
-                                        <a class="chart-card-link" href="${{companyHref(company.company_name)}}">Open Company</a>
+                                        <a class="chart-card-link" href="${{companyPriceIntelligenceHref(company.company_name)}}" target="_blank">Open Price Intelligence</a>
                                     </div>
                                 </div>
                                 <div class="chart-placeholder">
                                     <p>This subscribed company does not have a ticker yet, so the chart cannot load.</p>
-                                    <a href="${{companyHref(company.company_name)}}">Set ticker on company page</a>
+                                    <a href="${{companyPriceIntelligenceHref(company.company_name)}}" target="_blank">Set ticker on company page</a>
                                 </div>
                             `;
                             return article;
@@ -391,7 +391,7 @@ def render_charts_page() -> str:
                                     <div class="chart-card-ticker">${{escapeHtml(company.ticker)}}</div>
                                 </div>
                                 <div class="chart-card-actions">
-                                    <a class="chart-card-link" href="${{companyHref(company.company_name)}}">Open Company</a>
+                                    <a class="chart-card-link" href="${{companyPriceIntelligenceHref(company.company_name)}}" target="_blank">Open Price Intelligence</a>
                                     <button class="chart-expand-btn" type="button">Expand</button>
                                 </div>
                             </div>
