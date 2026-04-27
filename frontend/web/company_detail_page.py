@@ -271,8 +271,8 @@ def render_company_detail_page(
                         min-width: 112px;
                     }}
                     #range-date {{
-                        width: 230px;
-                        min-width: 230px;
+                        width: 140px;
+                        min-width: 140px;
                     }}
                     .flatpickr-input {{
                         line-height: 1.2;
@@ -3337,16 +3337,12 @@ def render_company_detail_page(
                         refreshBtn.textContent = "Refreshing...";
                         try {{
                             let url = `/api/company/${{encodeURIComponent(companyName)}}/refresh`;
-                            if (!rangeInput.value || !rangeInput.value.includes(" to ")) {{
-                                alert("Please select a start and end date.");
+                            const selectedDate = (rangeInput.value || "").trim();
+                            if (!selectedDate) {{
+                                alert("Please select a date.");
                                 return;
                             }}
-                            const [startDate, endDate] = rangeInput.value.split(" to ");
-                            if (!startDate || !endDate) {{
-                                alert("Please select a start and end date.");
-                                return;
-                            }}
-                            url += `?start_date=${{encodeURIComponent(startDate)}}&end_date=${{encodeURIComponent(endDate)}}`;
+                            url += `?start_date=${{encodeURIComponent(selectedDate)}}&end_date=${{encodeURIComponent(selectedDate)}}`;
                             if (sourceSelect && sourceSelect.value) {{
                                 const joiner = url.includes("?") ? "&" : "?";
                                 url += `${{joiner}}source=${{encodeURIComponent(sourceSelect.value)}}`;
@@ -3413,21 +3409,15 @@ def render_company_detail_page(
                     refreshBtn.addEventListener("click", refreshNews);
                     if (window.flatpickr) {{
                         const today = new Date();
-                        const weekStart = new Date(today);
-                        // Monday-based week start; on Sunday this should go back 6 days (not forward 1 day).
-                        const mondayOffset = (today.getDay() + 6) % 7;
-                        weekStart.setDate(today.getDate() - mondayOffset);
                         const fp = window.flatpickr(rangeInput, {{
                             dateFormat: "Y-m-d",
                             locale: {{ firstDayOfWeek: 1 }},
-                            mode: "range",
-                            defaultDate: [weekStart, today],
+                            defaultDate: today,
+                            maxDate: "today",
                         }});
-                        if (initialUrlState.dateRange && initialUrlState.dateRange.includes(" to ")) {{
-                            const parts = initialUrlState.dateRange.split(" to ").map((x) => x.trim()).filter(Boolean);
-                            if (parts.length === 2) {{
-                                fp.setDate(parts, false);
-                            }}
+                        if (initialUrlState.dateRange) {{
+                            const parsed = initialUrlState.dateRange.replace(/ to .*/, "").trim();
+                            if (parsed) fp.setDate(parsed, false);
                         }}
                         rangeInput.addEventListener("change", () => updateUrlState({{
                             viewMode: currentViewMode,
