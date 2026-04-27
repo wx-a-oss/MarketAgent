@@ -88,6 +88,9 @@ from market_agent.services.company import (
     save_company_chart_layout,
     set_company_ticker,
     ask_company_story_question,
+)
+from market_agent.utils.week import week_boundaries
+from market_agent.services.company import (
     attach_news_to_company_story,
     create_company_story_from_news,
     create_user_note,
@@ -1898,8 +1901,7 @@ async def refresh_company_news(
             return {"error": "week_date must be YYYY-MM-DD"}
     if selected is None:
         selected = datetime.now().date()
-    week_start = selected - timedelta(days=selected.weekday())
-    week_end = week_start + timedelta(days=6)
+    week_start, week_end = week_boundaries(selected)
     if selected_source == "openai":
         today = datetime.now().date()
         if week_end > today:
@@ -1939,8 +1941,7 @@ async def generate_company_report(
         selected = datetime.fromisoformat(week_date).date()
     except ValueError:
         return {"error": "week_date must be YYYY-MM-DD"}
-    week_start = selected - timedelta(days=selected.weekday())
-    week_end = week_start + timedelta(days=6)
+    week_start, week_end = week_boundaries(selected)
     generate_weekly_report(
         company_name,
         start_date=week_start,

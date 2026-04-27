@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from market_agent.db.bootstrap import get_connection
 from market_agent.llms.news_registry import get_news_provider
 from market_agent.llms.prompts.news_analysis_structured import ANALYSIS_FIELDS
+from market_agent.utils.week import week_boundaries
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
     COL_STORY_KEY,
@@ -352,13 +353,13 @@ def _build_monthly_report_input_items(
     items: List[Dict[str, Any]] = []
     current_day = month_start
     while current_day <= month_end:
-        if current_day.weekday() == 4:
-            week_start = current_day - timedelta(days=6)
-            report = get_news_report(company_name, beginning_date=week_start, end_date=current_day)
+        wb_start, wb_end = week_boundaries(current_day)
+        if current_day == wb_end:
+            report = get_news_report(company_name, beginning_date=wb_start, end_date=wb_end)
             if report:
                 items.append({
-                    "week_start": week_start.isoformat(),
-                    "week_end": current_day.isoformat(),
+                    "week_start": wb_start.isoformat(),
+                    "week_end": wb_end.isoformat(),
                     "summary": _render_period_report_as_text(report),
                     "report": report,
                 })

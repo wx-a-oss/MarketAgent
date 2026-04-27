@@ -6,6 +6,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from market_agent.utils.week import week_boundaries
 from market_agent.services.company import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
@@ -312,12 +313,12 @@ def run_company_daily_update(
         output_language=output_language,
     )
     weekly_report_stats = None
-    if run_date.weekday() == 4:
-        week_start = run_date - timedelta(days=6)
+    week_start, week_end = week_boundaries(run_date)
+    if run_date == week_end:
         weekly_report = generate_weekly_report(
             company_name,
             start_date=week_start,
-            end_date=run_date,
+            end_date=week_end,
             output_language=output_language,
             provider_name=provider_name,
             model=model,
@@ -325,7 +326,7 @@ def run_company_daily_update(
         weekly_report_stats = {
             "generated": bool(weekly_report),
             "start_date": week_start.isoformat(),
-            "end_date": run_date.isoformat(),
+            "end_date": week_end.isoformat(),
         }
     monthly_report_stats = None
     if run_date.day == 1:
@@ -334,21 +335,21 @@ def run_company_daily_update(
         backfilled_weeks = []
         current_day = prev_month_start
         while current_day <= prev_month_end:
-            if current_day.weekday() == 4:
-                week_start = current_day - timedelta(days=6)
-                existing = get_news_report(company_name, beginning_date=week_start, end_date=current_day)
+            wb_start, wb_end = week_boundaries(current_day)
+            if current_day == wb_end:
+                existing = get_news_report(company_name, beginning_date=wb_start, end_date=wb_end)
                 if not existing:
                     result = generate_weekly_report(
                         company_name,
-                        start_date=week_start,
-                        end_date=current_day,
+                        start_date=wb_start,
+                        end_date=wb_end,
                         output_language=output_language,
                         provider_name=provider_name,
                         model=model,
                     )
                     backfilled_weeks.append({
-                        "week_start": week_start.isoformat(),
-                        "week_end": current_day.isoformat(),
+                        "week_start": wb_start.isoformat(),
+                        "week_end": wb_end.isoformat(),
                         "generated": bool(result),
                     })
             current_day += timedelta(days=1)

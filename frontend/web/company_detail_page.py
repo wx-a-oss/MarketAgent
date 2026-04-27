@@ -271,8 +271,8 @@ def render_company_detail_page(
                         min-width: 112px;
                     }}
                     #range-date {{
-                        width: 140px;
-                        min-width: 140px;
+                        width: 200px;
+                        min-width: 200px;
                     }}
                     .flatpickr-input {{
                         line-height: 1.2;
@@ -950,6 +950,20 @@ def render_company_detail_page(
                         const token = String(raw || "").trim().toUpperCase();
                         return RANGE_KEYS.has(token) ? token : "1Y";
                     }}
+                    const WEEK_START_DAY = 6; // Saturday (JS: 0=Sun, 6=Sat)
+                    function weekBoundaries(d) {{
+                        const offset = (d.getDay() - WEEK_START_DAY + 7) % 7;
+                        const start = new Date(d);
+                        start.setDate(d.getDate() - offset);
+                        const end = new Date(start);
+                        end.setDate(start.getDate() + 6);
+                        return [start, end];
+                    }}
+                    function fmtDate(d) {{
+                        return d.toISOString().slice(0, 10);
+                    }}
+                    let currentWeekStart = null;
+                    let currentWeekEnd = null;
                     function readUrlState() {{
                         const params = new URLSearchParams(window.location.search || "");
                         const lang = String(params.get("lang") || "").trim();
@@ -3337,12 +3351,11 @@ def render_company_detail_page(
                         refreshBtn.textContent = "Refreshing...";
                         try {{
                             let url = `/api/company/${{encodeURIComponent(companyName)}}/refresh`;
-                            const selectedDate = (rangeInput.value || "").trim();
-                            if (!selectedDate) {{
-                                alert("Please select a date.");
+                            if (!currentWeekStart || !currentWeekEnd) {{
+                                alert("Please select a week.");
                                 return;
                             }}
-                            url += `?start_date=${{encodeURIComponent(selectedDate)}}&end_date=${{encodeURIComponent(selectedDate)}}`;
+                            url += `?start_date=${{encodeURIComponent(fmtDate(currentWeekStart))}}&end_date=${{encodeURIComponent(fmtDate(currentWeekEnd))}}`;
                             if (sourceSelect && sourceSelect.value) {{
                                 const joiner = url.includes("?") ? "&" : "?";
                                 url += `${{joiner}}source=${{encodeURIComponent(sourceSelect.value)}}`;
@@ -3407,23 +3420,44 @@ def render_company_detail_page(
                         }}));
                     }}
                     refreshBtn.addEventListener("click", refreshNews);
+                    function syncWeekLabel() {{
+                        if (!currentWeekStart || !currentWeekEnd) return;
+                        rangeInput.value = `Week of ${{fmtDate(currentWeekStart)}}`;
+                        rangeInput.title = `${{fmtDate(currentWeekStart)}} ~ ${{fmtDate(currentWeekEnd)}}`;
+                    }}
+                    function setWeekFromDate(d) {{
+                        const [ws, we] = weekBoundaries(d);
+                        currentWeekStart = ws;
+                        currentWeekEnd = we;
+                        syncWeekLabel();
+                    }}
                     if (window.flatpickr) {{
                         const today = new Date();
+                        setWeekFromDate(today);
                         const fp = window.flatpickr(rangeInput, {{
                             dateFormat: "Y-m-d",
-                            locale: {{ firstDayOfWeek: 1 }},
-                            defaultDate: today,
+                            locale: {{ firstDayOfWeek: 6 }},
                             maxDate: "today",
+                            onChange: function(selectedDates) {{
+                                if (!selectedDates || !selectedDates.length) return;
+                                setWeekFromDate(selectedDates[0]);
+                                updateUrlState({{
+                                    viewMode: currentViewMode,
+                                    groupKey: selectedGroupKey,
+                                    stockRange: currentStockRange,
+                                }});
+                            }},
                         }});
                         if (initialUrlState.dateRange) {{
-                            const parsed = initialUrlState.dateRange.replace(/ to .*/, "").trim();
-                            if (parsed) fp.setDate(parsed, false);
+                            const parsed = initialUrlState.dateRange.replace(/^Week of /, "").replace(/ to .*/, "").trim();
+                            if (parsed) {{
+                                const restored = new Date(parsed + "T00:00:00");
+                                if (!isNaN(restored.getTime())) {{
+                                    setWeekFromDate(restored);
+                                    fp.setDate(restored, false);
+                                }}
+                            }}
                         }}
-                        rangeInput.addEventListener("change", () => updateUrlState({{
-                            viewMode: currentViewMode,
-                            groupKey: selectedGroupKey,
-                            stockRange: currentStockRange,
-                        }}));
                     }}
                     loadNews();
 

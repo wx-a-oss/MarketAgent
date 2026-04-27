@@ -25,6 +25,7 @@ from market_agent.services.company import news_crud as _news_crud_mod  # noqa: E
 from market_agent.services.company import reports as _reports_mod  # noqa: E402
 from market_agent.services.company import status_snapshot as _status_snapshot_mod  # noqa: E402
 from market_agent.services.stock.single_stock import analyze_single_stock_sections  # noqa: E402
+from market_agent.utils.week import week_boundaries  # noqa: E402
 
 
 def test_market_stories_endpoint_returns_groups(monkeypatch) -> None:
@@ -1000,6 +1001,34 @@ def test_daily_worker_uses_market_model_and_company_model_separately(monkeypatch
 
     assert captured["market_model"] == "gpt-5.4"
     assert captured["company_model"] == "gpt-5.4-mini"
+
+
+def test_week_boundaries_saturday_start() -> None:
+    # Saturday Apr 11 2026 → Sat Apr 11 to Fri Apr 17
+    start, end = week_boundaries(date(2026, 4, 11))
+    assert start == date(2026, 4, 11)
+    assert end == date(2026, 4, 17)
+
+
+def test_week_boundaries_midweek() -> None:
+    # Wednesday Apr 15 2026 → Sat Apr 11 to Fri Apr 17
+    start, end = week_boundaries(date(2026, 4, 15))
+    assert start == date(2026, 4, 11)
+    assert end == date(2026, 4, 17)
+
+
+def test_week_boundaries_friday_is_end() -> None:
+    # Friday Apr 17 2026 → Sat Apr 11 to Fri Apr 17
+    start, end = week_boundaries(date(2026, 4, 17))
+    assert start == date(2026, 4, 11)
+    assert end == date(2026, 4, 17)
+
+
+def test_week_boundaries_sunday() -> None:
+    # Sunday Apr 12 2026 → Sat Apr 11 to Fri Apr 17
+    start, end = week_boundaries(date(2026, 4, 12))
+    assert start == date(2026, 4, 11)
+    assert end == date(2026, 4, 17)
 
 
 def test_company_daily_update_generates_weekly_report_on_friday(monkeypatch) -> None:

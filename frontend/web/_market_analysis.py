@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from market_agent.db.bootstrap import ensure_database_schema, get_connection
 from market_agent.llms.openai_analysis import chat_completion
+from market_agent.utils.week import week_boundaries
 from market_agent.schema_fields import (
     COL_HEADLINE,
     COL_INPUT_PAYLOAD,
@@ -922,7 +923,7 @@ def _group_news_items(
 
     for article in articles:
         news_date = article.news_date_time.date()
-        week_start = news_date - timedelta(days=news_date.weekday())
+        week_start, _ = week_boundaries(news_date)
         month_start = news_date.replace(day=1)
         item = {
             "id": article.id,
@@ -948,8 +949,7 @@ def _group_news_items(
     added_weeks: set[date] = set()
     added_months: set[date] = set()
     for day in sorted(daily.keys(), reverse=True):
-        week_start = day - timedelta(days=day.weekday())
-        week_end = week_start + timedelta(days=6)
+        week_start, week_end = week_boundaries(day)
         month_start = day.replace(day=1)
         next_month = date(month_start.year + (1 if month_start.month == 12 else 0), 1 if month_start.month == 12 else month_start.month + 1, 1)
         month_end = next_month - timedelta(days=1)
@@ -957,20 +957,20 @@ def _group_news_items(
             month_items: List[Dict[str, Any]] = []
             cursor = month_start
             while cursor <= month_end:
-                if cursor.weekday() == 4:
-                    week_start = cursor - timedelta(days=6)
+                wb_start, wb_end = week_boundaries(cursor)
+                if cursor == wb_end:
                     week_report = get_news_report(
                         company_name,
-                        beginning_date=week_start,
-                        end_date=cursor,
+                        beginning_date=wb_start,
+                        end_date=wb_end,
                     )
                     if week_report:
                         month_items.append(
                             {
-                                "news_title": f"Week of {week_start.isoformat()}",
-                                "news_date_time": cursor.isoformat(),
-                                "report_start": week_start.isoformat(),
-                                "report_end": cursor.isoformat(),
+                                "news_title": f"Week of {wb_start.isoformat()}",
+                                "news_date_time": wb_end.isoformat(),
+                                "report_start": wb_start.isoformat(),
+                                "report_end": wb_end.isoformat(),
                                 "report": week_report,
                             }
                         )
