@@ -16,6 +16,7 @@ from market_agent.services.company import (
     ensure_company_profile,
     ensure_company_story_warmup_started,
     generate_company_daily_report,
+    generate_monthly_report,
     generate_weekly_report,
     get_latest_company_story_update_date,
     get_company_story_warmup_state,
@@ -325,6 +326,23 @@ def run_company_daily_update(
             "start_date": week_start.isoformat(),
             "end_date": run_date.isoformat(),
         }
+    monthly_report_stats = None
+    if run_date.day == 1:
+        prev_month_end = run_date - timedelta(days=1)
+        prev_month_start = prev_month_end.replace(day=1)
+        monthly_report = generate_monthly_report(
+            company_name,
+            month_start=prev_month_start,
+            month_end=prev_month_end,
+            output_language=output_language,
+            provider_name=provider_name,
+            model=model,
+        )
+        monthly_report_stats = {
+            "generated": bool(monthly_report),
+            "month_start": prev_month_start.isoformat(),
+            "month_end": prev_month_end.isoformat(),
+        }
     return {
         "company_name": company_name,
         "target_date": run_date.isoformat(),
@@ -333,6 +351,7 @@ def run_company_daily_update(
         "daily_report_stats": daily_report_stats,
         "cluster_stats": cluster_stats,
         "weekly_report_stats": weekly_report_stats,
+        "monthly_report_stats": monthly_report_stats,
     }
 
 
