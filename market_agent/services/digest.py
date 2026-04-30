@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -21,7 +22,16 @@ _STYLE = """
     h2 { font-size: 17px; margin: 20px 0 8px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 6px; }
     h3 { font-size: 15px; margin: 14px 0 6px; color: #444; }
     .subtitle { font-size: 13px; color: #888; margin-bottom: 16px; }
-    .summary { line-height: 1.7; font-size: 14px; white-space: pre-wrap; }
+    .summary { line-height: 1.7; font-size: 14px; }
+    .summary h1 { font-size: 18px; margin: 16px 0 6px; }
+    .summary h2 { font-size: 16px; margin: 14px 0 6px; border: none; padding: 0; }
+    .summary h3 { font-size: 14px; margin: 12px 0 4px; }
+    .summary ul, .summary ol { padding-left: 20px; margin: 6px 0; }
+    .summary li { margin-bottom: 4px; }
+    .summary p { margin: 8px 0; }
+    .summary strong { font-weight: 600; }
+    .summary em { font-style: italic; }
+    .summary code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
     .cluster { margin-bottom: 14px; }
     .cluster-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
     .cluster-summary { font-size: 13px; color: #444; line-height: 1.6; }
@@ -50,6 +60,79 @@ def _esc(text: str | None) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _md_to_html(text: str | None) -> str:
+    """Convert markdown text to HTML. Handles headers, bold, italic, lists, code, links."""
+    if not text:
+        return ""
+    text = _esc(text)
+    lines = text.split("\n")
+    html_lines: list[str] = []
+    in_list: str | None = None  # "ul" or "ol"
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Close list if line doesn't continue it
+        if in_list and not re.match(r"^[-*] |^\d+\. ", stripped) and stripped:
+            html_lines.append(f"</{in_list}>")
+            in_list = None
+
+        # Headers
+        m = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if m:
+            level = len(m.group(1))
+            html_lines.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
+            continue
+
+        # Unordered list
+        m = re.match(r"^[-*]\s+(.*)", stripped)
+        if m:
+            if in_list != "ul":
+                if in_list:
+                    html_lines.append(f"</{in_list}>")
+                html_lines.append("<ul>")
+                in_list = "ul"
+            html_lines.append(f"<li>{_inline(m.group(1))}</li>")
+            continue
+
+        # Ordered list
+        m = re.match(r"^\d+\.\s+(.*)", stripped)
+        if m:
+            if in_list != "ol":
+                if in_list:
+                    html_lines.append(f"</{in_list}>")
+                html_lines.append("<ol>")
+                in_list = "ol"
+            html_lines.append(f"<li>{_inline(m.group(1))}</li>")
+            continue
+
+        # Blank line
+        if not stripped:
+            if in_list:
+                html_lines.append(f"</{in_list}>")
+                in_list = None
+            continue
+
+        # Regular paragraph
+        html_lines.append(f"<p>{_inline(stripped)}</p>")
+
+    if in_list:
+        html_lines.append(f"</{in_list}>")
+
+    return "\n".join(html_lines)
+
+
+def _inline(text: str) -> str:
+    """Convert inline markdown: bold, italic, code, links."""
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    text = re.sub(r"_(.+?)_", r"<em>\1</em>", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" style="color:#2563eb">\1</a>', text)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Market digest
 # ---------------------------------------------------------------------------
@@ -71,7 +154,7 @@ def build_market_digest_html(
     summaries = overview.get("summaries") or []
     if summaries:
         latest = summaries[-1]
-        parts.append(f'<div class="card"><h2>Daily Analysis</h2><div class="summary">{_esc(latest.get("output_text", ""))}</div></div>')
+        parts.append(f'<div class="card"><h2>Daily Analysis</h2><div class="summary">{_md_to_html(latest.get("output_text", ""))}</div></div>')
     else:
         parts.append('<div class="card"><h2>Daily Analysis</h2><p class="no-data">No summary available.</p></div>')
 
@@ -79,7 +162,7 @@ def build_market_digest_html(
     if clusters:
         cluster_html = ""
         for c in clusters:
-            cluster_html += f'<div class="cluster"><div class="cluster-title">{_esc(c.get("cluster_title", ""))}</div><div class="cluster-summary">{_esc(c.get("cluster_summary", ""))}</div></div>'
+            cluster_html += f'<div class="cluster"><div class="cluster-title">{_esc(c.get("cluster_title", ""))}</div><div class="cluster-summary">{_md_to_html(c.get("cluster_summary", ""))}</div></div>'
         parts.append(f'<div class="card"><h2>News Clusters</h2>{cluster_html}</div>')
 
     week_start, _ = week_boundaries(target_date)
@@ -126,7 +209,7 @@ def build_company_digest_html(
 
     report = get_company_daily_report(company_name, report_date=target_date)
     if report and report.get("output_text"):
-        parts.append(f'<div class="card"><h2>Daily Report</h2><div class="summary">{_esc(report["output_text"])}</div></div>')
+        parts.append(f'<div class="card"><h2>Daily Report</h2><div class="summary">{_md_to_html(report["output_text"])}</div></div>')
     else:
         parts.append('<div class="card"><h2>Daily Report</h2><p class="no-data">No daily report available.</p></div>')
 
@@ -138,7 +221,7 @@ def build_company_digest_html(
     if clusters:
         cluster_html = ""
         for c in clusters:
-            cluster_html += f'<div class="cluster"><div class="cluster-title">{_esc(c.get("cluster_title", ""))}</div><div class="cluster-summary">{_esc(c.get("cluster_summary", ""))}</div></div>'
+            cluster_html += f'<div class="cluster"><div class="cluster-title">{_esc(c.get("cluster_title", ""))}</div><div class="cluster-summary">{_md_to_html(c.get("cluster_summary", ""))}</div></div>'
         parts.append(f'<div class="card"><h2>News Clusters</h2>{cluster_html}</div>')
 
     subtitle = f"{company_name} — {target_date.isoformat()}"
