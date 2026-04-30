@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 marketagent-company-worker = "market_agent.jobs.company_updates:main"
 marketagent-company-warmup = "market_agent.jobs.company_warmup:main"
+marketagent-send-digest = "market_agent.jobs.send_digest:main"
 
 [tool.pytest.ini_options]
 markers = [
