@@ -2,7 +2,7 @@
 Description=Run MarketAgent company update worker daily
 
 [Timer]
-OnCalendar=*-*-* 23:00:00 America/Los_Angeles
+OnCalendar=*-*-* 17:30:00 America/Los_Angeles
 Persistent=true
 Unit=marketagent-worker.service
 
