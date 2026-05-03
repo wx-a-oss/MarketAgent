@@ -2109,73 +2109,292 @@ def render_company_detail_page(
                             <div class="status-panel">
                                 <div class="status-panel-header">
                                     <div class="status-header-main">
-                                        <h2 style="margin:0;">Earnings Timeline</h2>
-                                        <div class="status-meta" id="earnings-meta">Loading earnings...</div>
+                                        <h2 style="margin:0;">Earnings Reports</h2>
+                                        <div class="status-meta" id="earnings-meta">Loading...</div>
                                     </div>
-                                    <div class="status-controls">
-                                        <button class="status-btn" id="earnings-refresh-btn" type="button">Refresh Earnings</button>
+                                    <div class="status-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                        <button class="status-btn" id="earnings-fetch-latest-btn" type="button">Fetch Latest Quarter</button>
+                                        <select class="week-input" id="earnings-fy-select" style="width:100px;"><option value="">FY</option></select>
+                                        <select class="week-input" id="earnings-fq-select" style="width:70px;">
+                                            <option value="">Q</option>
+                                            <option value="Q1">Q1</option>
+                                            <option value="Q2">Q2</option>
+                                            <option value="Q3">Q3</option>
+                                            <option value="Q4">Q4</option>
+                                        </select>
+                                        <button class="status-btn" id="earnings-fetch-specific-btn" type="button">Fetch Quarter</button>
                                     </div>
                                 </div>
-                                <div id="earnings-list"></div>
+                                <div id="earnings-quarter-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;"></div>
+                                <div id="earnings-detail"></div>
                             </div>
                         `;
                         const metaEl = document.getElementById("earnings-meta");
-                        const listEl = document.getElementById("earnings-list");
-                        const refreshBtn = document.getElementById("earnings-refresh-btn");
+                        const detailEl = document.getElementById("earnings-detail");
+                        const tabsEl = document.getElementById("earnings-quarter-tabs");
+                        const fetchLatestBtn = document.getElementById("earnings-fetch-latest-btn");
+                        const fetchSpecificBtn = document.getElementById("earnings-fetch-specific-btn");
+                        const fySelect = document.getElementById("earnings-fy-select");
+                        const fqSelect = document.getElementById("earnings-fq-select");
+                        let allReports = [];
+                        let activeReportIdx = 0;
 
-                        function renderEarnings(events) {{
-                            if (!listEl) return;
-                            if (!Array.isArray(events) || !events.length) {{
-                                listEl.innerHTML = '<p class="placeholder">No earnings events available.</p>';
-                                return;
+                        function renderFinancialsTable(fin) {{
+                            if (!fin || !Object.keys(fin).length) return '<p class="placeholder">No financial data.</p>';
+                            function extractVal(v) {{
+                                if (v == null) return [null, null];
+                                if (typeof v === "object" && !Array.isArray(v)) {{
+                                    const num = v.value ?? v.amount ?? null;
+                                    const yoy = v.yoy_change_pct ?? v.yoy ?? null;
+                                    return [num, yoy];
+                                }}
+                                return [v, null];
                             }}
-                            listEl.innerHTML = events.map((item) => {{
-                                const reaction = item.price_reaction && Array.isArray(item.price_reaction.points)
-                                    ? `${{item.price_reaction.points.length}} price points · ${{item.price_reaction.window_change_pct ?? "—"}}%`
-                                    : "No price reaction yet";
-                                return `
-                                    <div class="story-card">
-                                        <h3>${{item.earnings_date}}${{item.fiscal_period ? ` · ${{item.fiscal_period}}` : ""}}</h3>
-                                        <div class="news-meta">EPS actual=${{item.actual_eps ?? "—"}} · estimate=${{item.estimate_eps ?? "—"}} · surprise=${{item.surprise_percent ?? "—"}}</div>
-                                        <div class="news-meta">Revenue actual=${{item.actual_revenue ?? "—"}} · estimate=${{item.estimate_revenue ?? "—"}}</div>
-                                        <span class="story-section-label">Price Reaction</span>
-                                        <div>${{reaction}}</div>
-                                        <span class="story-section-label">Analysis</span>
-                                        <div>${{renderMarkdown(item.analysis_text || "")}}</div>
-                                    </div>
-                                `;
+                            const currency = fin.reporting_currency || fin.currency || "$";
+                            const fields = [
+                                ["Revenue", fin.revenue, "M", true],
+                                ["Cost of Revenue", fin.cost_of_revenue, "M", true],
+                                ["Gross Profit", fin.gross_profit, "M", true],
+                                ["Gross Margin", fin.gross_margin_pct, "%", false],
+                                ["Operating Income", fin.operating_income, "M", true],
+                                ["Operating Margin", fin.operating_margin_pct, "%", false],
+                                ["Net Income", fin.net_income, "M", true],
+                                ["Diluted EPS", fin.diluted_eps, "", true],
+                                ["CapEx", fin.capex, "M", true],
+                                ["Free Cash Flow", fin.free_cash_flow, "M", true],
+                                ["Operating Cash Flow", fin.operating_cash_flow, "M", true],
+                                ["R&D Expense", fin.r_and_d_expense, "M", true],
+                                ["SG&A Expense", fin.sga_expense, "M", true],
+                                ["Cash & Equivalents", fin.cash_and_equivalents, "M", true],
+                                ["Total Debt", fin.total_debt, "M", true],
+                                ["Shares Outstanding", fin.shares_outstanding_diluted, "M", false],
+                            ];
+                            const rows = [];
+                            function fmtDollarM(n, cur) {{
+                                const abs = Math.abs(n);
+                                if (abs >= 1000) return cur + (n / 1000).toFixed(1) + "B";
+                                return cur + Number(n).toLocaleString() + "M";
+                            }}
+                            for (const [label, raw, suffix, useCurrency] of fields) {{
+                                const [val, yoy] = extractVal(raw);
+                                if (val == null) continue;
+                                let display;
+                                if (suffix === "%") display = val + "%";
+                                else if (suffix === "M" && useCurrency) display = fmtDollarM(Number(val), currency);
+                                else if (suffix === "M") display = Number(val).toLocaleString() + "M";
+                                else if (useCurrency) display = currency + Number(val).toLocaleString();
+                                else display = Number(val).toLocaleString();
+                                rows.push([label, display, yoy]);
+                            }}
+                            if (!rows.length) return '<p class="placeholder">No financial data.</p>';
+                            const trs = rows.map(([label, val, yoy]) => {{
+                                const yoyStr = yoy != null ? `<span style="color:${{yoy >= 0 ? '#16a34a' : '#dc2626'}};font-size:12px;">${{yoy >= 0 ? "+" : ""}}${{yoy}}% YoY</span>` : "";
+                                return `<tr><td style="font-weight:500;">${{label}}</td><td>${{val}}</td><td>${{yoyStr}}</td></tr>`;
+                            }}).join("");
+                            return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ddd;">Metric</th><th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ddd;">Value</th><th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ddd;">Change</th></tr></thead><tbody>${{trs}}</tbody></table>`;
+                        }}
+
+                        function renderEstimates(est) {{
+                            if (!est || !Object.keys(est).length) return "";
+                            let html = '<h3 style="margin:16px 0 8px;">Estimates vs Actuals</h3>';
+                            const items = [];
+                            if (est.revenue) items.push(["Revenue", est.revenue]);
+                            if (est.eps) items.push(["EPS", est.eps]);
+                            if (!items.length) return "";
+                            const trs = items.map(([label, d]) => {{
+                                const beat = d.beat_miss_pct;
+                                const color = beat > 0 ? "#16a34a" : beat < 0 ? "#dc2626" : "#666";
+                                return `<tr><td style="font-weight:500;">${{label}}</td><td>${{d.estimated ?? "—"}}</td><td>${{d.actual ?? "—"}}</td><td style="color:${{color}};">${{beat != null ? (beat > 0 ? "+" : "") + beat + "%" : "—"}}</td></tr>`;
+                            }}).join("");
+                            html += `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ddd;">Metric</th><th style="padding:6px 8px;border-bottom:2px solid #ddd;">Estimate</th><th style="padding:6px 8px;border-bottom:2px solid #ddd;">Actual</th><th style="padding:6px 8px;border-bottom:2px solid #ddd;">Beat/Miss</th></tr></thead><tbody>${{trs}}</tbody></table>`;
+                            return html;
+                        }}
+
+                        function renderCompanySpecific(sections) {{
+                            if (!Array.isArray(sections) || !sections.length) return "";
+
+                            function isMetricObj(v) {{
+                                if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+                                const keys = Object.keys(v);
+                                return keys.some((k) => /amount|value|revenue|growth|pct|margin/i.test(k));
+                            }}
+
+                            function fmtMetric(obj) {{
+                                if (typeof obj === "string" || typeof obj === "number") return String(obj);
+                                if (!obj || typeof obj !== "object") return "—";
+                                const parts = [];
+                                const val = obj.amount ?? obj.value ?? obj.revenue ?? null;
+                                if (val != null) {{ const abs = Math.abs(val); parts.push(abs >= 1000 ? "$" + (val / 1000).toFixed(1) + "B" : "$" + Number(val).toLocaleString() + "M"); }}
+                                const growth = obj.growth_yoy_pct ?? obj.yoy_growth_pct ?? obj.yoy_change_pct ?? obj.growth ?? null;
+                                if (growth != null) {{
+                                    const color = growth >= 0 ? "#16a34a" : "#dc2626";
+                                    parts.push(`<span style="color:${{color}};font-size:12px;">${{growth >= 0 ? "+" : ""}}${{growth}}% YoY</span>`);
+                                }}
+                                const margin = obj.margin ?? obj.operating_margin ?? obj.margin_pct ?? null;
+                                if (margin != null) parts.push(`margin ${{margin}}%`);
+                                const note = obj.note ?? obj.commentary ?? obj.description ?? null;
+                                if (note) parts.push(`<span style="color:#666;font-size:12px;">${{note}}</span>`);
+                                for (const [k, v] of Object.entries(obj)) {{
+                                    if (["amount","value","revenue","growth_yoy_pct","yoy_growth_pct","yoy_change_pct","growth","margin","operating_margin","margin_pct","note","commentary","description","name"].includes(k)) continue;
+                                    if (v != null && v !== "") parts.push(`<span style="color:#666;font-size:12px;">${{k.replace(/_/g," ")}}: ${{v}}</span>`);
+                                }}
+                                return parts.length ? parts.join(" &nbsp;·&nbsp; ") : "—";
+                            }}
+
+                            function renderData(data) {{
+                                if (!data) return "";
+                                if (Array.isArray(data)) {{
+                                    if (!data.length) return "";
+                                    if (typeof data[0] === "object" && data[0] !== null && !Array.isArray(data[0]) && data[0].name) {{
+                                        const trs = data.map((item) => {{
+                                            const name = item.name || "—";
+                                            return `<tr><td style="padding:5px 8px;border-bottom:1px solid #eee;font-weight:500;white-space:nowrap;">${{name}}</td><td style="padding:5px 8px;border-bottom:1px solid #eee;">${{fmtMetric(item)}}</td></tr>`;
+                                        }}).join("");
+                                        return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>${{trs}}</tbody></table>`;
+                                    }}
+                                    if (typeof data[0] === "string" || typeof data[0] === "number") return data.join(", ");
+                                    return `<ul style="margin:4px 0;padding-left:20px;">${{data.map((item) => `<li style="margin-bottom:3px;font-size:13px;">${{typeof item === "object" ? fmtMetric(item) : item}}</li>`).join("")}}</ul>`;
+                                }}
+                                if (typeof data === "object") {{
+                                    const entries = Object.entries(data);
+                                    const trs = entries.map(([k, v]) => {{
+                                        const label = k.replace(/_/g, " ");
+                                        const val = (v && typeof v === "object" && !Array.isArray(v)) ? fmtMetric(v) : (Array.isArray(v) ? renderData(v) : String(v ?? "—"));
+                                        return `<tr><td style="padding:5px 8px;border-bottom:1px solid #eee;font-weight:500;white-space:nowrap;vertical-align:top;">${{label}}</td><td style="padding:5px 8px;border-bottom:1px solid #eee;">${{val}}</td></tr>`;
+                                    }}).join("");
+                                    return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>${{trs}}</tbody></table>`;
+                                }}
+                                return String(data);
+                            }}
+
+                            return sections.map((sec) => {{
+                                const title = sec.title || "Business Metrics";
+                                const commentary = sec.commentary ? `<p style="color:#555;font-size:13px;margin-top:6px;line-height:1.6;">${{sec.commentary}}</p>` : "";
+                                const dataHtml = renderData(sec.data);
+                                return `<div style="margin-bottom:16px;"><h4 style="margin:0 0 6px;font-size:14px;">${{title}}</h4>${{dataHtml}}${{commentary}}</div>`;
                             }}).join("");
                         }}
 
-                        async function loadEarnings(refresh = false) {{
-                            if (metaEl) {{
-                                metaEl.textContent = refresh ? "Refreshing earnings..." : "Loading earnings...";
-                            }}
-                            const endpoint = refresh
-                                ? `/api/company/${{encodeURIComponent(companyName)}}/earnings/refresh?output_language=${{encodeURIComponent(getOutputLanguage())}}`
-                                : `/api/company/${{encodeURIComponent(companyName)}}/earnings`;
-                            const response = await fetch(endpoint, {{ method: refresh ? "POST" : "GET" }});
-                            const payload = await response.json();
-                            renderEarnings(payload.events || []);
-                            if (metaEl) {{
-                                metaEl.textContent = `${{(payload.events || []).length}} earnings events`;
-                            }}
+                            return sections.map((sec) => {{
+                                const title = sec.title || "Business Metrics";
+                                const commentary = sec.commentary ? `<p style="color:#555;font-size:13px;margin-top:6px;">${{sec.commentary}}</p>` : "";
+                                const dataHtml = renderData(sec.data);
+                                return `<div style="margin-bottom:16px;"><h4 style="margin:0 0 6px;font-size:14px;">${{title}}</h4>${{dataHtml}}${{commentary}}</div>`;
+                            }}).join("");
                         }}
 
-                        if (refreshBtn) {{
-                            refreshBtn.addEventListener("click", async () => {{
-                                refreshBtn.disabled = true;
-                                refreshBtn.textContent = "Refreshing...";
+                        function renderAnalysis(a) {{
+                            if (!a || !Object.keys(a).length) return "";
+                            let html = "";
+                            const analysis = a.analysis || {{}};
+                            const mgmt = a.management_commentary || {{}};
+                            const guidance = a.guidance || {{}};
+                            const keywords = a.keywords || [];
+                            if (analysis.executive_summary) html += `<h3 style="margin:16px 0 6px;">Executive Summary</h3><p style="font-size:14px;line-height:1.6;">${{analysis.executive_summary}}</p>`;
+                            if (Array.isArray(analysis.key_highlights) && analysis.key_highlights.length) html += `<h3 style="margin:16px 0 6px;">Key Highlights</h3><ul style="padding-left:20px;">${{analysis.key_highlights.map((h) => `<li style="margin-bottom:4px;font-size:13px;">${{h}}</li>`).join("")}}</ul>`;
+                            if (Array.isArray(analysis.concerns_and_risks) && analysis.concerns_and_risks.length) html += `<h3 style="margin:16px 0 6px;">Concerns & Risks</h3><ul style="padding-left:20px;">${{analysis.concerns_and_risks.map((c) => `<li style="margin-bottom:4px;font-size:13px;color:#b91c1c;">${{c}}</li>`).join("")}}</ul>`;
+                            if (guidance.next_quarter || guidance.full_year) {{
+                                html += '<h3 style="margin:16px 0 6px;">Guidance</h3>';
+                                if (guidance.next_quarter) html += `<div style="font-size:13px;margin-bottom:6px;"><strong>Next Quarter:</strong> Revenue ${{guidance.next_quarter.revenue_range || "—"}} · EPS ${{guidance.next_quarter.eps_range || "—"}}${{guidance.next_quarter.commentary ? " — " + guidance.next_quarter.commentary : ""}}</div>`;
+                                if (guidance.full_year) html += `<div style="font-size:13px;margin-bottom:6px;"><strong>Full Year:</strong> Revenue ${{guidance.full_year.revenue_range || "—"}} · EPS ${{guidance.full_year.eps_range || "—"}}${{guidance.full_year.commentary ? " — " + guidance.full_year.commentary : ""}}</div>`;
+                            }}
+                            if (mgmt.tone) html += `<div style="margin:12px 0 6px;font-size:13px;"><strong>Management Tone:</strong> ${{mgmt.tone}}</div>`;
+                            if (Array.isArray(mgmt.ceo_key_quotes) && mgmt.ceo_key_quotes.length) html += `<h3 style="margin:16px 0 6px;">CEO Key Quotes</h3><ul style="padding-left:20px;">${{mgmt.ceo_key_quotes.map((q) => `<li style="margin-bottom:6px;font-size:13px;font-style:italic;">"${{q}}"</li>`).join("")}}</ul>`;
+                            if (Array.isArray(mgmt.cfo_key_quotes) && mgmt.cfo_key_quotes.length) html += `<h3 style="margin:16px 0 6px;">CFO Key Quotes</h3><ul style="padding-left:20px;">${{mgmt.cfo_key_quotes.map((q) => `<li style="margin-bottom:6px;font-size:13px;font-style:italic;">"${{q}}"</li>`).join("")}}</ul>`;
+                            if (Array.isArray(analysis.analyst_qa_highlights) && analysis.analyst_qa_highlights.length) html += `<h3 style="margin:16px 0 6px;">Analyst Q&A Highlights</h3><ul style="padding-left:20px;">${{analysis.analyst_qa_highlights.map((q) => `<li style="margin-bottom:4px;font-size:13px;">${{q}}</li>`).join("")}}</ul>`;
+                            if (analysis.capital_allocation) html += `<h3 style="margin:16px 0 6px;">Capital Allocation</h3><p style="font-size:13px;">${{analysis.capital_allocation}}</p>`;
+                            if (keywords.length) html += `<h3 style="margin:16px 0 6px;">Keywords</h3><div style="display:flex;flex-wrap:wrap;gap:6px;">${{keywords.map((k) => `<span style="background:#f0f0f0;padding:3px 10px;border-radius:12px;font-size:12px;">${{k}}</span>`).join("")}}</div>`;
+                            return html;
+                        }}
+
+                        function renderReport(report) {{
+                            if (!report) {{
+                                detailEl.innerHTML = '<p class="placeholder">No report selected. Fetch the latest quarter or choose one above.</p>';
+                                return;
+                            }}
+                            const header = `<h3 style="margin:0 0 4px;">${{report.fiscal_year}} ${{report.fiscal_quarter}}${{report.earnings_date ? " · " + report.earnings_date : ""}}</h3>`;
+                            const fin = renderFinancialsTable(report.financials);
+                            const est = renderEstimates(report.estimates);
+                            const cs = renderCompanySpecific(report.company_specific);
+                            const analysis = renderAnalysis(report.analysis);
+                            detailEl.innerHTML = `
+                                <div class="story-card" style="margin-bottom:12px;">${{header}}<h3 style="margin:16px 0 8px;">Financial Data</h3>${{fin}}${{est}}</div>
+                                ${{cs ? `<div class="story-card" style="margin-bottom:12px;"><h3 style="margin:0 0 8px;">Business Metrics & Segments</h3>${{cs}}</div>` : ""}}
+                                ${{analysis ? `<div class="story-card" style="margin-bottom:12px;">${{analysis}}</div>` : ""}}
+                            `;
+                        }}
+
+                        function renderQuarterTabs() {{
+                            if (!tabsEl) return;
+                            if (!allReports.length) {{ tabsEl.innerHTML = ""; return; }}
+                            tabsEl.innerHTML = allReports.map((r, i) => {{
+                                const active = i === activeReportIdx ? 'background:#2563eb;color:#fff;' : 'background:#f0f0f0;color:#333;';
+                                return `<button type="button" data-idx="${{i}}" style="padding:4px 12px;border:none;border-radius:12px;cursor:pointer;font-size:12px;${{active}}">${{r.fiscal_year}} ${{r.fiscal_quarter}}</button>`;
+                            }}).join("");
+                            tabsEl.querySelectorAll("button").forEach((btn) => {{
+                                btn.addEventListener("click", () => {{
+                                    activeReportIdx = parseInt(btn.dataset.idx, 10);
+                                    renderQuarterTabs();
+                                    renderReport(allReports[activeReportIdx]);
+                                }});
+                            }});
+                        }}
+
+                        function populateFyOptions() {{
+                            const years = new Set(allReports.map((r) => r.fiscal_year));
+                            const currentYear = new Date().getFullYear();
+                            for (let y = currentYear + 1; y >= currentYear - 5; y--) years.add("FY" + y);
+                            const sorted = [...years].sort().reverse();
+                            fySelect.innerHTML = '<option value="">FY</option>' + sorted.map((y) => `<option value="${{y}}">${{y}}</option>`).join("");
+                        }}
+
+                        async function loadReports() {{
+                            if (metaEl) metaEl.textContent = "Loading reports...";
+                            const resp = await fetch(`/api/company/${{encodeURIComponent(companyName)}}/earnings/reports`);
+                            const data = await resp.json();
+                            allReports = data.reports || [];
+                            activeReportIdx = 0;
+                            if (metaEl) metaEl.textContent = `${{allReports.length}} quarter(s) stored`;
+                            populateFyOptions();
+                            renderQuarterTabs();
+                            if (allReports.length) renderReport(allReports[0]);
+                            else detailEl.innerHTML = '<p class="placeholder">No earnings reports yet. Click "Fetch Latest Quarter" to get started.</p>';
+                        }}
+
+                        if (fetchLatestBtn) {{
+                            fetchLatestBtn.addEventListener("click", async () => {{
+                                fetchLatestBtn.disabled = true;
+                                fetchLatestBtn.textContent = "Fetching...";
+                                if (metaEl) metaEl.textContent = "Fetching latest earnings (this may take a minute)...";
                                 try {{
-                                    await loadEarnings(true);
+                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/earnings/reports/fetch-latest?output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`, {{ method: "POST" }});
+                                    await loadReports();
                                 }} finally {{
-                                    refreshBtn.disabled = false;
-                                    refreshBtn.textContent = "Refresh Earnings";
+                                    fetchLatestBtn.disabled = false;
+                                    fetchLatestBtn.textContent = "Fetch Latest Quarter";
                                 }}
                             }});
                         }}
 
-                        loadEarnings(false);
+                        if (fetchSpecificBtn) {{
+                            fetchSpecificBtn.addEventListener("click", async () => {{
+                                const fy = fySelect.value;
+                                const fq = fqSelect.value;
+                                if (!fy || !fq) {{ alert("Select both fiscal year and quarter."); return; }}
+                                fetchSpecificBtn.disabled = true;
+                                fetchSpecificBtn.textContent = "Fetching...";
+                                if (metaEl) metaEl.textContent = `Fetching ${{fy}} ${{fq}} (this may take a minute)...`;
+                                try {{
+                                    await fetch(`/api/company/${{encodeURIComponent(companyName)}}/earnings/reports/fetch?fiscal_year=${{encodeURIComponent(fy)}}&fiscal_quarter=${{encodeURIComponent(fq)}}&output_language=${{encodeURIComponent(getOutputLanguage())}}&model=${{encodeURIComponent(getCompanyJobModel())}}`, {{ method: "POST" }});
+                                    await loadReports();
+                                }} finally {{
+                                    fetchSpecificBtn.disabled = false;
+                                    fetchSpecificBtn.textContent = "Fetch Quarter";
+                                }}
+                            }});
+                        }}
+
+                        loadReports();
                     }}
 
                     function renderStockView() {{
