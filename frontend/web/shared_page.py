@@ -83,6 +83,7 @@ def render_nav(active: str) -> str:
     items = [
         ("market", "/market", "Market"),
         ("company", "/company", "Company"),
+        ("earnings", "/earnings", "Earnings"),
         ("charts", "/charts", "Charts"),
         ("notes", "/notes", "Notes"),
         ("person", "/person", "Person"),
