@@ -68,6 +68,13 @@ class OpenAINewsProvider(NewsProvider):
         *,
         prompt: str,
     ) -> str:
+        if self.use_web_search:
+            return generate_text_with_web_search(
+                api_key=self.api_key,
+                model=self.model,
+                prompt=prompt,
+                timeout_sec=self.timeout_sec,
+            )
         return chat_completion(
             api_key=self.api_key,
             model=self.model,
