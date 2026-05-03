@@ -22,6 +22,7 @@ from market_agent.config.models import (
 from frontend.common import StockFrontendClient
 from market_agent.workflows import market_updates as market_updates_module
 from frontend.web.charts_page import render_charts_page
+from frontend.web.earnings_page import render_earnings_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -1042,6 +1043,12 @@ async def company() -> str:
 @app.get("/charts", response_class=HTMLResponse)
 async def charts_page() -> str:
     return render_charts_page()
+
+
+@app.get("/earnings", response_class=HTMLResponse)
+async def earnings_page() -> str:
+    return render_earnings_page()
+
 
 
 @app.get("/market", response_class=HTMLResponse)
@@ -2248,6 +2255,113 @@ async def refresh_company_earnings_api(
         output_language=output_language,
     )
     return {"company": company_name, **stats}
+
+
+# -- Earnings Report v2 (comprehensive LLM-driven) --
+
+from market_agent.workflows.earnings_report import (
+    fetch_earnings_report as _fetch_earnings_report,
+    fetch_latest_earnings_report as _fetch_latest_earnings_report,
+    refresh_earnings_report as _refresh_earnings_report,
+    list_earnings_reports as _list_earnings_reports,
+    get_earnings_report as _get_earnings_report,
+    list_earnings_report_quarters as _list_earnings_report_quarters,
+)
+
+
+@app.get("/api/company/{company_name}/earnings/reports")
+async def get_company_earnings_reports(
+    company_name: str,
+    limit: int = Query(12, ge=1, le=50),
+) -> Dict[str, Any]:
+    return {"company": company_name, "reports": _list_earnings_reports(company_name, limit=limit)}
+
+
+@app.get("/api/company/{company_name}/earnings/reports/quarters")
+async def get_company_earnings_report_quarters(
+    company_name: str,
+) -> Dict[str, Any]:
+    return {"company": company_name, "quarters": _list_earnings_report_quarters(company_name)}
+
+
+@app.post("/api/company/{company_name}/earnings/reports/fetch")
+async def fetch_company_earnings_report(
+    company_name: str,
+    fiscal_year: str = Query(...),
+    fiscal_quarter: str = Query(...),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
+    result = _fetch_earnings_report(
+        company_name,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
+        provider_name=selected_provider,
+        model=selected_model,
+        output_language=output_language,
+    )
+    return {"company": company_name, "report": result}
+
+
+@app.post("/api/company/{company_name}/earnings/reports/fetch-latest")
+async def fetch_company_latest_earnings_report(
+    company_name: str,
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
+    result = _fetch_latest_earnings_report(
+        company_name,
+        provider_name=selected_provider,
+        model=selected_model,
+        output_language=output_language,
+    )
+    return {"company": company_name, "report": result}
+
+
+@app.post("/api/company/{company_name}/earnings/reports/refresh")
+async def refresh_company_earnings_report(
+    company_name: str,
+    fiscal_year: str = Query(...),
+    fiscal_quarter: str = Query(...),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    selected_provider = provider or "openai"
+    selected_model = _resolve_company_model(company_name, model, selected_provider)
+    result = _refresh_earnings_report(
+        company_name,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
+        provider_name=selected_provider,
+        model=selected_model,
+        output_language=output_language,
+    )
+    return {"company": company_name, "report": result}
+
+
+@app.get("/api/earnings/compare")
+async def compare_earnings_reports(
+    companies: str = Query(..., description="Comma-separated company names"),
+    fiscal_year: Optional[str] = Query(None),
+    fiscal_quarter: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    names = [n.strip() for n in companies.split(",") if n.strip()]
+    results = {}
+    for name in names:
+        if fiscal_year and fiscal_quarter:
+            report = _get_earnings_report(name, fiscal_year=fiscal_year, fiscal_quarter=fiscal_quarter)
+            results[name] = report
+        else:
+            reports = _list_earnings_reports(name, limit=1)
+            results[name] = reports[0] if reports else None
+    return {"reports": results}
 
 
 @app.get("/api/company/{company_name}/stories")
