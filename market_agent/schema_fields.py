@@ -51,6 +51,9 @@ TBL_MARKET_STORY_EVENT = "market_story_event"
 TBL_COMPANY_EARNINGS_EVENT = "company_earnings_event"
 COL_EARNINGS_DATE = "earnings_date"
 
+# Comprehensive earnings report (v2)
+TBL_COMPANY_EARNINGS_REPORT = "company_earnings_report"
+
 # Macro/government release storage
 TBL_MARKET_MACRO_EVENT = "market_macro_event"
 COL_EVENT_DATE_TIME = "event_date_time"
