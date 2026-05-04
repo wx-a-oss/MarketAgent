@@ -819,12 +819,7 @@ def render_market_page(
 
                     function initPricesAnalysisModelPicker() {{
                         if (!pricesAnalysisModelPicker) return;
-                        const storageKey = "market_prices_analysis_model";
-                        const savedModel = String(localStorage.getItem(storageKey) || "").trim();
-                        pricesAnalysisModelPicker.innerHTML = modelOptionsHtml(savedModel || defaultModel);
-                        pricesAnalysisModelPicker.addEventListener("change", () => {{
-                            localStorage.setItem(storageKey, String(pricesAnalysisModelPicker.value || defaultModel));
-                        }});
+                        pricesAnalysisModelPicker.innerHTML = modelOptionsHtml(defaultModel);
                     }}
 
                     function getSelectedPricesAnalysisModel() {{
@@ -1656,17 +1651,18 @@ def render_market_page(
                     initPricesAnalysisModelPicker();
                     if (window.flatpickr && dateInputs.length) {{
                         dateInputs.forEach((input) => {{
+                            input.value = selectedDate;
                             const picker = window.flatpickr(input, {{
                                 dateFormat: "Y-m-d",
                                 defaultDate: selectedDate,
-                                maxDate: "today",
+                                maxDate: localDateText(),
                                 onDayCreate: function(_dObj, _dStr, _fp, dayElem) {{
-                                    const dateText = dayElem.dateObj.toISOString().slice(0, 10);
+                                    const dateText = localDateText(dayElem.dateObj);
                                     if (reportDateSet.has(dateText)) dayElem.classList.add("has-report");
                                 }},
                                 onChange: function(selectedDates) {{
                                     if (!selectedDates || !selectedDates.length) return;
-                                    const nextDate = selectedDates[0].toISOString().slice(0, 10);
+                                    const nextDate = localDateText(selectedDates[0]);
                                     onDateChanged(nextDate);
                                 }},
                             }});
