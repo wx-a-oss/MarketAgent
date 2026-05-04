@@ -433,15 +433,37 @@ def generate_text_with_web_search(
     prompt: str,
     timeout_sec: int = 120,
 ) -> str:
+    import time as _time
     if OpenAI is None:
         raise RuntimeError("openai package is required for web_search tool usage.")
+    started = _time.perf_counter()
     client = OpenAI(api_key=api_key, timeout=timeout_sec, max_retries=0)
     response = client.responses.create(
         model=model,
         input=prompt,
         tools=[{"type": "web_search"}],
     )
-    return getattr(response, "output_text", "") or ""
+    elapsed_ms = int((_time.perf_counter() - started) * 1000)
+    output_text = getattr(response, "output_text", "") or ""
+    usage = getattr(response, "usage", None)
+    try:
+        from market_agent.llms.usage_context import get_usage_context
+        from market_agent.services.llm_usage import log_llm_usage
+        ctx = get_usage_context()
+        pt = getattr(usage, "input_tokens", None) if usage else None
+        ct = getattr(usage, "output_tokens", None) if usage else None
+        log_llm_usage(
+            provider="openai", model=model, **ctx,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            input_char_count=len(prompt),
+            output_char_count=len(output_text),
+            response_time_ms=elapsed_ms,
+            used_web_search=True,
+        )
+    except Exception:
+        pass
+    return output_text
 
 
 def _fetch_news_with_web_search(

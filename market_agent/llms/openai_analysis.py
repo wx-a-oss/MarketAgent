@@ -74,6 +74,8 @@ def _openai_chat(
     timeout_sec: int,
     messages: Iterable[Dict[str, str]],
 ) -> str:
+    import time as _time
+    started = _time.perf_counter()
     payload: Dict[str, Any] = {
         "model": model,
         "messages": list(messages),
@@ -99,6 +101,7 @@ def _openai_chat(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"OpenAI API connection error: {exc}") from exc
 
+    elapsed_ms = int((_time.perf_counter() - started) * 1000)
     choices = payload.get("choices") or []
     if not choices:
         raise RuntimeError("OpenAI API returned no choices.")
@@ -106,6 +109,25 @@ def _openai_chat(
     content = message.get("content")
     if not content:
         raise RuntimeError("OpenAI API returned empty content.")
+
+    usage = payload.get("usage") or {}
+    try:
+        from market_agent.llms.usage_context import get_usage_context
+        from market_agent.services.llm_usage import log_llm_usage
+        ctx = get_usage_context()
+        log_llm_usage(
+            provider="openai", model=model, **ctx,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            cached_tokens=usage.get("prompt_tokens_details", {}).get("cached_tokens"),
+            input_char_count=len(body),
+            output_char_count=len(content),
+            response_time_ms=elapsed_ms,
+        )
+    except Exception:
+        pass
+
     return content
 
 
