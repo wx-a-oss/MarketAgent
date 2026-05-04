@@ -41,6 +41,7 @@ from market_agent.services.company._helpers import (
     _row_to_story_warmup_state,
     _tag_source,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.services.company.prompts import (
     _build_company_story_warmup_cluster_prompt,
     _build_company_story_warmup_consolidation_prompt,
@@ -375,7 +376,8 @@ def _generate_company_story_warmup_story_map(company_name: str, *, start_date: d
     provider = get_news_provider(provider_name, model=model, temperature=0.2, timeout_sec=240)
     items = _build_company_story_cluster_input_items(company_name=company_name, start_date=start_date, end_date=end_date, provider_name=provider_name, prompt_style=prompt_style, output_language=output_language)
     prompt = _build_company_story_warmup_cluster_prompt(company_name, start_date=start_date, end_date=end_date, output_language=output_language, items=items)
-    raw_output = provider.generate_text(prompt=prompt)
+    with usage_context("company_story_warmup", company_name=company_name, module="company"):
+        raw_output = provider.generate_text(prompt=prompt)
     payload = _parse_json_object(raw_output) or {}
     combined = [item for item in (_normalize_story_record(row) for row in (payload.get("stories") if isinstance(payload.get("stories"), list) else [])) if item]
     _persist_story_refresh(company_name=company_name, as_of_date=end_date, provider_name=provider_name, model=model, prompt_style=prompt_style, output_language=output_language, input_payload={"warmup_window_start": start_date.isoformat(), "warmup_window_end": end_date.isoformat(), "cluster_count": len(items), "clusters": items}, raw_output=json.dumps(payload, ensure_ascii=False), stories=combined)

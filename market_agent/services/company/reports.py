@@ -36,6 +36,7 @@ from market_agent.services.company.prompts import (
     _build_company_daily_cluster_prompt,
     _build_company_daily_report_prompt,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.services.company.news_crud import (
     get_company_news_for_range,
 )
@@ -154,7 +155,8 @@ def generate_weekly_report(
     items = _build_weekly_report_input_items(company_name, start_date=start_date, end_date=end_date, llm_model=model, provider_name=provider_name)
     if not items:
         return None
-    report = provider.fetch_weekly_report(company_name=company_name, start_date=start_date.isoformat(), end_date=end_date.isoformat(), articles=items, output_language=output_language)
+    with usage_context("company_weekly_report", company_name=company_name, module="company"):
+        report = provider.fetch_weekly_report(company_name=company_name, start_date=start_date.isoformat(), end_date=end_date.isoformat(), articles=items, output_language=output_language)
     _store_weekly_report(company_name, start_date=start_date, end_date=end_date, report_payload=report)
     return report
 
@@ -178,7 +180,8 @@ def generate_monthly_report(
     if not weekly_reports:
         return None
     prompt = _build_company_monthly_report_prompt(company_name, month_start=month_start, month_end=month_end, weekly_reports=weekly_reports, output_language=output_language)
-    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    with usage_context("company_monthly_report", company_name=company_name, module="company"):
+        payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
     report = _normalize_structured_period_report(payload)
     if not any(report.values()):
         return None
@@ -207,7 +210,8 @@ def generate_company_daily_report(
         return {"generated": False, "item_count": 0, "elapsed_sec": round(pytime.perf_counter() - started_at, 2)}
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     prompt = _build_company_daily_report_prompt(company_name, target_date=target_date, items=items, prompt_style=prompt_style, output_language=output_language)
-    output_text = provider.generate_text(prompt=prompt)
+    with usage_context("company_daily_report", company_name=company_name, module="company"):
+        output_text = provider.generate_text(prompt=prompt)
     _upsert_company_daily_report(company_name=company_name, report_date=target_date, provider=provider_name, model=model, prompt_style=prompt_style, input_payload={"items": items, "prompt": prompt}, output_text=output_text)
     return {"generated": True, "item_count": len(items), "elapsed_sec": round(pytime.perf_counter() - started_at, 2)}
 
@@ -272,7 +276,8 @@ def refresh_company_daily_clusters(
         return {"generated": False, "cluster_count": 0, "target_date": target_date.isoformat()}
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     prompt = _build_company_daily_cluster_prompt(company_name, target_date=target_date, items=items, output_language=output_language)
-    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    with usage_context("company_daily_clusters", company_name=company_name, module="company"):
+        payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
     clusters = _normalize_company_cluster_rows(company_name=company_name, target_date=target_date, payload=payload)
     _replace_company_daily_clusters(company_name=company_name, target_date=target_date, clusters=clusters, provider_name=provider_name, model=model, prompt_style=prompt_style, output_language=output_language, input_payload={"items": items, "prompt": prompt})
     return {"generated": True, "cluster_count": len(clusters), "target_date": target_date.isoformat()}

@@ -36,6 +36,7 @@ from market_agent.services.company._helpers import (
     _parse_date_time,
     _tag_source,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.services.company.profiles import (
     _resolve_company_ticker,
     ensure_company_profile,
@@ -405,17 +406,18 @@ def summarize_company_news_item(
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     start_date = row["news_date_time"].date().isoformat()
     end_date = start_date
-    analyzed = provider.analyze_news_items(
-        company_name=company_name, start_date=start_date, end_date=end_date,
-        analysis_prompt=analysis_prompt,
-        items=[{
-            "news_date_time": row["news_date_time"].isoformat(),
-            "news_title": row["news_title"],
-            "original_content": row["content"],
-            "news_source_link": row["source_link"],
-            "news_source": row["source"],
-        }],
-    )
+    with usage_context("company_news_analysis", company_name=company_name, module="company"):
+        analyzed = provider.analyze_news_items(
+            company_name=company_name, start_date=start_date, end_date=end_date,
+            analysis_prompt=analysis_prompt,
+            items=[{
+                "news_date_time": row["news_date_time"].isoformat(),
+                "news_title": row["news_title"],
+                "original_content": row["content"],
+                "news_source_link": row["source_link"],
+                "news_source": row["source"],
+            }],
+        )
     if not analyzed:
         logger.warning("Analyze single news failed: company=%s news_id=%s empty analysis result", company_name, news_id)
         return False
@@ -473,17 +475,18 @@ def summarize_company_news_day(
     for batch_index, offset in enumerate(range(0, len(rows), ANALYZE_DAY_BATCH_SIZE), start=1):
         batch_rows = rows[offset : offset + ANALYZE_DAY_BATCH_SIZE]
         logger.info("Analyze day batch start: company=%s date=%s batch=%d/%d size=%d", company_name, target_date.isoformat(), batch_index, total_batches, len(batch_rows))
-        analyzed_items = provider.analyze_news_items(
-            company_name=company_name, start_date=target_date.isoformat(), end_date=target_date.isoformat(),
-            analysis_prompt=analysis_prompt,
-            items=[{
-                "news_date_time": row["news_date_time"].isoformat(),
-                "news_title": row["news_title"],
-                "original_content": row["content"],
-                "news_source_link": row["source_link"],
-                "news_source": row["source"],
-            } for row in batch_rows],
-        )
+        with usage_context("company_news_analysis", company_name=company_name, module="company"):
+            analyzed_items = provider.analyze_news_items(
+                company_name=company_name, start_date=target_date.isoformat(), end_date=target_date.isoformat(),
+                analysis_prompt=analysis_prompt,
+                items=[{
+                    "news_date_time": row["news_date_time"].isoformat(),
+                    "news_title": row["news_title"],
+                    "original_content": row["content"],
+                    "news_source_link": row["source_link"],
+                    "news_source": row["source"],
+                } for row in batch_rows],
+            )
         logger.info("Analyze day batch end: company=%s date=%s batch=%d/%d returned=%d", company_name, target_date.isoformat(), batch_index, total_batches, len(analyzed_items))
         row_by_title: Dict[str, List[Dict[str, Any]]] = {}
         for row in batch_rows:
@@ -537,7 +540,8 @@ def filter_company_news_item(
         logger.info("Filter single news skipped: company=%s news_id=%s not found", company_name, news_id)
         return {"filtered": False, "dropped": False, "reason": "not found"}
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
-    decisions = provider.filter_news_items(company_name=company_name, items=[{"news_title": row["news_title"]}])
+    with usage_context("company_news_filter", company_name=company_name, module="company"):
+        decisions = provider.filter_news_items(company_name=company_name, items=[{"news_title": row["news_title"]}])
     if not decisions:
         logger.warning("Filter single news failed: company=%s news_id=%s empty filter result", company_name, news_id)
         return {"filtered": False, "dropped": False, "reason": "empty filter result"}
@@ -598,10 +602,11 @@ def filter_company_news_day(
         batch_selected_ids = [int(row["id"]) for row in batch_rows]
         batch_dropped = 0
         logger.info("Filter day batch start: company=%s date=%s batch=%d/%d size=%d", company_name, target_date.isoformat(), batch_index, total_batches, len(batch_rows))
-        decisions = provider.filter_news_items(
-            company_name=company_name,
-            items=[{"news_title": title} for title in list(dict.fromkeys(str(row["news_title"] or "").strip() for row in batch_rows)) if title],
-        )
+        with usage_context("company_news_filter", company_name=company_name, module="company"):
+            decisions = provider.filter_news_items(
+                company_name=company_name,
+                items=[{"news_title": title} for title in list(dict.fromkeys(str(row["news_title"] or "").strip() for row in batch_rows)) if title],
+            )
         logger.info("Filter day batch end: company=%s date=%s batch=%d/%d returned=%d", company_name, target_date.isoformat(), batch_index, total_batches, len(decisions))
         row_by_title: Dict[str, List[Dict[str, Any]]] = {}
         for row in batch_rows:
@@ -702,7 +707,8 @@ def _fetch_news_with_source(
         batches: List[List[Dict[str, Any]]] = [filtered_items[offset : offset + batch_size] for offset in range(0, len(filtered_items), batch_size)]
         for batch_index, batch in enumerate(batches, start=1):
             logger.info("Finnhub analyze batch start %d/%d (%d items) for %s", batch_index, len(batches), len(batch), company_name)
-            batch_result = provider.analyze_news_items(company_name=company_name, start_date=start_date.isoformat(), end_date=end_date.isoformat(), items=batch)
+            with usage_context("company_news_analysis", company_name=company_name, module="company"):
+                batch_result = provider.analyze_news_items(company_name=company_name, start_date=start_date.isoformat(), end_date=end_date.isoformat(), items=batch)
             logger.info("Finnhub analyze batch end %d/%d (%d items) for %s", batch_index, len(batches), len(batch_result), company_name)
             analyzed_items.extend(batch_result)
         logger.info("Finnhub analyzed items: %d for %s", len(analyzed_items), company_name)
@@ -720,7 +726,8 @@ def _filter_finnhub_items_in_batches(*, provider, company_name: str, items: List
         batch = items[offset : offset + batch_size]
         unique_titles = [{"news_title": title} for title in list(dict.fromkeys(str(item.get("news_title") or "").strip() for item in batch)) if title]
         logger.info("Finnhub filter batch start %d/%d (%d titles) for %s", batch_index, total_batches, len(unique_titles), company_name)
-        decisions = provider.filter_news_items(company_name=company_name, items=unique_titles)
+        with usage_context("company_news_filter", company_name=company_name, module="company"):
+            decisions = provider.filter_news_items(company_name=company_name, items=unique_titles)
         drop_titles: set[str] = set()
         for decision in decisions:
             title_key = str(decision.get("news_title") or "").strip().lower()
@@ -763,7 +770,8 @@ def _filter_company_news_range_raw(*, company_name: str, start_date: date, end_d
     kept_ids: List[int] = []
     for offset in range(0, len(unique_titles), FILTER_DAY_BATCH_SIZE):
         batch = unique_titles[offset : offset + FILTER_DAY_BATCH_SIZE]
-        decisions = provider.filter_news_items(company_name=company_name, items=batch)
+        with usage_context("company_news_filter", company_name=company_name, module="company"):
+            decisions = provider.filter_news_items(company_name=company_name, items=batch)
         decision_map = {str(item.get("news_title") or "").strip().lower(): item for item in decisions if str(item.get("news_title") or "").strip()}
         for title_key, bucket in title_to_rows.items():
             if title_key not in {str(item.get("news_title") or "").strip().lower() for item in batch}:

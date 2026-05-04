@@ -21,6 +21,7 @@ from market_agent.db.bootstrap import ensure_database_schema, get_connection
 from market_agent.services.company._helpers import (
     _build_output_language_line,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.llms.openai_news import generate_text_with_web_search
 from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
@@ -236,7 +237,8 @@ def generate_market_daily_report(
         prompt_style=prompt_style,
         output_language=output_language,
     )
-    output_text = provider.generate_text(prompt=prompt)
+    with usage_context("market_daily_report", module="market"):
+        output_text = provider.generate_text(prompt=prompt)
     _upsert_market_daily_summary_shared(
         summary_date=target_date,
         provider=provider_name,
@@ -580,4 +582,5 @@ def _generate_market_research_text(*, provider_name: str, model: str, prompt: st
             timeout_sec=180,
         )
     provider = get_news_provider(normalized, model=model, timeout_sec=180)
-    return provider.generate_text(prompt=prompt)
+    with usage_context("market_news_summary", module="market"):
+        return provider.generate_text(prompt=prompt)

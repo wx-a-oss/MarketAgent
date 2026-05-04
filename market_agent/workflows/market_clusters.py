@@ -88,7 +88,9 @@ def refresh_market_daily_clusters(
         items=items,
         output_language=output_language,
     )
-    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    from market_agent.llms.usage_context import usage_context
+    with usage_context("market_daily_clusters", module="market"):
+        payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
     clusters = _normalize_market_cluster_rows(target_date=target_date, payload=payload)
     _replace_market_daily_clusters(
         target_date=target_date,

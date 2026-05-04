@@ -35,6 +35,7 @@ from market_agent.services.company.prompts import (
     _build_incremental_existing_story_prompt,
     _build_incremental_new_story_prompt,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.services.company.reports import list_company_daily_clusters
 
 logger = logging.getLogger("uvicorn.error")
@@ -229,7 +230,8 @@ def refresh_company_story_states(
         return {"generated": False, "story_count": len(existing), "routed_cluster_count": 0, "updated_story_count": 0, "new_story_count": 0, "ignored_cluster_count": 0, "elapsed_sec": round(pytime.perf_counter() - started_at, 2)}
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     routing_prompt = _build_company_story_routing_prompt(company_name, as_of_date=end_date, prompt_style=prompt_style, output_language=output_language, existing_stories=existing, clusters=clusters)
-    routing_raw_output = provider.generate_text(prompt=routing_prompt)
+    with usage_context("company_stories", company_name=company_name, module="company"):
+        routing_raw_output = provider.generate_text(prompt=routing_prompt)
     routing_payload = _parse_json_object(routing_raw_output) or {}
     routing_result = _normalize_story_routing_result(existing_stories=existing, clusters=clusters, payload=routing_payload)
     applied = _apply_incremental_story_updates(company_name=company_name, as_of_date=end_date, provider=provider, existing_stories=existing, routed=routing_result, prompt_style=prompt_style, output_language=output_language)
@@ -264,7 +266,8 @@ def ask_company_story_question(
     updates = list_company_story_updates(company_name, story_key=story_key, provider_name=provider_name, prompt_style=prompt_style, output_language=output_language, limit=4)
     prompt = _build_company_story_qa_prompt(company_name=company_name, output_language=output_language, story=story, recent_updates=updates, question=question)
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
-    answer = provider.generate_text(prompt=prompt)
+    with usage_context("company_stories", company_name=company_name, module="company"):
+        answer = provider.generate_text(prompt=prompt)
     row = _insert_story_qa(company_name=company_name, story_key=story_key, question=question, answer=answer, provider_name=provider_name, model=model, prompt_style=prompt_style, output_language=output_language, input_payload={"prompt": prompt, "story": story, "recent_updates": updates})
     return row
 
@@ -295,7 +298,8 @@ def merge_company_story_qa_answer(
     recent_updates = list_company_story_updates(company_name, story_key=story_key, provider_name=provider_name, prompt_style=prompt_style, output_language=output_language, limit=4)
     prompt = _build_company_story_qa_merge_prompt(company_name=company_name, output_language=output_language, story=story, recent_updates=recent_updates, qa_row=qa_row)
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
-    raw_output = provider.generate_text(prompt=prompt)
+    with usage_context("company_stories", company_name=company_name, module="company"):
+        raw_output = provider.generate_text(prompt=prompt)
     payload = _parse_json_object(raw_output) or {}
     merged_story = _normalize_incremental_story_item(payload, fallback_story_key=story_key, fallback_story_title=str(story.get("story_title") or story_key), fallback_rank=int(story.get("importance_rank") or 999))
     if not merged_story:
@@ -529,7 +533,8 @@ def _apply_incremental_story_updates(*, company_name: str, as_of_date: date, pro
             final_stories.append(story)
             continue
         prompt = _build_incremental_existing_story_prompt(company_name, as_of_date=as_of_date, output_language=output_language, story=story, clusters=clusters)
-        raw_output = provider.generate_text(prompt=prompt)
+        with usage_context("company_stories", company_name=company_name, module="company"):
+            raw_output = provider.generate_text(prompt=prompt)
         payload = _parse_json_object(raw_output) or {}
         normalized = _normalize_incremental_story_item(payload, fallback_story_key=story_key, fallback_story_title=str(story.get("story_title") or story_key), fallback_rank=int(story.get("importance_rank") or 999)) or story
         final_stories.append(normalized)
@@ -542,7 +547,8 @@ def _apply_incremental_story_updates(*, company_name: str, as_of_date: date, pro
         if not clusters:
             continue
         prompt = _build_incremental_new_story_prompt(company_name, as_of_date=as_of_date, output_language=output_language, story_key=story_key, story_title=story_title, clusters=clusters)
-        raw_output = provider.generate_text(prompt=prompt)
+        with usage_context("company_stories", company_name=company_name, module="company"):
+            raw_output = provider.generate_text(prompt=prompt)
         payload = _parse_json_object(raw_output) or {}
         normalized = _normalize_incremental_story_item(payload, fallback_story_key=story_key, fallback_story_title=story_title, fallback_rank=len(final_stories) + 1)
         if not normalized:

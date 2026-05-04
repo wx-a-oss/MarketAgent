@@ -16,6 +16,7 @@ from market_agent.services.company._helpers import (
 )
 from market_agent.services.company.prompts import _build_company_story_warmup_consolidation_prompt
 from market_agent.services.company.story_warmup import _normalize_story_warmup_groups
+from market_agent.llms.usage_context import usage_context
 from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_OUTPUT_LANGUAGE,
@@ -364,7 +365,8 @@ def refresh_market_story_states(
         existing_stories=existing,
         clusters=clusters,
     )
-    routing_payload = _parse_json_object(provider.generate_text(prompt=routing_prompt)) or {}
+    with usage_context("market_stories", module="market"):
+        routing_payload = _parse_json_object(provider.generate_text(prompt=routing_prompt)) or {}
     routed = _normalize_market_story_routing_result(
         existing_stories=existing,
         clusters=clusters,
@@ -715,7 +717,8 @@ def _generate_market_story_map(
         output_language=output_language,
         items=items,
     )
-    payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
+    with usage_context("market_stories", module="market"):
+        payload = _parse_json_object(provider.generate_text(prompt=prompt)) or {}
     grouped = payload.get("stories") if isinstance(payload.get("stories"), list) else []
     normalized = [
         item
@@ -833,7 +836,8 @@ def _generate_market_story_payload(
     payload: Dict[str, Any]
     if len(json.dumps(items, ensure_ascii=False)) <= MARKET_STORY_PROMPT_JSON_LIMIT:
         logger.info("Market story payload mode=single_request items=%s", len(items))
-        raw_output = provider.generate_text(prompt=prompt)
+        with usage_context("market_stories", module="market"):
+            raw_output = provider.generate_text(prompt=prompt)
         payload = _parse_json_object(raw_output) or {}
     else:
         chunk_results: List[Dict[str, Any]] = []
@@ -855,7 +859,8 @@ def _generate_market_story_payload(
                 output_language=output_language,
                 items=chunk,
             )
-            chunk_output = provider.generate_text(prompt=chunk_prompt)
+            with usage_context("market_stories", module="market"):
+                chunk_output = provider.generate_text(prompt=chunk_prompt)
             chunk_results.append(_parse_json_object(chunk_output) or {})
         logger.info("Market story consolidation started: chunk_count=%s", len(chunk_results))
         merge_prompt = _build_company_story_warmup_consolidation_prompt(
@@ -865,7 +870,8 @@ def _generate_market_story_payload(
             output_language=output_language,
             chunk_results=chunk_results,
         )
-        raw_output = provider.generate_text(prompt=merge_prompt)
+        with usage_context("market_stories", module="market"):
+            raw_output = provider.generate_text(prompt=merge_prompt)
         payload = _parse_json_object(raw_output) or {}
         logger.info("Market story consolidation completed: chunk_count=%s", len(chunk_results))
     return payload
@@ -1341,7 +1347,8 @@ def _apply_market_story_actions(
             story=story,
             clusters=clusters,
         )
-        raw_output = provider.generate_text(prompt=prompt)
+        with usage_context("market_stories", module="market"):
+            raw_output = provider.generate_text(prompt=prompt)
         normalized = _normalize_market_incremental_story_item(
             _parse_json_object(raw_output) or {},
             fallback_story_key=story_key,
@@ -1365,7 +1372,8 @@ def _apply_market_story_actions(
             story_title=story_title,
             clusters=clusters,
         )
-        raw_output = provider.generate_text(prompt=prompt)
+        with usage_context("market_stories", module="market"):
+            raw_output = provider.generate_text(prompt=prompt)
         normalized = _normalize_market_incremental_story_item(
             _parse_json_object(raw_output) or {},
             fallback_story_key=story_key,

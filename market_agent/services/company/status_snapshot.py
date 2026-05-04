@@ -39,6 +39,7 @@ from market_agent.services.company.prompts import (
     _build_company_price_intelligence_prompt,
     _build_company_quick_price_intelligence_prompt,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.services.company.news_crud import (
     get_company_news_for_range,
 )
@@ -246,7 +247,8 @@ def generate_company_status_snapshot(
         return {"generated": False, "price_point_count": 0, "elapsed_sec": round(pytime.perf_counter() - started_at, 2), "input_item_count": 0, "prompt_char_count": 0, "output_char_count": 0}
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     prompt = _build_company_price_intelligence_prompt(company_name, as_of_date=end_date, status_input=status_input, output_language=output_language)
-    raw_output = provider.generate_text(prompt=prompt)
+    with usage_context("company_status_snapshot", company_name=company_name, module="company"):
+        raw_output = provider.generate_text(prompt=prompt)
     payload = _parse_json_object(raw_output) or {}
     normalized_output = _normalize_company_status_payload(payload, as_of_date=end_date)
     output_text = str(normalized_output.get("output_markdown") or "").strip() or raw_output
@@ -280,7 +282,8 @@ def generate_company_price_intelligence_run(
     pi_input = _build_company_quick_price_intelligence_input(company_name, context_start=context_start, focus_start=focus_start, end_date=end_date, provider_name=provider_name, output_language=output_language)
     provider = get_news_provider(provider_name, model=model, temperature=temperature, timeout_sec=timeout_sec)
     prompt = _build_company_quick_price_intelligence_prompt(company_name=company_name, as_of_date=end_date, quick_input=pi_input, previous_run=previous_run, output_language=output_language)
-    raw_output = provider.generate_text(prompt=prompt)
+    with usage_context("company_status_snapshot", company_name=company_name, module="company"):
+        raw_output = provider.generate_text(prompt=prompt)
     payload = _parse_json_object(raw_output) or {}
     normalized_output = _normalize_company_quick_price_intelligence_payload(payload, as_of_date=end_date, current_price=pi_input.get("latest_price"), previous_run=previous_run)
     output_text = str(normalized_output.get("output_markdown") or "").strip() or raw_output

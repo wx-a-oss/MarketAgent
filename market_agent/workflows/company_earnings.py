@@ -11,6 +11,7 @@ from market_agent.services.company import ensure_company_profile, get_company_pr
 from market_agent.db.bootstrap import ensure_database_schema, get_connection
 from market_agent.config.models import DEFAULT_OPENAI_MODEL
 from market_agent.datasources.finnhub.finnhub_client import FinnhubClient
+from market_agent.llms.usage_context import usage_context
 from market_agent.llms.news_registry import get_news_provider
 from market_agent.schema_fields import (
     COL_EARNINGS_DATE,
@@ -59,7 +60,8 @@ def refresh_company_earnings(
             "price_reaction": price_reaction,
         }
         provider = get_news_provider(provider_name, model=model, timeout_sec=120)
-        analysis_text = provider.generate_text(prompt=_build_company_earnings_prompt(prompt_payload, output_language))
+        with usage_context("company_earnings_legacy", company_name=company_name, module="earnings"):
+            analysis_text = provider.generate_text(prompt=_build_company_earnings_prompt(prompt_payload, output_language))
         event = {
             "company_name": company_name,
             "ticker": ticker,

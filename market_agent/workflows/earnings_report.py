@@ -15,6 +15,7 @@ from market_agent.llms.prompts.earnings_analysis import (
     build_latest_earnings_prompt,
     build_refresh_earnings_prompt,
 )
+from market_agent.llms.usage_context import usage_context
 from market_agent.schema_fields import TBL_COMPANY_EARNINGS_REPORT
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,8 @@ def _fetch_and_store_merged(
     provider = get_news_provider(
         provider_name, model=model, timeout_sec=180, use_web_search=True,
     )
-    raw_response = provider.generate_text(prompt=prompt)
+    with usage_context("earnings_report_refresh", company_name=company_name, module="earnings"):
+        raw_response = provider.generate_text(prompt=prompt)
     parsed = _parse_json_response(raw_response)
     if not parsed:
         log.warning("Failed to parse refresh LLM response for %s", company_name)
@@ -303,7 +305,8 @@ def _fetch_and_store(
     provider = get_news_provider(
         provider_name, model=model, timeout_sec=180, use_web_search=True,
     )
-    raw_response = provider.generate_text(prompt=prompt)
+    with usage_context("earnings_report", company_name=company_name, module="earnings"):
+        raw_response = provider.generate_text(prompt=prompt)
     parsed = _parse_json_response(raw_response)
     if not parsed:
         log.warning("Failed to parse LLM response for %s earnings", company_name)
