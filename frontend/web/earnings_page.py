@@ -38,6 +38,12 @@ def render_earnings_page() -> str:
                     .detail-link {{ color: #2563eb; text-decoration: none; font-size: 12px; }}
                     .detail-link:hover {{ text-decoration: underline; }}
                     .kw {{ background: #f0f0f0; padding: 2px 8px; border-radius: 10px; font-size: 11px; display: inline-block; margin: 2px; }}
+                    .quarter-nav {{ display: flex; align-items: center; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }}
+                    .quarter-nav .q-tab {{ padding: 3px 10px; border: 1px solid #d1d5db; border-radius: 12px; background: #fff; cursor: pointer; font-size: 11px; color: #555; }}
+                    .quarter-nav .q-tab:hover {{ background: #f5f5f5; }}
+                    .quarter-nav .q-tab.active {{ background: #2563eb; color: #fff; border-color: #2563eb; }}
+                    .quarter-nav .q-nav-btn {{ padding: 3px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; color: #555; line-height: 1; }}
+                    .quarter-nav .q-nav-btn:hover {{ background: #f5f5f5; }}
                 </style>
             </head>
             <body class="report">
@@ -91,14 +97,38 @@ def render_earnings_page() -> str:
                         return `<span class="${{cls}}">${{pct > 0 ? "+" : ""}}${{pct}}%</span>`;
                     }}
 
-                    function buildCardHtml(name, report) {{
+                    async function loadCompanyReports(name) {{
+                        try {{
+                            const resp = await fetch(`/api/company/${{encodeURIComponent(name)}}/earnings/reports?limit=12`);
+                            const data = await resp.json();
+                            return data.reports || [];
+                        }} catch {{ return []; }}
+                    }}
+
+                    const companyReports = {{}};
+                    const companyActiveIdx = {{}};
+
+                    function buildCardHtml(name, reports, activeIdx) {{
+                        const report = reports && reports.length ? reports[activeIdx || 0] : null;
+
+                        let quarterNav = "";
+                        if (reports && reports.length) {{
+                            const reversed = [...reports].reverse();
+                            const tabs = reversed.map((r) => {{
+                                const origIdx = reports.indexOf(r);
+                                const cls = origIdx === (activeIdx || 0) ? "q-tab active" : "q-tab";
+                                return `<button class="${{cls}}" data-company="${{name}}" data-qidx="${{origIdx}}">${{r.fiscal_year}} ${{r.fiscal_quarter}}</button>`;
+                            }}).join("");
+                            const oldestR = reports[reports.length - 1];
+                            quarterNav = `<div class="quarter-nav"><button class="q-nav-btn older-btn" data-company="${{name}}" data-fy="${{oldestR.fiscal_year}}" data-fq="${{oldestR.fiscal_quarter}}" title="Fetch older quarter">+</button>${{tabs}}<button class="q-nav-btn newer-btn" data-company="${{name}}" title="Fetch newer quarter">›</button></div>`;
+                        }}
+
                         if (!report) {{
                             return `
                                 <div class="earnings-card" data-company="${{name}}">
                                     <button class="remove-card-btn" data-company="${{name}}" title="Remove">&times;</button>
-                                    <div class="earnings-card-header">
-                                        <h3>${{name}}</h3>
-                                    </div>
+                                    <div class="earnings-card-header"><h3>${{name}}</h3></div>
+                                    ${{quarterNav}}
                                     <p style="color:#999;font-size:13px;">No earnings data yet.</p>
                                     <div class="earnings-card-actions">
                                         <button class="fetch-latest-btn" data-company="${{name}}">Fetch Latest</button>
@@ -106,6 +136,7 @@ def render_earnings_page() -> str:
                                     </div>
                                 </div>`;
                         }}
+
                         const fin = report.financials || {{}};
                         const est = report.estimates || {{}};
                         const a = (report.analysis || {{}}).analysis || {{}};
@@ -211,13 +242,14 @@ def render_earnings_page() -> str:
 
                         const kwHtml = kws.slice(0, 8).map((k) => `<span class="kw">${{k}}</span>`).join("");
 
+                        const earningsDateStr = report.earnings_date ? `Earnings date: ${{report.earnings_date}}` : "";
+
                         return `
                             <div class="earnings-card" data-company="${{name}}">
                                 <button class="remove-card-btn" data-company="${{name}}" title="Remove">&times;</button>
-                                <div class="earnings-card-header">
-                                    <h3>${{name}}</h3>
-                                    <span class="quarter-badge">${{report.fiscal_year}} ${{report.fiscal_quarter}}</span>
-                                </div>
+                                <div class="earnings-card-header"><h3>${{name}}</h3></div>
+                                ${{earningsDateStr ? `<div style="font-size:11px;color:#999;margin-bottom:8px;">${{earningsDateStr}}</div>` : ""}}
+                                ${{quarterNav}}
                                 ${{summaryHtml}}
                                 <table><thead><tr><th>Metric</th><th>Value</th><th>vs Est</th></tr></thead><tbody>${{generalRows}}${{csHtml}}</tbody></table>
                                 ${{guidanceHtml}}
@@ -229,14 +261,6 @@ def render_earnings_page() -> str:
                             </div>`;
                     }}
 
-                    async function loadCompanyReport(name) {{
-                        try {{
-                            const resp = await fetch(`/api/company/${{encodeURIComponent(name)}}/earnings/reports?limit=1`);
-                            const data = await resp.json();
-                            return (data.reports || [])[0] || null;
-                        }} catch {{ return null; }}
-                    }}
-
                     async function renderGrid() {{
                         if (!companies.length) {{
                             gridEl.innerHTML = "";
@@ -244,16 +268,41 @@ def render_earnings_page() -> str:
                             return;
                         }}
                         emptyEl.style.display = "none";
-                        gridEl.innerHTML = companies.map((name) => buildCardHtml(name, null)).join("");
+                        gridEl.innerHTML = companies.map((name) => buildCardHtml(name, [], 0)).join("");
 
                         for (const name of companies) {{
-                            const report = await loadCompanyReport(name);
+                            const reports = await loadCompanyReports(name);
+                            companyReports[name] = reports;
+                            if (!(name in companyActiveIdx)) companyActiveIdx[name] = 0;
                             const card = gridEl.querySelector(`[data-company="${{name}}"]`);
-                            if (card && report) {{
-                                card.outerHTML = buildCardHtml(name, report);
+                            if (card) {{
+                                card.outerHTML = buildCardHtml(name, reports, companyActiveIdx[name]);
                             }}
                         }}
                         wireCardButtons();
+                    }}
+
+                    function prevQuarter(fy, fq) {{
+                        const qNum = parseInt(fq.replace("Q", ""), 10);
+                        if (qNum > 1) return [fy, "Q" + (qNum - 1)];
+                        const fyNum = parseInt(fy.replace(/\D/g, ""), 10);
+                        return ["FY" + (fyNum - 1), "Q4"];
+                    }}
+                    function nextQuarter(fy, fq) {{
+                        const qNum = parseInt(fq.replace("Q", ""), 10);
+                        if (qNum < 4) return [fy, "Q" + (qNum + 1)];
+                        const fyNum = parseInt(fy.replace(/\D/g, ""), 10);
+                        return ["FY" + (fyNum + 1), "Q1"];
+                    }}
+
+                    function refreshCard(name) {{
+                        const reports = companyReports[name] || [];
+                        const idx = companyActiveIdx[name] || 0;
+                        const card = gridEl.querySelector(`[data-company="${{name}}"]`);
+                        if (card) {{
+                            card.outerHTML = buildCardHtml(name, reports, idx);
+                            wireCardButtons();
+                        }}
                     }}
 
                     function wireCardButtons() {{
@@ -261,8 +310,52 @@ def render_earnings_page() -> str:
                             btn.addEventListener("click", () => {{
                                 const name = btn.dataset.company;
                                 companies = companies.filter((c) => c !== name);
+                                delete companyReports[name];
+                                delete companyActiveIdx[name];
                                 saveCompanies(companies);
                                 renderGrid();
+                            }});
+                        }});
+                        gridEl.querySelectorAll(".q-tab").forEach((btn) => {{
+                            btn.addEventListener("click", () => {{
+                                const name = btn.dataset.company;
+                                const idx = parseInt(btn.dataset.qidx, 10);
+                                companyActiveIdx[name] = idx;
+                                refreshCard(name);
+                            }});
+                        }});
+                        gridEl.querySelectorAll(".older-btn").forEach((btn) => {{
+                            btn.addEventListener("click", async () => {{
+                                const name = btn.dataset.company;
+                                const reports = companyReports[name] || [];
+                                const oldest = reports[reports.length - 1];
+                                if (!oldest) return;
+                                const [fy, fq] = prevQuarter(oldest.fiscal_year, oldest.fiscal_quarter);
+                                btn.disabled = true;
+                                btn.textContent = "...";
+                                try {{
+                                    await fetch(`/api/company/${{encodeURIComponent(name)}}/earnings/reports/fetch?fiscal_year=${{encodeURIComponent(fy)}}&fiscal_quarter=${{encodeURIComponent(fq)}}`, {{ method: "POST" }});
+                                    companyReports[name] = await loadCompanyReports(name);
+                                    companyActiveIdx[name] = (companyReports[name] || []).length - 1;
+                                    refreshCard(name);
+                                }} catch {{ btn.disabled = false; btn.textContent = "+"; }}
+                            }});
+                        }});
+                        gridEl.querySelectorAll(".newer-btn").forEach((btn) => {{
+                            btn.addEventListener("click", async () => {{
+                                const name = btn.dataset.company;
+                                const reports = companyReports[name] || [];
+                                const newest = reports[0];
+                                if (!newest) return;
+                                const [fy, fq] = nextQuarter(newest.fiscal_year, newest.fiscal_quarter);
+                                btn.disabled = true;
+                                btn.textContent = "...";
+                                try {{
+                                    await fetch(`/api/company/${{encodeURIComponent(name)}}/earnings/reports/fetch?fiscal_year=${{encodeURIComponent(fy)}}&fiscal_quarter=${{encodeURIComponent(fq)}}`, {{ method: "POST" }});
+                                    companyReports[name] = await loadCompanyReports(name);
+                                    companyActiveIdx[name] = 0;
+                                    refreshCard(name);
+                                }} catch {{ btn.disabled = false; btn.textContent = "›"; }}
                             }});
                         }});
                         gridEl.querySelectorAll(".fetch-latest-btn").forEach((btn) => {{
@@ -278,12 +371,9 @@ def render_earnings_page() -> str:
                                     }} else {{
                                         await fetch(`/api/company/${{encodeURIComponent(name)}}/earnings/reports/fetch-latest`, {{ method: "POST" }});
                                     }}
-                                    const report = await loadCompanyReport(name);
-                                    const card = gridEl.querySelector(`[data-company="${{name}}"]`);
-                                    if (card) {{
-                                        card.outerHTML = buildCardHtml(name, report);
-                                        wireCardButtons();
-                                    }}
+                                    companyReports[name] = await loadCompanyReports(name);
+                                    companyActiveIdx[name] = 0;
+                                    refreshCard(name);
                                 }} catch {{
                                     btn.disabled = false;
                                     btn.textContent = "Retry";

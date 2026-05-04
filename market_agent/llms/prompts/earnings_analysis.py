@@ -128,7 +128,10 @@ def build_earnings_report_prompt(
     fiscal_quarter: str,
     output_language: str = "zh-CN",
 ) -> str:
+    from datetime import date as _date
+    today = _date.today().isoformat()
     return (
+        f"Today's date is {today}.\n"
         f"Search the web for {company_name} ({ticker}) {fiscal_year} {fiscal_quarter} "
         f"earnings call transcript, earnings press release, and SEC filing.\n\n"
         f"{_COMMON_INSTRUCTIONS}\n"
@@ -141,9 +144,16 @@ def build_latest_earnings_prompt(
     ticker: str,
     output_language: str = "zh-CN",
 ) -> str:
+    from datetime import date as _date
+    today = _date.today().isoformat()
     return (
+        f"Today's date is {today}.\n"
         f"Search the web for the MOST RECENT earnings call for {company_name} ({ticker}).\n"
-        f"Determine which fiscal year and quarter it belongs to, then extract the full report.\n\n"
+        f"IMPORTANT: Different companies have different fiscal year definitions. "
+        f"Apple's fiscal year ends in September, Microsoft's in June, etc. "
+        f"Find the actual most recently REPORTED quarter as of today ({today}), "
+        f"not the calendar quarter. Determine the correct fiscal year and quarter, "
+        f"then extract the full report.\n\n"
         f"{_COMMON_INSTRUCTIONS}\n"
         f"{_language_instruction(output_language)}\n"
     )

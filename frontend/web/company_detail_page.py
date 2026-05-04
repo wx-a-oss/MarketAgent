@@ -2312,7 +2312,7 @@ def render_company_detail_page(
                                 detailEl.innerHTML = '<p class="placeholder">No report selected. Fetch the latest quarter or choose one above.</p>';
                                 return;
                             }}
-                            const header = `<h3 style="margin:0 0 4px;">${{report.fiscal_year}} ${{report.fiscal_quarter}}${{report.earnings_date ? " · " + report.earnings_date : ""}}</h3>`;
+                            const header = `<h3 style="margin:0 0 4px;">${{report.fiscal_year}} ${{report.fiscal_quarter}}${{report.earnings_date ? " · Earnings date: " + report.earnings_date : ""}}</h3>`;
                             const fin = renderFinancialsTable(report.financials);
                             const est = renderEstimates(report.estimates);
                             const cs = renderCompanySpecific(report.company_specific);
