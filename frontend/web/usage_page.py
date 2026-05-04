@@ -88,7 +88,7 @@ def render_usage_page() -> str:
                     <section class="card usage-section">
                         <h3>Recent Requests</h3>
                         <table class="usage-table" id="requests-table">
-                            <thead><tr><th>Time</th><th>Purpose</th><th>Company</th><th>Model</th><th>Tokens</th><th>Cost</th><th>Time(ms)</th></tr></thead>
+                            <thead><tr><th>Time</th><th>Purpose</th><th>Company</th><th>Model</th><th>Input</th><th>Output</th><th>Cached</th><th>Cost</th><th>Time(ms)</th></tr></thead>
                             <tbody></tbody>
                         </table>
                         <div style="margin-top:10px;text-align:center;">
@@ -140,9 +140,9 @@ def render_usage_page() -> str:
                         grid.innerHTML = `
                             <div class="summary-card"><div class="value cost">${{fmtCost(data.total_cost)}}</div><div class="label">Total Cost</div></div>
                             <div class="summary-card"><div class="value">${{data.total_requests || 0}}</div><div class="label">Requests</div></div>
-                            <div class="summary-card"><div class="value tokens">${{fmtTokens(data.total_tokens)}}</div><div class="label">Total Tokens</div></div>
                             <div class="summary-card"><div class="value">${{fmtTokens(data.total_prompt_tokens)}}</div><div class="label">Input Tokens</div></div>
                             <div class="summary-card"><div class="value">${{fmtTokens(data.total_completion_tokens)}}</div><div class="label">Output Tokens</div></div>
+                            <div class="summary-card"><div class="value" style="color:#2563eb;">${{fmtTokens(data.total_cached_tokens)}}</div><div class="label">Cached Tokens</div></div>
                             <div class="summary-card"><div class="value cost">${{fmtCost(avgCost)}}</div><div class="label">Avg/Request</div></div>
                         `;
                         const modelTbody = document.querySelector("#model-table tbody");
@@ -175,7 +175,7 @@ def render_usage_page() -> str:
                         const data = await resp.json();
                         const tbody = document.querySelector("#requests-table tbody");
                         const rows = (data.requests || []).map((r) =>
-                            `<tr><td style="white-space:nowrap;font-size:12px;">${{fmtTime(r.created_at)}}</td><td>${{r.purpose}}</td><td>${{r.company_name || "—"}}</td><td>${{r.model}}</td><td class="tokens">${{fmtTokens(r.total_tokens)}}</td><td class="cost">${{fmtCost(r.cost_usd)}}</td><td>${{r.response_time_ms ? r.response_time_ms.toLocaleString() : "—"}}</td></tr>`
+                            `<tr><td style="white-space:nowrap;font-size:12px;">${{fmtTime(r.created_at)}}</td><td>${{r.purpose}}</td><td>${{r.company_name || "—"}}</td><td>${{r.model}}</td><td class="tokens">${{fmtTokens(r.prompt_tokens)}}</td><td class="tokens">${{fmtTokens(r.completion_tokens)}}</td><td style="color:#2563eb;">${{r.cached_tokens ? fmtTokens(r.cached_tokens) : "—"}}</td><td class="cost">${{fmtCost(r.cost_usd)}}</td><td>${{r.response_time_ms ? r.response_time_ms.toLocaleString() : "—"}}</td></tr>`
                         ).join("");
                         if (append) tbody.innerHTML += rows;
                         else tbody.innerHTML = rows || '<tr><td colspan="7" class="muted">No requests yet</td></tr>';
