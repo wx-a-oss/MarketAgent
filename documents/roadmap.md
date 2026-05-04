@@ -27,10 +27,12 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
   - define the safe duplicate policy before adding midday or pre-market worker runs.
 
 ### 4) Earnings Report Module
-- `[partial]` Build an earnings module:
-  - show the last four earnings events for a subscribed company,
-  - capture actual vs estimate, guidance/outlook where available, and short earnings impact analysis,
-  - make earnings and post-earnings price reaction easy to review on a timeline.
+- `[done]` Comprehensive LLM-driven earnings analysis via web search:
+  - extracts full financials, company-specific metrics, guidance, management quotes, keywords,
+  - top-nav Earnings comparison page for multi-company side-by-side view,
+  - quarter navigation with +/› buttons to fetch older/newer quarters,
+  - incremental refresh that merges with existing data instead of overwriting,
+  - decoupled from company subscription — works for any company.
 
 ### 5) Government Document and Macro Report Module
 - `[partial]` Add a macro/government module:
@@ -79,6 +81,10 @@ Completed items are tracked in [implemented_features.md](./implemented_features.
   - daily catch-up/backfill,
   - stale-window refresh policy.
 - `[partial]` Unified typography/style system across Market/Company/Person pages (including CJK font fallback).
+
+### Deferred Modules (Low Priority)
+- `[deferred]` **Notes Module** — personal notes and annotations. Hidden from top nav. Will revisit when core analysis modules are stable.
+- `[deferred]` **Person Module** — user profile and preferences. Hidden from top nav. No current plan; will scope after higher-priority features ship.
 
 ## Cloud Migration (Separate Track)
 
