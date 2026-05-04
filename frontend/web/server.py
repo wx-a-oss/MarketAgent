@@ -23,6 +23,7 @@ from frontend.common import StockFrontendClient
 from market_agent.workflows import market_updates as market_updates_module
 from frontend.web.charts_page import render_charts_page
 from frontend.web.earnings_page import render_earnings_page
+from frontend.web.usage_page import render_usage_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -1048,6 +1049,11 @@ async def charts_page() -> str:
 @app.get("/earnings", response_class=HTMLResponse)
 async def earnings_page() -> str:
     return render_earnings_page()
+
+
+@app.get("/cost", response_class=HTMLResponse)
+async def cost_page() -> str:
+    return render_usage_page()
 
 
 
@@ -2362,6 +2368,60 @@ async def compare_earnings_reports(
             reports = _list_earnings_reports(name, limit=1)
             results[name] = reports[0] if reports else None
     return {"reports": results}
+
+
+# -- LLM Usage Monitoring --
+
+from market_agent.services.llm_usage import (
+    get_usage_summary as _get_usage_summary,
+    get_usage_by_company as _get_usage_by_company,
+    get_usage_by_module as _get_usage_by_module,
+    list_usage_requests as _list_usage_requests,
+    get_daily_costs as _get_daily_costs,
+)
+
+
+@app.get("/api/llm-usage/summary")
+async def llm_usage_summary(
+    days: int = Query(7, ge=1, le=365),
+    date: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    return _get_usage_summary(days, target_date=date)
+
+
+@app.get("/api/llm-usage/by-company")
+async def llm_usage_by_company(
+    days: int = Query(7, ge=1, le=365),
+    date: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    return {"days": days, "companies": _get_usage_by_company(days, target_date=date)}
+
+
+@app.get("/api/llm-usage/by-module")
+async def llm_usage_by_module(
+    days: int = Query(7, ge=1, le=365),
+    date: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    return {"days": days, "modules": _get_usage_by_module(days, target_date=date)}
+
+
+@app.get("/api/llm-usage/requests")
+async def llm_usage_requests(
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    company: Optional[str] = Query(None),
+    module: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    return {"days": days, "requests": _list_usage_requests(days, limit=limit, offset=offset, company=company, module=module, target_date=date)}
+
+
+@app.get("/api/llm-usage/daily-costs")
+async def llm_usage_daily_costs(
+    days: int = Query(90, ge=1, le=365),
+) -> Dict[str, Any]:
+    return {"days": days, "daily": _get_daily_costs(days)}
 
 
 @app.get("/api/company/{company_name}/stories")
