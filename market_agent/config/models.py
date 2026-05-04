@@ -28,7 +28,6 @@ for _model in (
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
-    "gpt-5.2",
 ):
     if _model and _model not in OPENAI_ANALYSIS_MODELS:
         OPENAI_ANALYSIS_MODELS.append(_model)

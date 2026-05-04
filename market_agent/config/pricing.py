@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Prices in USD per token. Update when providers change pricing.
+# Prices in USD per 1M tokens (short context, standard). Source: OpenAI pricing page.
 PRICING: dict[str, dict[str, float]] = {
-    "gpt-5.5":          {"input": 3.00 / 1_000_000, "output": 12.00 / 1_000_000, "cached_input": 1.50 / 1_000_000},
-    "gpt-5.4":          {"input": 2.00 / 1_000_000, "output": 8.00 / 1_000_000, "cached_input": 1.00 / 1_000_000},
-    "gpt-5.4-mini":     {"input": 0.30 / 1_000_000, "output": 1.20 / 1_000_000, "cached_input": 0.15 / 1_000_000},
-    "gpt-5.2":          {"input": 1.00 / 1_000_000, "output": 4.00 / 1_000_000, "cached_input": 0.50 / 1_000_000},
+    "gpt-5.5":          {"input": 5.00 / 1_000_000, "output": 30.00 / 1_000_000, "cached_input": 0.50 / 1_000_000},
+    "gpt-5.4":          {"input": 2.50 / 1_000_000, "output": 15.00 / 1_000_000, "cached_input": 0.25 / 1_000_000},
+    "gpt-5.4-mini":     {"input": 0.75 / 1_000_000, "output": 4.50 / 1_000_000, "cached_input": 0.075 / 1_000_000},
     "sonar-pro":        {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
     "gemini-2.5-flash": {"input": 0.15 / 1_000_000, "output": 0.60 / 1_000_000},
 }
