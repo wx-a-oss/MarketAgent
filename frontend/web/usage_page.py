@@ -200,6 +200,13 @@ def render_usage_page() -> str:
 
                     document.getElementById("load-more-btn").addEventListener("click", () => loadRequests(true));
 
+                    function localDateText(d) {{
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, "0");
+                        const day = String(d.getDate()).padStart(2, "0");
+                        return `${{year}}-${{month}}-${{day}}`;
+                    }}
+
                     async function initCalendar() {{
                         const resp = await fetch("/api/llm-usage/daily-costs?days=90");
                         const data = await resp.json();
@@ -208,9 +215,9 @@ def render_usage_page() -> str:
                         if (window.flatpickr) {{
                             window.flatpickr(document.getElementById("usage-date"), {{
                                 dateFormat: "Y-m-d",
-                                maxDate: "today",
+                                maxDate: localDateText(new Date()),
                                 onDayCreate: function(_dObj, _dStr, _fp, dayElem) {{
-                                    const dateStr = dayElem.dateObj.toISOString().slice(0, 10);
+                                    const dateStr = localDateText(dayElem.dateObj);
                                     const cost = dailyCostMap[dateStr];
                                     const badge = document.createElement("span");
                                     badge.className = "day-cost";
@@ -225,7 +232,7 @@ def render_usage_page() -> str:
                                 }},
                                 onChange: function(dates) {{
                                     if (!dates || !dates.length) return;
-                                    selectedDate = dates[0].toISOString().slice(0, 10);
+                                    selectedDate = localDateText(dates[0]);
                                     document.querySelectorAll("#range-btns button").forEach((b) => b.classList.remove("active"));
                                     loadAll();
                                 }},
