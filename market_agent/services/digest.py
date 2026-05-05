@@ -278,8 +278,17 @@ def build_consolidated_digest_html(
         cluster_text = "\n".join([f"- {c.get('cluster_title', '')}: {c.get('cluster_summary', '')}" for c in market_clusters])
         context_parts.append(f"## Market News Clusters\n{cluster_text}")
     if macro_events:
-        macro_text = "\n".join([f"- {e.get('event_date_time', '')[:10]} {e.get('event_name', '')} (importance: {e.get('importance', 'N/A')})" for e in macro_events[:15]])
-        context_parts.append(f"## Macro Events (this week + next)\n{macro_text}")
+        macro_lines = []
+        for e in macro_events[:15]:
+            line = f"- {e.get('event_date_time', '')[:10]} {e.get('event_name', '')} (importance: {e.get('importance', 'N/A')})"
+            if e.get('consensus_value'):
+                line += f" | consensus: {e['consensus_value']}"
+            if e.get('previous_value'):
+                line += f" | previous: {e['previous_value']}"
+            if e.get('actual_value'):
+                line += f" | actual: {e['actual_value']}"
+            macro_lines.append(line)
+        context_parts.append(f"## Macro Events (this week + next)\n" + "\n".join(macro_lines))
     for cd in company_data:
         if cd["daily_report"] or cd["clusters"]:
             parts = []
@@ -297,7 +306,12 @@ def build_consolidated_digest_html(
         "You are a senior market analyst writing a daily briefing email.\n"
         "Based on the following data, produce a concise executive briefing with:\n\n"
         "1. **Market Summary** — 3-5 bullet points of today's most important market developments, ranked by impact\n"
-        "2. **Macro Calendar** — any high-importance events this week/next week (skip if none)\n"
+        "2. **Macro Calendar & Impact Analysis** — for each upcoming high-importance macro event:\n"
+        "   - What is the event and when\n"
+        "   - What is the market consensus / expectation\n"
+        "   - What should I watch for (what outcome would be bullish vs bearish)\n"
+        "   - Potential impact on market and on my subscribed companies specifically\n"
+        "   - Skip low-importance events, focus on ones that could move markets\n"
         "3. **Company Updates** — for each company, 2-4 bullet points of the most impactful news/developments, ranked by importance\n"
         "4. **Key Risks & Watchlist** — anything that needs attention or follow-up\n\n"
         "Rules:\n"
