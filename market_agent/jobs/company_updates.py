@@ -72,28 +72,25 @@ def _send_digest_emails(
     output_language: str,
 ) -> None:
     from market_agent.services.email import is_email_configured, send_email
-    from market_agent.services.digest import build_market_digest_html, build_company_digest_html
+    from market_agent.services.digest import build_consolidated_digest_html
 
     if not is_email_configured():
         logging.getLogger(__name__).info("Email not configured — skipping digests")
         return
 
-    try:
-        market_html = build_market_digest_html(target_date, output_language=output_language)
-        send_email(f"Market Digest — {target_date.isoformat()}", market_html)
-    except Exception:
-        logging.getLogger(__name__).exception("Failed to send market digest email")
-
     company_names = [
         r.get("company_name") for r in results
         if r.get("company_name") and r.get("ok")
     ]
-    for company_name in company_names:
-        try:
-            company_html = build_company_digest_html(company_name, target_date, output_language=output_language)
-            send_email(f"{company_name} Daily Report — {target_date.isoformat()}", company_html)
-        except Exception:
-            logging.getLogger(__name__).exception("Failed to send %s digest email", company_name)
+    try:
+        html = build_consolidated_digest_html(
+            target_date,
+            company_names=company_names,
+            output_language=output_language,
+        )
+        send_email(f"Daily Briefing — {target_date.isoformat()}", html)
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to send consolidated digest email")
 
 
 if __name__ == "__main__":

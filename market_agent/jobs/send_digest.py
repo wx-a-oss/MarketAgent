@@ -21,8 +21,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timezone", default="America/Los_Angeles")
     parser.add_argument("--output-language", default="zh-CN")
     parser.add_argument("--company", action="append", dest="companies", default=None)
-    parser.add_argument("--market-only", action="store_true", default=False)
-    parser.add_argument("--companies-only", action="store_true", default=False)
     return parser
 
 
@@ -37,30 +35,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         target_date = datetime.now(ZoneInfo(args.timezone)).date()
 
     from market_agent.services.email import is_email_configured, send_email
-    from market_agent.services.digest import build_market_digest_html, build_company_digest_html
+    from market_agent.services.digest import build_consolidated_digest_html
 
     if not is_email_configured():
         print("Email not configured. Set MARKETAGENT_SMTP_USER and MARKETAGENT_SMTP_PASSWORD.")
         return 1
 
-    sent = 0
+    if args.companies:
+        company_names = args.companies
+    else:
+        company_names = [r["company_name"] for r in list_watchlist_company_rows()]
 
-    if not args.companies_only:
-        print(f"Sending market digest for {target_date}...")
-        html = build_market_digest_html(target_date, output_language=args.output_language)
-        if send_email(f"Market Digest — {target_date.isoformat()}", html):
-            sent += 1
-
-    if not args.market_only:
-        if args.companies:
-            company_names = args.companies
-        else:
-            company_names = [r["company_name"] for r in list_watchlist_company_rows()]
-        for name in company_names:
-            print(f"Sending {name} digest for {target_date}...")
-            html = build_company_digest_html(name, target_date, output_language=args.output_language)
-            if send_email(f"{name} Daily Report — {target_date.isoformat()}", html):
-                sent += 1
+    print(f"Building consolidated briefing for {target_date} ({len(company_names)} companies)...")
+    html = build_consolidated_digest_html(
+        target_date,
+        company_names=company_names,
+        output_language=args.output_language,
+    )
+    if send_email(f"Daily Briefing — {target_date.isoformat()}", html):
+        print("Done — 1 email sent.")
+    else:
+        print("Failed to send email.")
+        return 1
 
     print(f"Done — {sent} email(s) sent.")
     return 0

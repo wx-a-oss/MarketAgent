@@ -226,3 +226,97 @@ def build_company_digest_html(
 
     subtitle = f"{company_name} — {target_date.isoformat()}"
     return _html_wrap(f"{company_name} Daily Report", subtitle, "\n".join(parts))
+
+
+# ---------------------------------------------------------------------------
+# Consolidated digest (single email with LLM summary)
+# ---------------------------------------------------------------------------
+
+def build_consolidated_digest_html(
+    target_date: date,
+    *,
+    company_names: list[str],
+    output_language: str = "zh-CN",
+) -> str:
+    from market_agent.workflows.market_news import get_market_daily_news_overview
+    from market_agent.workflows.market_macro import list_market_macro_events
+    from market_agent.services.company import (
+        get_company_daily_report,
+        list_company_daily_clusters,
+    )
+    from market_agent.llms.news_registry import get_news_provider
+    from market_agent.llms.usage_context import usage_context
+    from market_agent.config.models import DEFAULT_MARKET_OPENAI_MODEL
+
+    # Gather all raw data
+    overview = get_market_daily_news_overview(target_date=target_date, output_language=output_language)
+    market_summary = ""
+    summaries = overview.get("summaries") or []
+    if summaries:
+        market_summary = summaries[-1].get("output_text", "")
+    market_clusters = overview.get("clusters") or []
+
+    week_start, _ = week_boundaries(target_date)
+    next_week_end = week_start + timedelta(days=13)
+    macro_events = list_market_macro_events(start_date=week_start, end_date=next_week_end)
+
+    company_data: list[dict] = []
+    for name in company_names:
+        report = get_company_daily_report(name, report_date=target_date)
+        clusters = list_company_daily_clusters(name, target_date=target_date, output_language=output_language)
+        company_data.append({
+            "company": name,
+            "daily_report": (report or {}).get("output_text", ""),
+            "clusters": [{"title": c.get("cluster_title", ""), "summary": c.get("cluster_summary", "")} for c in clusters],
+        })
+
+    # Build context for LLM
+    context_parts = [f"Date: {target_date.isoformat()}"]
+    if market_summary:
+        context_parts.append(f"## Market Daily Summary\n{market_summary}")
+    if market_clusters:
+        cluster_text = "\n".join([f"- {c.get('cluster_title', '')}: {c.get('cluster_summary', '')}" for c in market_clusters])
+        context_parts.append(f"## Market News Clusters\n{cluster_text}")
+    if macro_events:
+        macro_text = "\n".join([f"- {e.get('event_date_time', '')[:10]} {e.get('event_name', '')} (importance: {e.get('importance', 'N/A')})" for e in macro_events[:15]])
+        context_parts.append(f"## Macro Events (this week + next)\n{macro_text}")
+    for cd in company_data:
+        if cd["daily_report"] or cd["clusters"]:
+            parts = []
+            if cd["daily_report"]:
+                parts.append(cd["daily_report"])
+            if cd["clusters"]:
+                parts.append("\n".join([f"- {c['title']}: {c['summary']}" for c in cd["clusters"]]))
+            context_parts.append(f"## {cd['company']} Daily News\n" + "\n".join(parts))
+
+    full_context = "\n\n".join(context_parts)
+
+    lang_instruction = "Output in Simplified Chinese. Keep company names, tickers, and numbers in English." if output_language != "en" else "Output in English."
+
+    prompt = (
+        "You are a senior market analyst writing a daily briefing email.\n"
+        "Based on the following data, produce a concise executive briefing with:\n\n"
+        "1. **Market Summary** — 3-5 bullet points of today's most important market developments, ranked by impact\n"
+        "2. **Macro Calendar** — any high-importance events this week/next week (skip if none)\n"
+        "3. **Company Updates** — for each company, 2-4 bullet points of the most impactful news/developments, ranked by importance\n"
+        "4. **Key Risks & Watchlist** — anything that needs attention or follow-up\n\n"
+        "Rules:\n"
+        "- Rank everything by importance — most impactful items first\n"
+        "- Be concise — bullet points, not paragraphs\n"
+        "- Flag anything with outsized potential impact with [HIGH IMPACT]\n"
+        "- Skip items with no real news value\n"
+        f"- {lang_instruction}\n\n"
+        "Format as markdown.\n\n"
+        f"---\n\n{full_context}"
+    )
+
+    # Call LLM to summarize
+    provider = get_news_provider("openai", model=DEFAULT_MARKET_OPENAI_MODEL, timeout_sec=120)
+    with usage_context("daily_briefing_email", module="market"):
+        briefing_text = provider.generate_text(prompt=prompt)
+
+    # Build HTML
+    briefing_html = _md_to_html(briefing_text)
+    parts_html = [f'<div class="card"><div class="summary">{briefing_html}</div></div>']
+
+    return _html_wrap("Daily Briefing", target_date.isoformat(), "\n".join(parts_html))
