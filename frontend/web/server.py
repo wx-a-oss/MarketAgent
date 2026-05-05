@@ -24,6 +24,9 @@ from market_agent.workflows import market_updates as market_updates_module
 from frontend.web.charts_page import render_charts_page
 from frontend.web.earnings_page import render_earnings_page
 from frontend.web.usage_page import render_usage_page
+from frontend.web.daily_page import render_daily_page
+from frontend.web.weekly_page import render_weekly_page
+from frontend.web.monthly_page import render_monthly_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -1049,6 +1052,21 @@ async def charts_page() -> str:
 @app.get("/earnings", response_class=HTMLResponse)
 async def earnings_page() -> str:
     return render_earnings_page()
+
+
+@app.get("/daily", response_class=HTMLResponse)
+async def daily_page() -> str:
+    return render_daily_page()
+
+
+@app.get("/weekly", response_class=HTMLResponse)
+async def weekly_page() -> str:
+    return render_weekly_page()
+
+
+@app.get("/monthly", response_class=HTMLResponse)
+async def monthly_page() -> str:
+    return render_monthly_page()
 
 
 @app.get("/cost", response_class=HTMLResponse)
