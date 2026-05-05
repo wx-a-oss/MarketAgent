@@ -17,7 +17,7 @@ BASE_PAGE_STYLES = """
         border-radius: 0.75rem;
         padding: 0.75rem 1.25rem;
         box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        max-width: 960px;
+        max-width: 1400px;
         margin: 0 auto 1.5rem;
         font-family: inherit;
     }
@@ -26,7 +26,6 @@ BASE_PAGE_STYLES = """
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        flex-wrap: wrap;
     }
     .nav-links {
         display: inline-flex;
@@ -42,7 +41,7 @@ BASE_PAGE_STYLES = """
         letter-spacing: 0.01em;
     }
     nav a.active { color: #2563eb; }
-    .container { max-width: 960px; margin: 0 auto; padding: 0 1rem; display: grid; gap: 1.5rem; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 0 1rem; display: grid; gap: 1.5rem; }
     .card { background: white; border-radius: 0.75rem; padding: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
     h1, h2 { margin-top: 0; }
     form { display: flex; gap: 0.5rem; }
