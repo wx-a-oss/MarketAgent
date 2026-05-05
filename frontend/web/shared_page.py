@@ -97,7 +97,6 @@ def render_nav(active: str) -> str:
         '<nav>'
         '<div class="nav-inner">'
         f'<div class="nav-links">{links}</div>'
-        '<div class="nav-tz" style="font-size:0.75rem;color:#888;white-space:nowrap;">PST (America/Los_Angeles)</div>'
         '</div>'
         '</nav>'
     )
