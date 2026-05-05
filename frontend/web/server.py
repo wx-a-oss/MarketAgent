@@ -27,6 +27,7 @@ from frontend.web.usage_page import render_usage_page
 from frontend.web.daily_page import render_daily_page
 from frontend.web.weekly_page import render_weekly_page
 from frontend.web.monthly_page import render_monthly_page
+from frontend.web.dashboard_page import render_dashboard_page
 from frontend.web.company_detail_page import render_company_detail_page
 from frontend.web.company_page import render_company_page
 from frontend.web.crypto_page import render_crypto_page
@@ -1067,6 +1068,11 @@ async def weekly_page() -> str:
 @app.get("/monthly", response_class=HTMLResponse)
 async def monthly_page() -> str:
     return render_monthly_page()
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page() -> str:
+    return render_dashboard_page()
 
 
 @app.get("/cost", response_class=HTMLResponse)
