@@ -61,64 +61,80 @@ def _esc(text: str | None) -> str:
 
 
 def _md_to_html(text: str | None) -> str:
-    """Convert markdown text to HTML. Handles headers, bold, italic, lists, code, links."""
+    """Convert markdown text to HTML. Handles headers, bold, italic, nested lists, code, links."""
     if not text:
         return ""
     text = _esc(text)
     lines = text.split("\n")
     html_lines: list[str] = []
-    in_list: str | None = None  # "ul" or "ol"
+    list_stack: list[str] = []  # stack of "ul" or "ol" at each indent level
+
+    def _close_lists_to(target_depth: int) -> None:
+        while len(list_stack) > target_depth:
+            html_lines.append(f"</{list_stack.pop()}>")
 
     for line in lines:
         stripped = line.strip()
 
-        # Close list if line doesn't continue it
-        if in_list and not re.match(r"^[-*] |^\d+\. ", stripped) and stripped:
-            html_lines.append(f"</{in_list}>")
-            in_list = None
+        # Measure indent (number of leading spaces / 2)
+        indent = len(line) - len(line.lstrip())
+        depth = indent // 2
+
+        # Horizontal rule
+        if stripped in ("---", "***", "___"):
+            _close_lists_to(0)
+            html_lines.append("<hr>")
+            continue
 
         # Headers
         m = re.match(r"^(#{1,6})\s+(.*)", stripped)
         if m:
+            _close_lists_to(0)
             level = len(m.group(1))
             html_lines.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
             continue
 
-        # Unordered list
+        # Blockquote
+        m = re.match(r"^&gt;\s*(.*)", stripped)
+        if m:
+            _close_lists_to(0)
+            html_lines.append(f'<blockquote style="border-left:3px solid #ddd;padding-left:10px;color:#666;margin:6px 0;">{_inline(m.group(1))}</blockquote>')
+            continue
+
+        # Unordered list item
         m = re.match(r"^[-*]\s+(.*)", stripped)
         if m:
-            if in_list != "ul":
-                if in_list:
-                    html_lines.append(f"</{in_list}>")
+            target = depth + 1
+            if target > len(list_stack):
                 html_lines.append("<ul>")
-                in_list = "ul"
+                list_stack.append("ul")
+            elif target < len(list_stack):
+                _close_lists_to(target)
             html_lines.append(f"<li>{_inline(m.group(1))}</li>")
             continue
 
-        # Ordered list
+        # Ordered list item
         m = re.match(r"^\d+\.\s+(.*)", stripped)
         if m:
-            if in_list != "ol":
-                if in_list:
-                    html_lines.append(f"</{in_list}>")
+            target = depth + 1
+            if target > len(list_stack):
                 html_lines.append("<ol>")
-                in_list = "ol"
+                list_stack.append("ol")
+            elif target < len(list_stack):
+                _close_lists_to(target)
             html_lines.append(f"<li>{_inline(m.group(1))}</li>")
             continue
 
         # Blank line
         if not stripped:
-            if in_list:
-                html_lines.append(f"</{in_list}>")
-                in_list = None
+            _close_lists_to(0)
             continue
 
         # Regular paragraph
+        _close_lists_to(0)
         html_lines.append(f"<p>{_inline(stripped)}</p>")
 
-    if in_list:
-        html_lines.append(f"</{in_list}>")
-
+    _close_lists_to(0)
     return "\n".join(html_lines)
 
 
