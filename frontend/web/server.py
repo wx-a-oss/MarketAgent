@@ -1754,6 +1754,78 @@ async def refresh_market_macro_api(
     return {"events": rows, "description": "Update the stored calendar for the current month and next 2 months.", **started}
 
 
+from market_agent.workflows.market_news import (
+    generate_market_weekly_report as _generate_market_weekly_report,
+    generate_market_monthly_report as _generate_market_monthly_report,
+    MARKET_REPORT_KEY as _MARKET_REPORT_KEY,
+)
+
+
+@app.post("/api/market/report/week")
+async def generate_market_weekly_report_api(
+    week_date: str = Query(...),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    try:
+        target = datetime.fromisoformat(week_date).date()
+    except ValueError:
+        return {"error": "week_date must be YYYY-MM-DD"}
+    result = _generate_market_weekly_report(
+        target_date=target,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        output_language=output_language,
+    )
+    return result
+
+
+@app.get("/api/market/report/week")
+async def get_market_weekly_report_api(
+    week_date: str = Query(...),
+) -> Dict[str, Any]:
+    from market_agent.utils.week import week_boundaries
+    from market_agent.services.company.reports import get_news_report
+    try:
+        target = datetime.fromisoformat(week_date).date()
+    except ValueError:
+        return {"error": "week_date must be YYYY-MM-DD"}
+    ws, we = week_boundaries(target)
+    report = get_news_report(_MARKET_REPORT_KEY, beginning_date=ws, end_date=we)
+    return {"week_start": ws.isoformat(), "week_end": we.isoformat(), "report": report}
+
+
+@app.post("/api/market/report/month")
+async def generate_market_monthly_report_api(
+    month: str = Query(...),
+    output_language: str = Query("zh-CN"),
+    model: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    result = _generate_market_monthly_report(
+        month=month,
+        provider_name=provider or "openai",
+        model=model or DEFAULT_OPENAI_MODEL,
+        output_language=output_language,
+    )
+    return result
+
+
+@app.get("/api/market/report/month")
+async def get_market_monthly_report_api(
+    month: str = Query(...),
+) -> Dict[str, Any]:
+    from market_agent.services.company.reports import get_news_report
+    month_start = datetime.strptime(month, "%Y-%m").date()
+    if month_start.month == 12:
+        month_end = date(month_start.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(month_start.year, month_start.month + 1, 1) - timedelta(days=1)
+    report = get_news_report(_MARKET_REPORT_KEY, beginning_date=month_start, end_date=month_end)
+    return {"month": month, "report_start": month_start.isoformat(), "report_end": month_end.isoformat(), "report": report}
+
+
 @app.get("/api/market/prices/analysis")
 async def get_market_prices_analysis_api(
     date: Optional[str] = Query(None),

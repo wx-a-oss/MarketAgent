@@ -75,6 +75,8 @@ def render_dashboard_page() -> str:
                 </div>
                 <div class="add-dropdown" id="add-dropdown">
                     <button data-type="market_overview">Market Overview</button>
+                    <button data-type="market_weekly">Market Weekly</button>
+                    <button data-type="market_monthly">Market Monthly</button>
                     <button data-type="macro">Macro Calendar</button>
                     <button data-type="daily_news">Daily News</button>
                     <button data-type="weekly_report">Weekly Report</button>
@@ -87,12 +89,14 @@ def render_dashboard_page() -> str:
                 <script>
                     const STORAGE_KEY = "dashboard_v2_layout";
                     const PANEL_TYPES = [
-                        { value: "market_overview", label: "Market Overview", needsCompany: false, needsDate: true },
-                        { value: "macro", label: "Macro Calendar", needsCompany: false, needsDate: false },
-                        { value: "daily_news", label: "Daily News", needsCompany: true, needsDate: true },
-                        { value: "weekly_report", label: "Weekly Report", needsCompany: true, needsDate: true },
-                        { value: "monthly_report", label: "Monthly Report", needsCompany: true, needsDate: true },
-                        { value: "earnings", label: "Earnings", needsCompany: true, needsDate: false },
+                        { value: "market_overview", label: "Market Overview", needsCompany: false, needsDate: true, canFetch: true },
+                        { value: "market_weekly", label: "Market Weekly", needsCompany: false, needsDate: true, canFetch: true },
+                        { value: "market_monthly", label: "Market Monthly", needsCompany: false, needsDate: true, canFetch: true },
+                        { value: "macro", label: "Macro Calendar", needsCompany: false, needsDate: false, canFetch: false },
+                        { value: "daily_news", label: "Daily News", needsCompany: true, needsDate: true, canFetch: true },
+                        { value: "weekly_report", label: "Weekly Report", needsCompany: true, needsDate: true, canFetch: true },
+                        { value: "monthly_report", label: "Monthly Report", needsCompany: true, needsDate: true, canFetch: true },
+                        { value: "earnings", label: "Earnings", needsCompany: true, needsDate: false, canFetch: false },
                     ];
                     let companies = [];
                     let panels = [];
@@ -135,6 +139,7 @@ def render_dashboard_page() -> str:
                             const companyOpts = companies.map((c) => `<option value="${c}" ${c === p.company ? "selected" : ""}>${c}</option>`).join("");
                             const companySelect = typeCfg.needsCompany ? `<select class="panel-company" data-id="${p.id}">${companyOpts}</select>` : "";
                             const dateInput = typeCfg.needsDate ? `<input class="panel-date" data-id="${p.id}" type="text" value="${p.date || localDateText()}" />` : "";
+                            const fetchBtn = typeCfg.canFetch ? `<button class="size-btn fetch-btn" data-id="${p.id}" title="Fetch/Refresh data">↻</button>` : "";
                             const wideActive = p.colSpan > 1 ? " active" : "";
                             const tallActive = p.rowSpan > 1 ? " active" : "";
                             return `<div class="panel" draggable="true" data-id="${p.id}" style="grid-column:span ${p.colSpan};grid-row:span ${p.rowSpan};">
@@ -143,6 +148,7 @@ def render_dashboard_page() -> str:
                                     <select class="panel-type" data-id="${p.id}">${typeOpts}</select>
                                     ${companySelect}
                                     ${dateInput}
+                                    ${fetchBtn}
                                     <button class="size-btn${wideActive}" data-id="${p.id}" data-dir="wide" title="Wide">⇔</button>
                                     <button class="size-btn${tallActive}" data-id="${p.id}" data-dir="tall" title="Tall">⇕</button>
                                     <button class="close-btn" data-id="${p.id}">×</button>
@@ -162,6 +168,15 @@ def render_dashboard_page() -> str:
                         });
                         document.querySelectorAll(".size-btn").forEach((btn) => { btn.addEventListener("click", () => { const p = panels.find((x) => x.id === btn.dataset.id); if (!p) return; if (btn.dataset.dir === "wide") p.colSpan = p.colSpan > 1 ? 1 : 2; else p.rowSpan = p.rowSpan > 1 ? 1 : 2; saveLayout(); renderGrid(); }); });
                         document.querySelectorAll(".close-btn").forEach((btn) => { btn.addEventListener("click", () => { panels = panels.filter((x) => x.id !== btn.dataset.id); saveLayout(); renderGrid(); }); });
+                        document.querySelectorAll(".fetch-btn").forEach((btn) => {
+                            btn.addEventListener("click", async () => {
+                                const p = panels.find((x) => x.id === btn.dataset.id);
+                                if (!p) return;
+                                btn.disabled = true; btn.textContent = "...";
+                                try { await fetchPanelData(p); await loadPanelData(p); }
+                                finally { btn.disabled = false; btn.textContent = "↻"; }
+                            });
+                        });
                         // Drag and drop
                         document.querySelectorAll(".panel[draggable]").forEach((el) => {
                             el.addEventListener("dragstart", (e) => { dragId = el.dataset.id; e.dataTransfer.effectAllowed = "move"; });
@@ -172,6 +187,28 @@ def render_dashboard_page() -> str:
                         });
                     }
 
+                    // --- Fetch (trigger refresh) per panel ---
+                    async function fetchPanelData(p) {
+                        const date = p.date || localDateText();
+                        if (p.type === "market_overview") {
+                            await fetch(`/api/market/daily-news/refresh?date=${date}&force_fetch=true`, {method: "POST"});
+                        } else if (p.type === "market_weekly") {
+                            await fetch(`/api/market/report/week?week_date=${date}`, {method: "POST"});
+                        } else if (p.type === "market_monthly") {
+                            const month = date.slice(0, 7);
+                            await fetch(`/api/market/report/month?month=${month}`, {method: "POST"});
+                        } else if (p.type === "daily_news" && p.company) {
+                            await fetch(`/api/company/${encodeURIComponent(p.company)}/refresh?start_date=${date}&end_date=${date}&output_language=zh-CN`, {method: "POST"});
+                            await fetch(`/api/company/${encodeURIComponent(p.company)}/report/day?date=${date}&output_language=zh-CN`, {method: "POST"});
+                        } else if (p.type === "weekly_report" && p.company) {
+                            const [ws] = weekBoundaries(new Date(date + "T00:00:00"));
+                            await fetch(`/api/company/${encodeURIComponent(p.company)}/report?week_date=${ws}&output_language=zh-CN`, {method: "POST"});
+                        } else if (p.type === "monthly_report" && p.company) {
+                            const month = date.slice(0, 7);
+                            await fetch(`/api/company/${encodeURIComponent(p.company)}/report/month?month=${month}&output_language=zh-CN`, {method: "POST"});
+                        }
+                    }
+
                     // --- Data loading per panel ---
                     async function loadPanelData(p) {
                         const body = document.getElementById("body-" + p.id);
@@ -179,6 +216,8 @@ def render_dashboard_page() -> str:
                         body.innerHTML = '<span class="placeholder">Loading...</span>';
                         try {
                             if (p.type === "market_overview") await loadMarket(body, p);
+                            else if (p.type === "market_weekly") await loadMarketWeekly(body, p);
+                            else if (p.type === "market_monthly") await loadMarketMonthly(body, p);
                             else if (p.type === "macro") await loadMacro(body);
                             else if (p.type === "daily_news") await loadDaily(body, p);
                             else if (p.type === "weekly_report") await loadWeekly(body, p);
@@ -199,13 +238,43 @@ def render_dashboard_page() -> str:
                         if (!events.length) { body.innerHTML = '<span class="placeholder">No macro events.</span>'; return; }
                         body.innerHTML = events.map((e) => `<div class="macro-row"><span class="macro-date">${(e.event_date_time||"").slice(0,10)}</span><span class="macro-name">${e.event_name||""}</span></div>`).join("");
                     }
+                    async function loadMarketWeekly(body, p) {
+                        const date = p.date || localDateText();
+                        const r = await fetch(`/api/market/report/week?week_date=${date}`); const d = await r.json();
+                        if (!d.report) { body.innerHTML = `<span class="placeholder">No market weekly report for week of ${d.week_start || date}. Click ↻ to generate.</span>`; return; }
+                        const report = d.report;
+                        let html = `<h3>Week of ${d.week_start}</h3>`;
+                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                            const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
+                            const items = Array.isArray(val) ? val : [val];
+                            html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
+                        }
+                        body.innerHTML = html;
+                    }
+                    async function loadMarketMonthly(body, p) {
+                        const date = p.date || localDateText();
+                        const month = date.slice(0, 7);
+                        const r = await fetch(`/api/market/report/month?month=${month}`); const d = await r.json();
+                        if (!d.report) { body.innerHTML = `<span class="placeholder">No market monthly report for ${month}. Click ↻ to generate.</span>`; return; }
+                        const report = d.report;
+                        let html = `<h3>${month}</h3>`;
+                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                            const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
+                            const items = Array.isArray(val) ? val : [val];
+                            html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
+                        }
+                        body.innerHTML = html;
+                    }
                     async function loadDaily(body, p) {
                         if (!p.company) { body.innerHTML = '<span class="placeholder">Select a company.</span>'; return; }
                         const r = await fetch(`/api/company/${encodeURIComponent(p.company)}/news?output_language=zh-CN`); const d = await r.json();
                         const date = p.date || localDateText();
-                        const group = (d.groups || []).find((g) => g.type === "daily" && (g.label === date || g.key === `day-${date}`));
-                        if (!group) { body.innerHTML = `<span class="placeholder">No daily data for ${date}.</span>`; return; }
-                        let html = "";
+                        const dailyGroups = (d.groups || []).filter((g) => g.type === "daily");
+                        let group = dailyGroups.find((g) => g.label === date || g.key === `day-${date}`);
+                        let label = date;
+                        if (!group && dailyGroups.length) { group = dailyGroups[0]; label = group.label + " (latest)"; }
+                        if (!group) { body.innerHTML = `<span class="placeholder">No daily data. Click ↻ to fetch.</span>`; return; }
+                        let html = `<h3>${label}</h3>`;
                         if (group.daily_report && group.daily_report.output_text) html += renderMd(group.daily_report.output_text);
                         const clusters = group.daily_clusters || [];
                         if (clusters.length) html += "<h3>Clusters</h3>" + clusters.map((c) => `<div class="cluster"><div class="cluster-title">${c.cluster_title||""}</div><div class="cluster-summary">${c.cluster_summary||""}</div></div>`).join("");
@@ -218,10 +287,16 @@ def render_dashboard_page() -> str:
                         const r = await fetch(`/api/company/${encodeURIComponent(p.company)}/news?output_language=zh-CN`); const d = await r.json();
                         const date = p.date ? new Date(p.date + "T00:00:00") : new Date();
                         const [ws] = weekBoundaries(date);
-                        const group = (d.groups || []).find((g) => g.type === "weekly" && g.report_start === ws);
-                        if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No weekly report for week of ${ws}.</span>`; return; }
+                        const weeklyGroups = (d.groups || []).filter((g) => g.type === "weekly");
+                        let group = weeklyGroups.find((g) => g.report_start === ws);
+                        let label = `Week of ${ws}`;
+                        if ((!group || !group.report) && weeklyGroups.length) {
+                            const withReport = weeklyGroups.find((g) => g.report);
+                            if (withReport) { group = withReport; label = `Week of ${group.report_start} (latest)`; }
+                        }
+                        if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No weekly report. Click ↻ to generate.</span>`; return; }
                         const report = group.report;
-                        let html = `<h3>Week of ${group.report_start}</h3>`;
+                        let html = `<h3>${label}</h3>`;
                         for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
                             const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                             const items = Array.isArray(val) ? val : [val];
@@ -233,7 +308,23 @@ def render_dashboard_page() -> str:
                         if (!p.company) { body.innerHTML = '<span class="placeholder">Select a company.</span>'; return; }
                         const r = await fetch(`/api/company/${encodeURIComponent(p.company)}/news?output_language=zh-CN`); const d = await r.json();
                         const month = p.date ? p.date.slice(0, 7) : currentMonth();
-                        const group = (d.groups || []).find((g) => g.type === "monthly" && g.label === month);
+                        const monthlyGroups = (d.groups || []).filter((g) => g.type === "monthly");
+                        let group = monthlyGroups.find((g) => g.label === month);
+                        let label = month;
+                        if ((!group || !group.report) && monthlyGroups.length) {
+                            const withReport = monthlyGroups.find((g) => g.report);
+                            if (withReport) { group = withReport; label = `${group.label} (latest)`; }
+                        }
+                        if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No monthly report. Click ↻ to generate.</span>`; return; }
+                        const report = group.report;
+                        let html = `<h3>${label}</h3>`;
+                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                            const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
+                            const items = Array.isArray(val) ? val : [val];
+                            html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
+                        }
+                        body.innerHTML = html;
+                    }
                         if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No monthly report for ${month}.</span>`; return; }
                         const report = group.report;
                         let html = `<h3>${month}</h3>`;

@@ -584,3 +584,132 @@ def _generate_market_research_text(*, provider_name: str, model: str, prompt: st
     provider = get_news_provider(normalized, model=model, timeout_sec=180)
     with usage_context("market_news_summary", module="market"):
         return provider.generate_text(prompt=prompt)
+
+
+# ---------------------------------------------------------------------------
+# Market weekly / monthly reports
+# ---------------------------------------------------------------------------
+
+MARKET_REPORT_KEY = "__market__"
+
+
+def generate_market_weekly_report(
+    *,
+    target_date: date,
+    provider_name: str = DEFAULT_MARKET_PROVIDER,
+    model: str = DEFAULT_MARKET_MODEL,
+    output_language: str = "zh-CN",
+) -> Dict[str, Any]:
+    from market_agent.utils.week import week_boundaries
+    from market_agent.services.company.reports import _store_weekly_report
+    from market_agent.services.company._helpers import _build_output_language_line
+
+    week_start, week_end = week_boundaries(target_date)
+    daily_summaries = []
+    current = week_start
+    while current <= week_end:
+        items = list_market_raw_news(target_date=current, limit=50)
+        summaries = _get_market_daily_summaries_shared(current)
+        if summaries:
+            daily_summaries.append({
+                "date": current.isoformat(),
+                "summary": summaries[-1].get("output_text", ""),
+            })
+        elif items:
+            headlines = [it.get("headline", "") for it in items[:20]]
+            daily_summaries.append({
+                "date": current.isoformat(),
+                "headlines": headlines,
+            })
+        current += timedelta(days=1)
+
+    if not daily_summaries:
+        return {"generated": False, "week_start": week_start.isoformat(), "week_end": week_end.isoformat()}
+
+    import json as _json
+    context = _json.dumps(daily_summaries, ensure_ascii=False, indent=1)
+    lang_line = _build_output_language_line(output_language)
+    prompt = (
+        "You are a senior market analyst. Synthesize the following daily market summaries "
+        f"for the week of {week_start.isoformat()} to {week_end.isoformat()} into a comprehensive "
+        "weekly market report.\n\n"
+        "Return a JSON object with these keys (each is a list of bullet-point strings):\n"
+        "summary, sentiment, facts, viewpoint, reasoning, uncertainties, short_term_impact, long_term_impact, trends\n\n"
+        f"{lang_line}\n"
+        "Return ONLY valid JSON.\n\n"
+        f"Daily summaries:\n{context}"
+    )
+
+    provider = get_news_provider(provider_name, model=model, timeout_sec=120)
+    with usage_context("market_weekly_report", module="market"):
+        raw = provider.generate_text(prompt=prompt)
+
+    try:
+        report = _json.loads(raw) if isinstance(raw, str) else {}
+    except _json.JSONDecodeError:
+        report = {"summary": [raw]}
+
+    if not isinstance(report, dict):
+        report = {"summary": [str(report)]}
+
+    _store_weekly_report(MARKET_REPORT_KEY, start_date=week_start, end_date=week_end, report_payload=report)
+    return {"generated": True, "week_start": week_start.isoformat(), "week_end": week_end.isoformat()}
+
+
+def generate_market_monthly_report(
+    *,
+    month: str,
+    provider_name: str = DEFAULT_MARKET_PROVIDER,
+    model: str = DEFAULT_MARKET_MODEL,
+    output_language: str = "zh-CN",
+) -> Dict[str, Any]:
+    from market_agent.services.company.reports import get_news_report, _store_weekly_report
+    from market_agent.services.company._helpers import _build_output_language_line
+    from market_agent.utils.week import week_boundaries
+
+    month_start = date.fromisoformat(f"{month}-01")
+    if month_start.month == 12:
+        month_end = date(month_start.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(month_start.year, month_start.month + 1, 1) - timedelta(days=1)
+
+    weekly_reports = []
+    current = month_start
+    while current <= month_end:
+        ws, we = week_boundaries(current)
+        if current == we:
+            report = get_news_report(MARKET_REPORT_KEY, beginning_date=ws, end_date=we)
+            if report:
+                weekly_reports.append({"week_start": ws.isoformat(), "week_end": we.isoformat(), "report": report})
+        current += timedelta(days=1)
+
+    if not weekly_reports:
+        return {"generated": False, "month": month}
+
+    import json as _json
+    context = _json.dumps(weekly_reports, ensure_ascii=False, indent=1)
+    lang_line = _build_output_language_line(output_language)
+    prompt = (
+        f"You are a senior market analyst. Synthesize the following weekly market reports "
+        f"for {month} into a comprehensive monthly market report.\n\n"
+        "Return a JSON object with these keys (each is a list of bullet-point strings):\n"
+        "summary, sentiment, facts, viewpoint, reasoning, trends\n\n"
+        f"{lang_line}\n"
+        "Return ONLY valid JSON.\n\n"
+        f"Weekly reports:\n{context}"
+    )
+
+    provider = get_news_provider(provider_name, model=model, timeout_sec=120)
+    with usage_context("market_monthly_report", module="market"):
+        raw = provider.generate_text(prompt=prompt)
+
+    try:
+        report = _json.loads(raw) if isinstance(raw, str) else {}
+    except _json.JSONDecodeError:
+        report = {"summary": [raw]}
+
+    if not isinstance(report, dict):
+        report = {"summary": [str(report)]}
+
+    _store_weekly_report(MARKET_REPORT_KEY, start_date=month_start, end_date=month_end, report_payload=report)
+    return {"generated": True, "month": month}
