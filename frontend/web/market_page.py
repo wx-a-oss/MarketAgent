@@ -565,6 +565,8 @@ def render_market_page(
                     <div class="subtabs" id="market-view-tabs">
                         <button class="subtab-btn active" type="button" data-market-view="overview">Overview</button>
                         <button class="subtab-btn" type="button" data-market-view="daily-news">Daily News</button>
+                        <button class="subtab-btn" type="button" data-market-view="weekly">Weekly</button>
+                        <button class="subtab-btn" type="button" data-market-view="monthly">Monthly</button>
                         <button class="subtab-btn" type="button" data-market-view="calendar">Macro</button>
                         <button class="subtab-btn" type="button" data-market-view="stories">Stories</button>
                     </div>
@@ -609,6 +611,32 @@ def render_market_page(
                             <div id="market-daily-clusters"></div>
                             <div id="news-summaries"></div>
                             <div id="market-news" class="news-list"></div>
+                        </section>
+                    </div>
+
+                    <div id="market-weekly-view" class="market-subview">
+                        <section class="card">
+                            <div class="view-toolbar">
+                                <h2>Market Weekly Report</h2>
+                                <div class="view-toolbar-right">
+                                    <input id="market-weekly-date" class="date-input" type="text" />
+                                    <button id="generate-market-weekly" class="refresh-btn" type="button">Generate Weekly</button>
+                                </div>
+                            </div>
+                            <div id="market-weekly-content"></div>
+                        </section>
+                    </div>
+
+                    <div id="market-monthly-view" class="market-subview">
+                        <section class="card">
+                            <div class="view-toolbar">
+                                <h2>Market Monthly Report</h2>
+                                <div class="view-toolbar-right">
+                                    <input id="market-monthly-picker" class="date-input" type="month" style="width:130px;" />
+                                    <button id="generate-market-monthly" class="refresh-btn" type="button">Generate Monthly</button>
+                                </div>
+                            </div>
+                            <div id="market-monthly-content"></div>
                         </section>
                     </div>
 
@@ -1538,7 +1566,7 @@ def render_market_page(
                     }}
 
                     function setMarketView(mode) {{
-                        const allowed = new Set(["overview", "daily-news", "stories", "calendar"]);
+                        const allowed = new Set(["overview", "daily-news", "weekly", "monthly", "stories", "calendar"]);
                         currentMarketView = allowed.has(mode) ? mode : "overview";
                         document.querySelectorAll(".market-subview").forEach((el) => {{
                             el.classList.toggle("active", el.id === `market-${{currentMarketView}}-view`);
@@ -1638,6 +1666,10 @@ def render_market_page(
                                     await loadPricesAnalysis(false);
                                 }} else if (next === "daily-news") {{
                                     await ensureDailyNewsLoaded();
+                                }} else if (next === "weekly") {{
+                                    await loadMarketWeekly();
+                                }} else if (next === "monthly") {{
+                                    await loadMarketMonthly();
                                 }} else if (next === "stories") {{
                                     await ensureMarketStoriesLoaded();
                                 }} else if (next === "calendar") {{
@@ -1670,6 +1702,110 @@ def render_market_page(
                         }});
                     }}
 
+                    // --- Market Weekly Report ---
+                    const marketWeeklyDate = document.getElementById("market-weekly-date");
+                    const marketWeeklyContent = document.getElementById("market-weekly-content");
+                    const generateMarketWeeklyBtn = document.getElementById("generate-market-weekly");
+                    const WEEK_START_DAY = 6;
+                    function mktWeekBounds(d) {{
+                        const offset = (d.getDay() - WEEK_START_DAY + 7) % 7;
+                        const start = new Date(d); start.setDate(d.getDate() - offset);
+                        return localDateText(start);
+                    }}
+                    let marketWeekDate = localDateText();
+
+                    async function loadMarketWeekly() {{
+                        if (!marketWeeklyContent) return;
+                        marketWeeklyContent.innerHTML = '<p class="placeholder">Loading...</p>';
+                        try {{
+                            const ws = mktWeekBounds(new Date(marketWeekDate + "T00:00:00"));
+                            const r = await fetch(`/api/market/report/week?week_date=${{ws}}`);
+                            const d = await r.json();
+                            if (!d.report) {{ marketWeeklyContent.innerHTML = `<p class="placeholder">No market weekly report for week of ${{d.week_start || ws}}. Click "Generate Weekly" to create.</p>`; return; }}
+                            const report = d.report;
+                            let html = `<h3>Week of ${{d.week_start}} ~ ${{d.week_end}}</h3>`;
+                            for (const key of ["summary","sentiment","facts","viewpoint","reasoning","uncertainties","short_term_impact","long_term_impact","trends"]) {{
+                                const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
+                                const items = Array.isArray(val) ? val : [val];
+                                html += `<strong>${{key}}:</strong><ul>${{items.map((s) => `<li>${{s}}</li>`).join("")}}</ul>`;
+                            }}
+                            marketWeeklyContent.innerHTML = html;
+                        }} catch {{ marketWeeklyContent.innerHTML = '<p class="placeholder">Failed to load.</p>'; }}
+                    }}
+
+                    if (marketWeeklyDate && window.flatpickr) {{
+                        marketWeeklyDate.value = `Week of ${{mktWeekBounds(new Date())}}`;
+                        window.flatpickr(marketWeeklyDate, {{
+                            dateFormat: "Y-m-d",
+                            maxDate: localDateText(),
+                            onChange: (dates) => {{
+                                if (!dates.length) return;
+                                marketWeekDate = localDateText(dates[0]);
+                                marketWeeklyDate.value = `Week of ${{mktWeekBounds(dates[0])}}`;
+                                loadMarketWeekly();
+                            }},
+                        }});
+                    }}
+                    if (generateMarketWeeklyBtn) {{
+                        generateMarketWeeklyBtn.addEventListener("click", async () => {{
+                            generateMarketWeeklyBtn.disabled = true;
+                            generateMarketWeeklyBtn.textContent = "Generating...";
+                            try {{
+                                const ws = mktWeekBounds(new Date(marketWeekDate + "T00:00:00"));
+                                await fetch(`/api/market/report/week?week_date=${{ws}}`, {{method: "POST"}});
+                                await loadMarketWeekly();
+                            }} finally {{
+                                generateMarketWeeklyBtn.disabled = false;
+                                generateMarketWeeklyBtn.textContent = "Generate Weekly";
+                            }}
+                        }});
+                    }}
+
+                    // --- Market Monthly Report ---
+                    const marketMonthlyPicker = document.getElementById("market-monthly-picker");
+                    const marketMonthlyContent = document.getElementById("market-monthly-content");
+                    const generateMarketMonthlyBtn = document.getElementById("generate-market-monthly");
+                    let marketMonth = localDateText().slice(0, 7);
+
+                    async function loadMarketMonthly() {{
+                        if (!marketMonthlyContent) return;
+                        marketMonthlyContent.innerHTML = '<p class="placeholder">Loading...</p>';
+                        try {{
+                            const r = await fetch(`/api/market/report/month?month=${{marketMonth}}`);
+                            const d = await r.json();
+                            if (!d.report) {{ marketMonthlyContent.innerHTML = `<p class="placeholder">No market monthly report for ${{marketMonth}}. Click "Generate Monthly" to create.</p>`; return; }}
+                            const report = d.report;
+                            let html = `<h3>${{marketMonth}}</h3>`;
+                            for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {{
+                                const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
+                                const items = Array.isArray(val) ? val : [val];
+                                html += `<strong>${{key}}:</strong><ul>${{items.map((s) => `<li>${{s}}</li>`).join("")}}</ul>`;
+                            }}
+                            marketMonthlyContent.innerHTML = html;
+                        }} catch {{ marketMonthlyContent.innerHTML = '<p class="placeholder">Failed to load.</p>'; }}
+                    }}
+
+                    if (marketMonthlyPicker) {{
+                        marketMonthlyPicker.value = marketMonth;
+                        marketMonthlyPicker.addEventListener("change", () => {{
+                            marketMonth = marketMonthlyPicker.value;
+                            loadMarketMonthly();
+                        }});
+                    }}
+                    if (generateMarketMonthlyBtn) {{
+                        generateMarketMonthlyBtn.addEventListener("click", async () => {{
+                            generateMarketMonthlyBtn.disabled = true;
+                            generateMarketMonthlyBtn.textContent = "Generating...";
+                            try {{
+                                await fetch(`/api/market/report/month?month=${{marketMonth}}`, {{method: "POST"}});
+                                await loadMarketMonthly();
+                            }} finally {{
+                                generateMarketMonthlyBtn.disabled = false;
+                                generateMarketMonthlyBtn.textContent = "Generate Monthly";
+                            }}
+                        }});
+                    }}
+
                     setMarketView(initialState.view || "overview");
                     const initialLoads = [loadSummaryDates()];
                     if (currentMarketView === "overview") {{
@@ -1680,6 +1816,10 @@ def render_market_page(
                             await loadPricesAnalysis(false);
                         }} else if (currentMarketView === "daily-news") {{
                             await ensureDailyNewsLoaded();
+                        }} else if (currentMarketView === "weekly") {{
+                            await loadMarketWeekly();
+                        }} else if (currentMarketView === "monthly") {{
+                            await loadMarketMonthly();
                         }} else if (currentMarketView === "stories") {{
                             await ensureMarketStoriesLoaded();
                         }} else if (currentMarketView === "calendar") {{
