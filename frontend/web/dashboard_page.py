@@ -133,6 +133,12 @@ def render_dashboard_page() -> str:
 
                     function renderGrid() {
                         const grid = document.getElementById("dash-grid");
+                        // Save existing panel body contents
+                        const savedBodies = {};
+                        grid.querySelectorAll(".panel-body").forEach((el) => {
+                            const id = el.id.replace("body-", "");
+                            if (el.innerHTML && !el.innerHTML.includes("Loading...")) savedBodies[id] = el.innerHTML;
+                        });
                         grid.innerHTML = panels.map((p) => {
                             const typeCfg = PANEL_TYPES.find((t) => t.value === p.type) || PANEL_TYPES[0];
                             const typeOpts = PANEL_TYPES.map((t) => `<option value="${t.value}" ${t.value === p.type ? "selected" : ""}>${t.label}</option>`).join("");
@@ -142,6 +148,7 @@ def render_dashboard_page() -> str:
                             const fetchBtn = typeCfg.canFetch ? `<button class="size-btn fetch-btn" data-id="${p.id}" title="Fetch/Refresh data">↻</button>` : "";
                             const wideActive = p.colSpan > 1 ? " active" : "";
                             const tallActive = p.rowSpan > 1 ? " active" : "";
+                            const bodyContent = savedBodies[p.id] || '<span class="placeholder">Loading...</span>';
                             return `<div class="panel" draggable="true" data-id="${p.id}" style="grid-column:span ${p.colSpan};grid-row:span ${p.rowSpan};">
                                 <div class="panel-header">
                                     <span class="drag-handle">≡</span>
@@ -153,7 +160,7 @@ def render_dashboard_page() -> str:
                                     <button class="size-btn${tallActive}" data-id="${p.id}" data-dir="tall" title="Tall">⇕</button>
                                     <button class="close-btn" data-id="${p.id}">×</button>
                                 </div>
-                                <div class="panel-body" id="body-${p.id}"><span class="placeholder">Loading...</span></div>
+                                <div class="panel-body" id="body-${p.id}">${bodyContent}</div>
                             </div>`;
                         }).join("");
                         wireEvents();
