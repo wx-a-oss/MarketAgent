@@ -157,11 +157,15 @@ def render_dashboard_page() -> str:
                             </div>`;
                         }).join("");
                         wireEvents();
+                    }
+
+                    function renderGridAndLoad() {
+                        renderGrid();
                         panels.forEach((p) => loadPanelData(p));
                     }
 
                     function wireEvents() {
-                        document.querySelectorAll(".panel-type").forEach((sel) => { sel.addEventListener("change", (e) => { const p = panels.find((x) => x.id === e.target.dataset.id); if (p) { p.type = e.target.value; saveLayout(); renderGrid(); } }); });
+                        document.querySelectorAll(".panel-type").forEach((sel) => { sel.addEventListener("change", (e) => { const p = panels.find((x) => x.id === e.target.dataset.id); if (p) { p.type = e.target.value; saveLayout(); renderGrid(); loadPanelData(p); } }); });
                         document.querySelectorAll(".panel-company").forEach((sel) => { sel.addEventListener("change", (e) => { const p = panels.find((x) => x.id === e.target.dataset.id); if (p) { p.company = e.target.value; saveLayout(); loadPanelData(p); } }); });
                         document.querySelectorAll(".panel-date").forEach((input) => {
                             if (window.flatpickr) { window.flatpickr(input, { dateFormat: "Y-m-d", maxDate: localDateText(), onChange: (dates) => { if (!dates.length) return; const p = panels.find((x) => x.id === input.dataset.id); if (p) { p.date = localDateText(dates[0]); saveLayout(); loadPanelData(p); } } }); }
@@ -347,13 +351,14 @@ def render_dashboard_page() -> str:
                         btn.addEventListener("click", () => {
                             const type = btn.dataset.type;
                             const cfg = PANEL_TYPES.find((t) => t.value === type);
-                            panels.push({ id: "p" + (nextId++), type, company: cfg && cfg.needsCompany ? (companies[0] || null) : null, date: null, colSpan: 1, rowSpan: 1 });
-                            saveLayout(); renderGrid();
+                            const newPanel = { id: "p" + (nextId++), type, company: cfg && cfg.needsCompany ? (companies[0] || null) : null, date: null, colSpan: 1, rowSpan: 1 };
+                            panels.push(newPanel);
+                            saveLayout(); renderGrid(); loadPanelData(newPanel);
                             document.getElementById("add-dropdown").classList.remove("show");
                         });
                     });
                     document.addEventListener("click", (e) => { if (!e.target.closest("#add-btn") && !e.target.closest("#add-dropdown")) document.getElementById("add-dropdown").classList.remove("show"); });
-                    document.getElementById("reset-btn").addEventListener("click", () => { localStorage.removeItem(STORAGE_KEY); panels = defaultLayout(); renderGrid(); });
+                    document.getElementById("reset-btn").addEventListener("click", () => { localStorage.removeItem(STORAGE_KEY); panels = defaultLayout(); renderGridAndLoad(); });
 
                     // --- Init ---
                     async function init() {
@@ -361,7 +366,7 @@ def render_dashboard_page() -> str:
                         loadLayout();
                         if (!panels.length) panels = defaultLayout();
                         nextId = Math.max(100, ...panels.map((p) => parseInt(String(p.id).replace("p",""),10) || 0)) + 1;
-                        renderGrid();
+                        renderGridAndLoad();
                     }
                     init();
                 </script>
