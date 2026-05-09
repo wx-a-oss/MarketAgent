@@ -325,16 +325,6 @@ def render_dashboard_page() -> str:
                         }
                         body.innerHTML = html;
                     }
-                        if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No monthly report for ${month}.</span>`; return; }
-                        const report = group.report;
-                        let html = `<h3>${month}</h3>`;
-                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
-                            const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
-                            const items = Array.isArray(val) ? val : [val];
-                            html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
-                        }
-                        body.innerHTML = html;
-                    }
                     async function loadEarnings(body, p) {
                         if (!p.company) { body.innerHTML = '<span class="placeholder">Select a company.</span>'; return; }
                         const r = await fetch(`/api/company/${encodeURIComponent(p.company)}/earnings/reports?limit=1`); const d = await r.json();
