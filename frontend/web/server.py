@@ -4,6 +4,7 @@ import logging
 import json
 import os
 import time as pytime
+import urllib.request
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -3274,5 +3275,4 @@ async def summarize_company_news_for_day(
         "dropped_count": 0,
         "elapsed_sec": stats.get("elapsed_sec", 0.0),
     }
-
 

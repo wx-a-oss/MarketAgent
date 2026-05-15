@@ -2275,14 +2275,6 @@ def render_company_detail_page(
                             }}).join("");
                         }}
 
-                            return sections.map((sec) => {{
-                                const title = sec.title || "Business Metrics";
-                                const commentary = sec.commentary ? `<p style="color:#555;font-size:13px;margin-top:6px;">${{sec.commentary}}</p>` : "";
-                                const dataHtml = renderData(sec.data);
-                                return `<div style="margin-bottom:16px;"><h4 style="margin:0 0 6px;font-size:14px;">${{title}}</h4>${{dataHtml}}${{commentary}}</div>`;
-                            }}).join("");
-                        }}
-
                         function renderAnalysis(a) {{
                             if (!a || !Object.keys(a).length) return "";
                             let html = "";
