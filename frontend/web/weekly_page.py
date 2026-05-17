@@ -130,13 +130,12 @@ def render_weekly_page() -> str:
                         if (report) {{
                             const sections = [
                                 ["Summary", report.summary],
+                                ["Key Storylines", report.key_storylines],
+                                ["Catalysts & Risks", report.catalysts_and_risks],
+                                ["Key Facts", report.facts],
                                 ["Sentiment", report.sentiment],
-                                ["Facts", report.facts],
                                 ["Viewpoint", report.viewpoint],
                                 ["Reasoning", report.reasoning],
-                                ["Uncertainties", report.uncertainties],
-                                ["Short-term Impact", report.short_term_impact],
-                                ["Long-term Impact", report.long_term_impact],
                                 ["Trends", report.trends],
                             ];
                             const body = sections.map(([title, items]) => {{

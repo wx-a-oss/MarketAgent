@@ -1724,7 +1724,7 @@ def render_market_page(
                             if (!d.report) {{ marketWeeklyContent.innerHTML = `<p class="placeholder">No market weekly report for week of ${{d.week_start || ws}}. Click "Generate Weekly" to create.</p>`; return; }}
                             const report = d.report;
                             let html = `<h3>Week of ${{d.week_start}} ~ ${{d.week_end}}</h3>`;
-                            for (const key of ["summary","sentiment","facts","viewpoint","reasoning","uncertainties","short_term_impact","long_term_impact","trends"]) {{
+                            for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","uncertainties","short_term_impact","long_term_impact","trends"]) {{
                                 const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                                 const items = Array.isArray(val) ? val : [val];
                                 html += `<strong>${{key}}:</strong><ul>${{items.map((s) => `<li>${{s}}</li>`).join("")}}</ul>`;
@@ -1776,7 +1776,7 @@ def render_market_page(
                             if (!d.report) {{ marketMonthlyContent.innerHTML = `<p class="placeholder">No market monthly report for ${{marketMonth}}. Click "Generate Monthly" to create.</p>`; return; }}
                             const report = d.report;
                             let html = `<h3>${{marketMonth}}</h3>`;
-                            for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {{
+                            for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","trends"]) {{
                                 const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                                 const items = Array.isArray(val) ? val : [val];
                                 html += `<strong>${{key}}:</strong><ul>${{items.map((s) => `<li>${{s}}</li>`).join("")}}</ul>`;

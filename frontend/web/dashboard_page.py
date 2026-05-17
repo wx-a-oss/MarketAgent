@@ -255,7 +255,7 @@ def render_dashboard_page() -> str:
                         if (!d.report) { body.innerHTML = `<span class="placeholder">No market weekly report for week of ${d.week_start || date}. Click ↻ to generate.</span>`; return; }
                         const report = d.report;
                         let html = `<h3>Week of ${d.week_start}</h3>`;
-                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                        for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","trends"]) {
                             const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                             const items = Array.isArray(val) ? val : [val];
                             html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
@@ -269,7 +269,7 @@ def render_dashboard_page() -> str:
                         if (!d.report) { body.innerHTML = `<span class="placeholder">No market monthly report for ${month}. Click ↻ to generate.</span>`; return; }
                         const report = d.report;
                         let html = `<h3>${month}</h3>`;
-                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                        for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","trends"]) {
                             const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                             const items = Array.isArray(val) ? val : [val];
                             html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
@@ -308,7 +308,7 @@ def render_dashboard_page() -> str:
                         if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No weekly report. Click ↻ to generate.</span>`; return; }
                         const report = group.report;
                         let html = `<h3>${label}</h3>`;
-                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                        for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","trends"]) {
                             const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                             const items = Array.isArray(val) ? val : [val];
                             html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
@@ -329,7 +329,7 @@ def render_dashboard_page() -> str:
                         if (!group || !group.report) { body.innerHTML = `<span class="placeholder">No monthly report. Click ↻ to generate.</span>`; return; }
                         const report = group.report;
                         let html = `<h3>${label}</h3>`;
-                        for (const key of ["summary","sentiment","facts","viewpoint","reasoning","trends"]) {
+                        for (const key of ["summary","key_storylines","catalysts_and_risks","facts","sentiment","viewpoint","reasoning","trends"]) {
                             const val = report[key]; if (!val || (Array.isArray(val) && !val.length)) continue;
                             const items = Array.isArray(val) ? val : [val];
                             html += `<strong>${key}:</strong><ul>${items.map((s) => `<li>${s}</li>`).join("")}</ul>`;
