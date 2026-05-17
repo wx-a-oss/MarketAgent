@@ -111,13 +111,12 @@ def render_monthly_page() -> str:
                         if (report) {{
                             const sections = [
                                 ["Summary", report.summary],
+                                ["Key Storylines", report.key_storylines],
+                                ["Structural Changes", report.structural_changes],
+                                ["Catalysts Ahead", report.catalysts_ahead],
                                 ["Sentiment", report.sentiment],
-                                ["Facts", report.facts],
                                 ["Viewpoint", report.viewpoint],
                                 ["Reasoning", report.reasoning],
-                                ["Uncertainties", report.uncertainties],
-                                ["Short-term Impact", report.short_term_impact],
-                                ["Long-term Impact", report.long_term_impact],
                                 ["Trends", report.trends],
                             ];
                             const body = sections.map(([title, items]) => {{

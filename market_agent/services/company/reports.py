@@ -401,14 +401,35 @@ def _normalize_structured_period_report(payload: Dict[str, Any]) -> Dict[str, Li
 def _build_company_monthly_report_prompt(
     company_name: str, *, month_start: date, month_end: date, weekly_reports: List[Dict[str, Any]], output_language: str,
 ) -> str:
-    section_lines = "\n".join(f"- {field}" for field, _ in ANALYSIS_FIELDS)
+    lang_line = _build_output_language_line(output_language)
     return (
-        f"You are compiling a monthly report for {company_name} covering {month_start.isoformat()} to {month_end.isoformat()}.\n"
-        "Use only the provided weekly reports as inputs.\n"
-        "Synthesize the month coherently, remove repetition across weeks, and preserve the most important developments.\n"
-        f"{_build_output_language_line(output_language)}"
-        "Return a JSON object where each section below is present, and each value is an array of concise bullet points:\n"
-        f"{section_lines}\n"
+        f"You are a senior equity research analyst writing a monthly intelligence report for {company_name} "
+        f"covering {month_start.isoformat()} to {month_end.isoformat()}.\n\n"
+        "Your input is the weekly reports for this month. Synthesize them into a higher-level monthly view.\n\n"
+        "Your goal is NOT to repeat weekly details — it's to identify the month's key narrative arcs, "
+        "what structurally changed, and what matters going forward.\n\n"
+        f"{lang_line}"
+        "Return a JSON object with these sections (each is an array of bullet-point strings):\n\n"
+        "1. **summary** (3-5 bullets): The month's most important developments ranked by significance. "
+        "What would an investor need to know if they were away for a month?\n\n"
+        "2. **key_storylines** (2-4 bullets): Major narrative arcs that evolved across the month. "
+        "For each: what started, how it developed, and where it stands now.\n\n"
+        "3. **structural_changes** (2-3 bullets): Anything that fundamentally changed about the company's "
+        "position, competitive landscape, or market perception this month.\n\n"
+        "4. **catalysts_ahead** (2-4 bullets): What's coming next month that could move the stock. "
+        "Include dates if known.\n\n"
+        "5. **sentiment** (2-3 bullets): How market sentiment shifted over the month. "
+        "Net bullish/bearish, analyst consensus direction, flow signals.\n\n"
+        "6. **viewpoint** (2-3 bullets): Your analytical take — what does this month mean for the "
+        "investment thesis? What's the market getting right/wrong?\n\n"
+        "7. **reasoning** (2-3 bullets): If-then logic about what happens next based on this month's data.\n\n"
+        "8. **trends** (2-3 bullets): Multi-month structural trends confirmed or challenged.\n\n"
+        "Rules:\n"
+        "- RANK by importance within each section\n"
+        "- Be CONCISE — each bullet 1-2 sentences max\n"
+        "- DEDUPLICATE across weeks — synthesize, don't concatenate\n"
+        "- Tag [HIGH IMPACT] items with outsized significance\n"
+        "- Focus on WHAT CHANGED, not what stayed the same\n\n"
         "Weekly reports JSON:\n"
         f"{json.dumps(weekly_reports, ensure_ascii=False, indent=2)}\n"
     )
